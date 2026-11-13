@@ -4,5 +4,16 @@
   "attribution": {
     "commit": "",
     "pr": ""
+  },
+  "permissions": {
+    "allow": [
+      "Bash(uv run ruff check .)",
+      "Bash(uv run ruff format --check .)",
+      "Bash(python3 scripts/check_commit_msg.py *)",
+      "Bash(uv pip list)",
+      "Bash(uv --version)",
+      "mcp__claude_ai_Claude_Docs__read",
+      "mcp__claude_ai_Claude_Docs__guide"
+    ]
   }
 }
