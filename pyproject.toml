@@ -1,0 +1,23 @@
+[project]
+name = "leukerbad-hackathon"
+version = "0.1.0"
+description = "Leukerbad Robotics Hackathon 2026 - Elderly Care & Rehabilitation"
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = []
+
+[dependency-groups]
+dev = [
+    "ruff>=0.6",
+    "pre-commit>=4.4",
+]
+
+[tool.uv]
+package = false  # plain project, no build step (add one when there is code to package)
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "B", "UP", "SIM"]

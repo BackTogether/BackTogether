@@ -1,0 +1,39 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+build/
+dist/
+
+# Environments
+.venv/
+.env
+
+# Tooling caches
+.ruff_cache/
+.mypy_cache/
+.coverage
+htmlcov/
+
+# Editors / OS
+.vscode/
+.idea/
+*.swp
+.DS_Store
+Thumbs.db
+
+# Personal agent settings (shared settings in .claude/settings.json ARE committed)
+.claude/settings.local.json
+
+# Data, recordings and model weights (share via other channels, not git)
+data/
+recordings/
+logs/
+*.log
+*.bag
+*.mcap
+*.pt
+*.pth
+*.onnx
+*.ckpt
+*.safetensors
