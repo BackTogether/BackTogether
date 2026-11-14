@@ -11,7 +11,8 @@ git clone https://github.com/gra1111/leukerbard-robotics-AI-hackathon-2026.git
 cd leukerbard-robotics-AI-hackathon-2026
 uv sync                                                          # env + deps (downloads Python 3.11 if missing)
 uv run pre-commit install --hook-type pre-commit --hook-type commit-msg   # FIRST STEP: git hooks
-gh auth refresh -h github.com -s project   # lets you and your agent use the task board
+gh auth refresh -h github.com -s project   # task board access (agents remind you if missing)
+python3 scripts/board.py setup             # should print "Board setup OK"
 ```
 
 The hooks run ruff on every commit and reject commit messages that break
@@ -19,7 +20,7 @@ The hooks run ruff on every commit and reject commit messages that break
 
 ## How we work
 Read [AGENTS.md](AGENTS.md) (rules for people and agents) and [COMMITS.md](COMMITS.md).
-Tasks are GitHub issues on the team board (Projects tab); agents use
+Tasks are GitHub issues on the [team board](https://github.com/users/rorosaga/projects/2); agents use
 `python3 scripts/board.py` to create, move and get notified about them. See
 [AGENTS.md](AGENTS.md#task-board-github-issues--projects).
 

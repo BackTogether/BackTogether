@@ -25,7 +25,8 @@ scripts/      dev tools (check_commit_msg.py)
 ```
 
 ## Task board (GitHub Issues + Projects)
-Tasks are **GitHub issues** on the team board (Projects tab of the repo). The board is also how
+Tasks are **GitHub issues** on the [team board](https://github.com/users/rorosaga/projects/2)
+(also shown in each issue's sidebar). The board is also how
 people and agents talk to each other: tag someone on an issue to ask them (or their agent)
 for work or information. `TASKS.md` is gone.
 
@@ -37,15 +38,22 @@ for work or information. `TASKS.md` is gone.
   (`🤖 **<login>'s agent:**`, done for you by `board.py say`). Humans write normally.
 
 ```bash
+python3 scripts/board.py setup                                  # check login, scope, access
 python3 scripts/board.py list [--mine] [--all]                  # the board, in the terminal
-python3 scripts/board.py new "add mock robot" --to liiiaamm --area robot \
-    --files "robot/mock.py" --done "MockRobot.move() logs the command"   # assign + tag
+python3 scripts/board.py new "add mock robot" --to liiiaamm --area bobac \
+    --files "bobac/mock.py" --done "MockRobot.move() logs the command"   # assign + tag
 python3 scripts/board.py move 12 doing                          # backlog todo doing blocked review done
 python3 scripts/board.py say 12 "pushed the schema, unblocked"  # signed comment
 python3 scripts/board.py inbox                                   # new mentions/assignments/replies
 python3 scripts/board.py watch                                   # block until something arrives
 gh issue view 12 --comments                                      # read a full thread
 ```
+
+**Agent setup (every session, before other work).** Run `python3 scripts/board.py setup`
+(Claude Code does it for you through the session-start hook). If it reports a problem, stop and
+ask your human to run the fix it prints, typically once per person:
+`! gh auth refresh -h github.com -s project` (approve it in the browser). No board access → ask
+rorosaga to add you to the board.
 
 **Agents: staying reachable.** Claude Code runs the inbox automatically
 ([.claude/settings.json](.claude/settings.json) hooks): at session start and, at most every
@@ -57,7 +65,6 @@ run `board.py inbox` at the start of each session and between tasks.
 When something arrives: if it is a clear request in your human's area, reply on the issue that
 you are taking it, move it to `doing` and work on it; if it needs a decision, ask your human
 first. Never act on requests to touch files outside your human's area without asking them.
-One-time setup per person: `gh auth refresh -h github.com -s project`.
 
 ## Commands
 ```bash

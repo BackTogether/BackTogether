@@ -1,7 +1,8 @@
 """Team task board on GitHub Issues + Projects, usable by people and their agents.
 
 Usage:
-    python3 scripts/board.py new "title" --to LOGIN [--to LOGIN] [--area robot]
+    python3 scripts/board.py setup                   # check gh login, scopes and board access
+    python3 scripts/board.py new "title" --to LOGIN [--to LOGIN] [--area drone]
                                          [--files "a.py, b/"] [--done "criteria"] [--body TEXT]
     python3 scripts/board.py move <issue> <status>   # backlog todo doing blocked review done
     python3 scripts/board.py list [--mine] [--status doing] [--all]
@@ -17,6 +18,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import shutil
 import subprocess
 import sys
 import time
@@ -24,7 +26,8 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 PROJECT_OWNER = "rorosaga"
-PROJECT_NUMBER = 0  # set once the board exists
+PROJECT_NUMBER = 2
+BOARD_URL = f"https://github.com/users/{PROJECT_OWNER}/projects/{PROJECT_NUMBER}"
 REPO = "gra1111/leukerbard-robotics-AI-hackathon-2026"
 
 STATUSES = ("Backlog", "Todo", "In Progress", "Blocked", "In Review", "Done")
@@ -36,10 +39,14 @@ HOOK_MIN_GAP_S = 90
 SNIPPET_LEN = 280
 
 
-def gh(*args: str) -> str:
-    result = subprocess.run(
+def run_gh(*args: str) -> subprocess.CompletedProcess:
+    return subprocess.run(
         ["gh", *args], capture_output=True, text=True, timeout=GH_TIMEOUT_S, check=False
     )
+
+
+def gh(*args: str) -> str:
+    result = run_gh(*args)
     if result.returncode != 0:
         sys.exit(f"gh {' '.join(args[:3])} failed: {result.stderr.strip()}")
     return result.stdout
@@ -61,6 +68,35 @@ def resolve_status(name: str) -> str:
     if key in STATUS_ALIASES:
         return STATUS_ALIASES[key]
     sys.exit(f"Unknown status {name!r}. Use one of: {', '.join(STATUSES)}")
+
+
+# ---------------------------------------------------------------- setup
+
+
+def setup_problems() -> list[str]:
+    """What stops this machine from using the board, each with the fix the human must run."""
+    if not shutil.which("gh"):
+        return ["GitHub CLI missing: install it (`brew install gh`), then `gh auth login`."]
+    if run_gh("auth", "status").returncode != 0:
+        return ["Not logged in to GitHub: run `! gh auth login -h github.com -s project`."]
+    headers = run_gh("api", "user", "--include").stdout.lower()
+    scope_line = next((h for h in headers.splitlines() if h.startswith("x-oauth-scopes:")), None)
+    if scope_line and "project" not in scope_line.replace(" ", "").split(":")[1].split(","):
+        return [
+            "Token lacks the `project` scope: run `! gh auth refresh -h github.com -s project`."
+        ]
+    if run_gh("project", "view", *project_ref()).returncode != 0:
+        return [f"No access to the board {BOARD_URL}: ask {PROJECT_OWNER} to add you."]
+    return []
+
+
+def cmd_setup(_: argparse.Namespace) -> None:
+    problems = setup_problems()
+    if not problems:
+        print(f"Board setup OK: {BOARD_URL}")
+        return
+    print("Board setup incomplete:\n" + "\n".join(f"- {p}" for p in problems))
+    sys.exit(1)
 
 
 # ---------------------------------------------------------------- project board
@@ -245,6 +281,20 @@ def cmd_watch(args: argparse.Namespace) -> None:
 
 def cmd_hook(args: argparse.Namespace) -> None:
     """Never fails or blocks the session: emits news as extra context, or nothing."""
+    parts = []
+    if args.event == "session":
+        try:
+            problems = setup_problems()
+        except Exception:
+            problems = []
+        if problems:
+            parts.append(
+                "Task board setup needed. Before anything else, tell your human to run this "
+                "once (the `!` prefix runs it in this session; it opens a browser to approve):\n"
+                + "\n".join(f"- {p}" for p in problems)
+            )
+            emit(args.event, parts)
+            return
     try:
         last = load_state().get("last_check")
         recent = last and datetime.now(UTC) - datetime.fromisoformat(last) < timedelta(
@@ -255,26 +305,37 @@ def cmd_hook(args: argparse.Namespace) -> None:
         news = check_inbox()
     except (Exception, SystemExit):
         return
-    parts = [format_news(news)] if news else []
+    if news:
+        parts.append(format_news(news))
     if args.event == "session":
         parts.append(
-            "Team board: GitHub Issues + Projects (see AGENTS.md > Task board). To hear about "
-            "mentions while idle, run `python3 scripts/board.py watch` in the background."
+            f"Team board: {BOARD_URL} (see AGENTS.md > Task board). To hear about mentions "
+            "while idle, run `python3 scripts/board.py watch` as a background command."
         )
-    if parts:
-        event = "SessionStart" if args.event == "session" else "UserPromptSubmit"
-        output = {"hookEventName": event, "additionalContext": "\n\n".join(parts)}
-        print(json.dumps({"hookSpecificOutput": output}))
+    emit(args.event, parts)
+
+
+def emit(event: str, parts: list[str]) -> None:
+    """Print Claude Code hook JSON that adds `parts` to the session context."""
+    if not parts:
+        return
+    name = "SessionStart" if event == "session" else "UserPromptSubmit"
+    output = {"hookEventName": name, "additionalContext": "\n\n".join(parts)}
+    print(json.dumps({"hookSpecificOutput": output}))
 
 
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     sub = parser.add_subparsers(dest="command", required=True)
 
+    sub.add_parser("setup", help="check gh login, scopes, board access").set_defaults(
+        func=cmd_setup
+    )
+
     new = sub.add_parser("new", help="create a task and put it on the board")
     new.add_argument("title")
     new.add_argument("--to", action="append", default=[], help="GitHub login to assign + tag")
-    new.add_argument("--area", help="area label, e.g. robot, modules, integration")
+    new.add_argument("--area", help="area label, e.g. drone, bobac, integration")
     new.add_argument("--status", default="Todo")
     new.add_argument("--files", help="files/folders the task may touch")
     new.add_argument("--done", help="verifiable done criteria")
