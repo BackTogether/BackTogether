@@ -65,7 +65,12 @@ const BOBAC = {
   screenZ: -0.068,
   screenTilt: 0.35,
   screen: { width: 0.28, height: 0.175 }, // 13" at 1440 x 900
-  deckSpotZ: 0.08,
+  // Add-ons on our robot's top cover, measured by eye from a photo: a white landing plate at
+  // the front and the electronics box between it and the tower.
+  plate: { width: 0.17, depth: 0.145, thickness: 0.006, rail: 0.004 },
+  box: { width: 0.15, height: 0.08, depth: 0.1, z: -0.045, flange: 0.012 },
+  helipad: { ring: 0.06, letter: 0.064, stroke: 0.012 },
+  deckSpotZ: 0.0825, // centre of the landing plate
 };
 
 /**
@@ -519,9 +524,41 @@ function buildBase() {
   const cover = drum(BOBAC.coverY, BOBAC.deckY, radius * 0.955, dark);
   cover.receiveShadow = true;
   base.add(cover);
-  const deckRing = glowRing(0.07, 0.082, COLORS.accent, 0.5);
-  deckRing.position.set(0, BOBAC.deckY + 0.002, BOBAC.deckSpotZ);
+
+  /** Box sitting on the cover (or `lift` above it), centred at z. */
+  const onDeck = (width, height, depth, z, material, lift = 0) => {
+    const mesh = new THREE.Mesh(new THREE.BoxGeometry(width, height, depth), material);
+    mesh.position.set(0, BOBAC.deckY + lift + height / 2, z);
+    mesh.castShadow = true;
+    mesh.receiveShadow = true;
+    return mesh;
+  };
+
+  // Landing plate on its dark rails, marked like a helipad: an H inside the glowing ring.
+  const { plate, box, helipad } = BOBAC;
+  const plateTop = plate.rail + plate.thickness;
+  base.add(onDeck(plate.width + 0.01, plate.rail, plate.depth + 0.01, BOBAC.deckSpotZ, dark));
+  base.add(onDeck(plate.width, plate.thickness, plate.depth, BOBAC.deckSpotZ, shell, plate.rail));
+  const markHeight = 0.0008;
+  const legX = helipad.letter / 2 - helipad.stroke;
+  for (const x of [-legX, legX]) {
+    const leg = onDeck(helipad.stroke, markHeight, helipad.letter, BOBAC.deckSpotZ, dark, plateTop);
+    leg.position.x = x;
+    base.add(leg);
+  }
+  base.add(onDeck(2 * legX, markHeight, helipad.stroke, BOBAC.deckSpotZ, dark, plateTop));
+  const deckRing = glowRing(helipad.ring - 0.008, helipad.ring, COLORS.accent, 0.5);
+  deckRing.position.set(0, BOBAC.deckY + plateTop + 0.002, BOBAC.deckSpotZ);
   base.add(deckRing);
+
+  // Electronics box on its mounting flange, with the cable opening at the front and the
+  // connector on top.
+  base.add(onDeck(box.width + 2 * box.flange, plate.thickness, box.depth + 2 * box.flange, box.z, shell));
+  base.add(onDeck(box.width, box.height, box.depth, box.z, shell));
+  const opening = onDeck(box.width * 0.42, box.height * 0.45, 0.004, box.z + box.depth / 2, dark, plate.thickness);
+  opening.position.x = box.width * 0.2;
+  base.add(opening);
+  base.add(onDeck(0.022, 0.006, 0.022, box.z, dark, box.height));
 
   // Rear tower: a column carrying the screen, with the head camera clipped to the screen's top
   // edge and looking up at faces.
