@@ -528,7 +528,7 @@ class Mission:
         deadline = time.monotonic() + config.approach_timeout_s
         try:
             if config.approach == APPROACH_TRACK:
-                return self._track(config, deadline)
+                return self._track(config, trigger, deadline)
             if trigger is not None:
                 self._fly_over(config, trigger, deadline)
             self._set_tilt(config.approach_tilt_deg)
@@ -539,7 +539,9 @@ class Mission:
                 self._ignore_until = time.time() + RETRY_COOLDOWN_S
             return None
 
-    def _track(self, config: MissionConfig, deadline: float) -> tuple[float, float]:
+    def _track(
+        self, config: MissionConfig, trigger: Detection | None, deadline: float
+    ) -> tuple[float, float]:
         settings = TrackSettings(
             speed=config.approach_speed,
             height_offset_m=config.launch_height_m - config.target_height_m,
@@ -548,7 +550,7 @@ class Mission:
         approach = TrackApproach(
             self.navigator, self.history.at, self._fresh_detection, settings, self._step_note
         )
-        return approach.run(deadline)
+        return approach.run(deadline, trigger)
 
     def _fly_over(self, config: MissionConfig, detection: Detection, deadline: float) -> None:
         located = self._locate(config, detection)

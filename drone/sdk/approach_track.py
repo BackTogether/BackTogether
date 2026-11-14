@@ -43,6 +43,7 @@ WAIT_V = 0.8  # bbox centre lower than this: stop and let the gimbal catch up
 GIMBAL_STICK = 1.0  # full gimbal input: the dead zone is 13.5 % of the stick
 OVERHEAD_TILT_DEG = -85.0
 CENTRED_M = 0.25
+KEEP_CENTRED_M = 0.4  # once collecting fixes overhead, noise up to this does not restart them
 SAMPLES = 4  # fixes overhead whose median is the child's position
 HOLD_S = 0.8  # last fix older than this: hover until a new one comes
 MIN_RANGE_M = 0.3
@@ -94,12 +95,14 @@ class TrackApproach:
         self.settings = settings
         self.note = note
 
-    def run(self, deadline: float) -> tuple[float, float]:
+    def run(self, deadline: float, trigger: Sighting | None = None) -> tuple[float, float]:
+        """`trigger`: the detection that started the approach; the drone turns toward it
+        until the camera sees the child again."""
         self.navigator.require_ready()
         epoch = self.drone.epoch
         hold_alt = self.drone.pose().alt
         started = last_seen = time.time()
-        fix: Fix | None = None
+        fix = self._place(trigger) if trigger else None
         samples: list[tuple[float, float]] = []
         try:
             while True:
@@ -113,21 +116,28 @@ class TrackApproach:
                 pose = self.drone.pose()
                 up = _clip(ALT_GAIN * (hold_alt - pose.alt), MAX_VERTICAL)
                 unseen = time.time() - last_seen
-                if fix is None or unseen > HOLD_S:
+                if fix is None:
                     if unseen > self.settings.lost_timeout_s:
                         raise TimeoutError(f"child not seen for {unseen:.0f} s")
                     self.note(f"track: holding, child not seen for {unseen:.1f} s")
-                    samples.clear()
                     self._send(epoch, up=up)
                     self.drone.sleep(TICK_S, epoch)
                     continue
-                tilt_now = self._tilt_now()
-                v_now = fix.v + (tilt_now - fix.tilt_deg) / camera.CAMERA_VFOV_DEG
                 fwd, right = frame_to_body(
                     fix.child[0] - pose.x, fix.child[1] - pose.y, pose.heading_deg
                 )
                 distance = math.hypot(fwd, right)
-                if distance <= CENTRED_M:
+                if unseen > HOLD_S:
+                    if unseen > self.settings.lost_timeout_s:
+                        raise TimeoutError(f"child not seen for {unseen:.0f} s")
+                    self.note(f"track: child not seen for {unseen:.1f} s, turning to where it was")
+                    samples.clear()
+                    self._send(epoch, up=up, turn=_search_turn(fwd, right, distance))
+                    self.drone.sleep(TICK_S, epoch)
+                    continue
+                tilt_now = self._tilt_now()
+                v_now = fix.v + (tilt_now - fix.tilt_deg) / camera.CAMERA_VFOV_DEG
+                if distance <= (KEEP_CENTRED_M if samples else CENTRED_M):
                     overhead = tilt_now <= OVERHEAD_TILT_DEG
                     if overhead and new is not None:
                         samples.append(new.child)
@@ -200,6 +210,14 @@ class TrackApproach:
         self.drone.command(
             fwd * scale, right * scale, up * scale, turn * scale, COMMAND_HOLD_S, epoch, tilt
         )
+
+
+def _search_turn(fwd: float, right: float, distance: float) -> float:
+    """Turn stick toward the last known position while the child is out of view; none when
+    it is close (it is below the drone, turning would not bring it into view)."""
+    if distance <= NEAR_M:
+        return 0.0
+    return _clip(math.degrees(math.atan2(right, fwd)) * YAW_GAIN, MAX_TURN)
 
 
 def _gimbal(v_now: float) -> float:
