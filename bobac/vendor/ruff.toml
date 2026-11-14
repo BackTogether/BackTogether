@@ -1,0 +1,3 @@
+# Read-only copy of the robot vendor code: never lint or format it.
+extend = "../../pyproject.toml"
+exclude = ["*"]
