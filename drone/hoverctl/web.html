@@ -1,0 +1,258 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, user-scalable=no">
+<title>hoverctl</title>
+<style>
+  :root {
+    --bg: #0d0f12; --panel: #16191e; --line: #262a31; --text: #e8eaed; --muted: #8b919a;
+    --accent: #5aa9ff; --ok: #3ecf8e; --warn: #f2b84b; --stop: #e5484d;
+    color-scheme: dark;
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; height: 100%; background: var(--bg); color: var(--text);
+    font: 14px/1.4 system-ui, -apple-system, "Segoe UI", sans-serif; }
+  body { display: grid; grid-template-rows: auto minmax(0, 1fr) auto; height: 100dvh;
+    gap: 12px; padding: 12px 16px; overflow: hidden; user-select: none; -webkit-user-select: none; }
+  header { display: flex; align-items: center; gap: 16px; flex-wrap: wrap; }
+  h1 { font-size: 16px; font-weight: 600; margin: 0; letter-spacing: .02em; }
+  .chips { display: flex; gap: 8px; flex-wrap: wrap; margin-left: auto; }
+  .chip { background: var(--panel); border: 1px solid var(--line); border-radius: 999px;
+    padding: 3px 10px; color: var(--muted); font-variant-numeric: tabular-nums; white-space: nowrap; }
+  .chip b { color: var(--text); font-weight: 500; }
+  .chip.bad { border-color: var(--stop); color: var(--stop); }
+  .chip.warn { border-color: var(--warn); color: var(--warn); }
+  #video { position: relative; background: #000; border: 1px solid var(--line);
+    border-radius: 12px; overflow: hidden; min-height: 0; }
+  #video img { width: 100%; height: 100%; object-fit: contain; display: block; }
+  #overlay { position: absolute; inset: 0; display: flex; flex-direction: column; gap: 8px;
+    align-items: center; justify-content: center; text-align: center; padding: 24px;
+    background: var(--panel); }
+  #overlay.hidden { display: none; }
+  #overlay .big { font-size: 20px; font-weight: 500; }
+  #overlay .small { color: var(--muted); }
+  #overlay pre { margin: 8px 0 0; max-width: 100%; overflow: hidden; color: var(--muted);
+    font: 11px/1.5 ui-monospace, Menlo, monospace; text-align: left; white-space: pre; }
+  .controls { display: grid; grid-template-columns: auto 1fr auto; align-items: center; gap: 16px; }
+  .pad { --size: clamp(120px, 22vh, 190px); width: var(--size); height: var(--size);
+    border-radius: 50%; background: var(--panel); border: 1px solid var(--line);
+    position: relative; touch-action: none; cursor: grab; }
+  .pad::before, .pad::after { content: ""; position: absolute; background: var(--line); }
+  .pad::before { left: 50%; top: 12%; bottom: 12%; width: 1px; }
+  .pad::after { top: 50%; left: 12%; right: 12%; height: 1px; }
+  .knob { position: absolute; left: 50%; top: 50%; width: 38%; height: 38%; margin: -19% 0 0 -19%;
+    border-radius: 50%; background: #2b3038; border: 1px solid #3a404a; z-index: 1;
+    transition: transform .12s ease-out; }
+  .pad.active .knob { background: var(--accent); border-color: var(--accent); transition: none; }
+  .pad-label { text-align: center; color: var(--muted); font-size: 12px; margin-top: 6px; }
+  .middle { display: flex; flex-direction: column; align-items: center; gap: 10px; min-width: 0; }
+  #stop { width: min(100%, 320px); padding: 18px; font: 700 22px/1 inherit;
+    font-family: inherit; letter-spacing: .08em; color: #fff; background: var(--stop);
+    border: 0; border-radius: 14px; cursor: pointer; box-shadow: 0 6px 24px #e5484d40; }
+  #stop:active, #stop.flash { filter: brightness(1.25); transform: scale(.98); }
+  .bars { display: grid; grid-template-columns: auto 1fr 3.5em; gap: 4px 10px;
+    width: min(100%, 360px); align-items: center; font-variant-numeric: tabular-nums; }
+  .bars span { color: var(--muted); font-size: 12px; }
+  .bars output { text-align: right; font-size: 12px; }
+  .bar { height: 6px; background: var(--panel); border-radius: 3px; position: relative; overflow: hidden; }
+  .bar i { position: absolute; top: 0; bottom: 0; left: 50%; background: var(--accent); }
+  .help { color: var(--muted); font-size: 12px; text-align: center; }
+  kbd { font: 11px ui-monospace, Menlo, monospace; border: 1px solid var(--line);
+    border-radius: 4px; padding: 0 4px; color: var(--text); }
+  @media (max-width: 640px) {
+    .controls { grid-template-columns: 1fr 1fr; }
+    .middle { grid-column: 1 / -1; grid-row: 1; }
+    .bars, .help { display: none; }
+  }
+</style>
+</head>
+<body>
+<header>
+  <h1>HoverAir X1</h1>
+  <div class="chips">
+    <span class="chip" id="chip-link">connecting…</span>
+    <span class="chip" id="chip-sticks"></span>
+    <span class="chip" id="chip-video"></span>
+  </div>
+</header>
+
+<section id="video">
+  <img id="stream" alt="">
+  <div id="overlay">
+    <div class="big" id="overlay-title">No video yet</div>
+    <div class="small" id="overlay-detail"></div>
+    <pre id="overlay-hex"></pre>
+  </div>
+</section>
+
+<section class="controls">
+  <div>
+    <div class="pad" id="pad-left"><div class="knob"></div></div>
+    <div class="pad-label">thrust / yaw</div>
+  </div>
+  <div class="middle">
+    <button id="stop" type="button">STOP</button>
+    <div class="bars" id="bars"></div>
+    <div class="help">
+      <kbd>W</kbd><kbd>S</kbd> pitch · <kbd>A</kbd><kbd>D</kbd> roll · <kbd>I</kbd><kbd>K</kbd> thrust ·
+      <kbd>J</kbd><kbd>L</kbd> yaw · <kbd>U</kbd><kbd>O</kbd> gimbal · <kbd>Space</kbd> stop
+    </div>
+  </div>
+  <div>
+    <div class="pad" id="pad-right"><div class="knob"></div></div>
+    <div class="pad-label">pitch / roll</div>
+  </div>
+</section>
+
+<script>
+const BINDINGS = /*KEY_BINDINGS*/{};
+const AXES = ["roll", "pitch", "thrust", "yaw", "gimbal"];
+const SEND_MS = 50;      // the server turns sticks neutral after 300 ms without a post
+const POLL_MS = 250;
+const RETRY_VIDEO_MS = 2000;
+
+const $ = (id) => document.getElementById(id);
+const clamp = (v) => Math.max(-1, Math.min(1, v));
+const keys = new Set();
+
+function makePad(element) {
+  const pad = { x: 0, y: 0, pointer: null };
+  const knob = element.querySelector(".knob");
+  const draw = () => {
+    const travel = element.clientWidth * 0.31;
+    knob.style.transform = `translate(${pad.x * travel}px, ${-pad.y * travel}px)`;
+  };
+  const move = (event) => {
+    const rect = element.getBoundingClientRect();
+    const radius = rect.width / 2;
+    let x = (event.clientX - rect.left - radius) / radius;
+    let y = (rect.top + radius - event.clientY) / radius;
+    const length = Math.hypot(x, y);
+    if (length > 1) { x /= length; y /= length; }
+    pad.x = x; pad.y = y; draw();
+  };
+  pad.release = () => {
+    pad.pointer = null; pad.x = 0; pad.y = 0;
+    element.classList.remove("active"); draw();
+  };
+  element.addEventListener("pointerdown", (event) => {
+    pad.pointer = event.pointerId;
+    element.setPointerCapture(event.pointerId);
+    element.classList.add("active"); move(event);
+  });
+  element.addEventListener("pointermove", (event) => {
+    if (event.pointerId === pad.pointer) move(event);
+  });
+  for (const type of ["pointerup", "pointercancel", "lostpointercapture"]) {
+    element.addEventListener(type, (event) => { if (event.pointerId === pad.pointer) pad.release(); });
+  }
+  return pad;
+}
+
+const left = makePad($("pad-left"));
+const right = makePad($("pad-right"));
+
+function inputAxes() {
+  const axes = { roll: right.x, pitch: right.y, thrust: left.y, yaw: left.x, gimbal: 0 };
+  for (const key of keys) {
+    const [axis, direction] = BINDINGS[key];
+    axes[axis] += direction;
+  }
+  for (const axis of AXES) axes[axis] = clamp(axes[axis]);
+  return axes;
+}
+
+function post(path, body) {
+  return fetch(path, { method: "POST", body: body ? JSON.stringify(body) : "", keepalive: true })
+    .catch(() => {});
+}
+
+function stop() {
+  keys.clear(); left.release(); right.release();
+  post("/api/stop");
+  $("stop").classList.add("flash");
+  setTimeout(() => $("stop").classList.remove("flash"), 150);
+}
+
+$("stop").addEventListener("pointerdown", (event) => { event.preventDefault(); stop(); });
+window.addEventListener("keydown", (event) => {
+  if (event.metaKey || event.ctrlKey || event.altKey) return;
+  const key = event.key.toLowerCase();
+  if (key === " ") { event.preventDefault(); stop(); return; }
+  if (key in BINDINGS) { event.preventDefault(); keys.add(key); }
+});
+window.addEventListener("keyup", (event) => keys.delete(event.key.toLowerCase()));
+window.addEventListener("blur", stop);
+document.addEventListener("visibilitychange", () => { if (document.hidden) stop(); });
+setInterval(() => post("/api/sticks", inputAxes()), SEND_MS);
+
+// Axis bars show what is really sent (after max magnitude and ramp), not the raw input.
+const bars = {};
+for (const axis of AXES) {
+  $("bars").insertAdjacentHTML("beforeend",
+    `<span>${axis}</span><div class="bar"><i id="bar-${axis}"></i></div><output id="val-${axis}">0</output>`);
+  bars[axis] = { fill: $(`bar-${axis}`), value: $(`val-${axis}`) };
+}
+
+function renderBars(output) {
+  for (const axis of AXES) {
+    const value = output[axis];
+    const width = Math.min(Math.abs(value), 100) / 2;
+    bars[axis].fill.style.left = value < 0 ? `${50 - width}%` : "50%";
+    bars[axis].fill.style.width = `${width}%`;
+    bars[axis].value.textContent = value.toFixed(0);
+  }
+}
+
+function setChip(id, html, level) {
+  const chip = $(id);
+  chip.innerHTML = html;
+  chip.className = "chip" + (level ? ` ${level}` : "");
+}
+
+function renderVideo(video) {
+  const hasFrames = video.frames > 0;
+  $("overlay").classList.toggle("hidden", hasFrames);
+  setChip("chip-video",
+    `video <b>${video.pps}</b> pkt/s · <b>${(video.bytes_per_s / 1024).toFixed(0)}</b> KB/s · ` +
+    `<b>${video.frames}</b> frames`, video.packets && !hasFrames ? "warn" : "");
+  if (hasFrames) return;
+  $("overlay-title").textContent = video.packets
+    ? `No video yet — ${video.packets} packets received`
+    : `No video yet — waiting for packets on UDP ${video.port}`;
+  const details = [];
+  if (video.packets) details.push(`payload: ${video.kind || "not recognised"}`);
+  if (video.codec) details.push(`codec: ${video.codec}`);
+  if (video.senders.length) details.push(`from ${video.senders.join(", ")}`);
+  if (video.dump) details.push(`dump: ${video.dump}`);
+  $("overlay-detail").textContent = details.join(" · ");
+  $("overlay-hex").textContent = video.previews.slice(0, 6).join("\n");
+}
+
+async function poll() {
+  try {
+    const state = await (await fetch("/api/state", { cache: "no-store" })).json();
+    const sticks = state.sticks;
+    setChip("chip-link", sticks.dry_run ? "dry run" : `→ <b>${sticks.target}</b>`,
+      sticks.dry_run ? "warn" : "");
+    setChip("chip-sticks",
+      `sticks <b>${sticks.sent}</b> sent · max <b>${sticks.max}</b>` +
+      (sticks.errors ? ` · <b>${sticks.errors}</b> errors` : ""),
+      sticks.errors ? "bad" : "");
+    if (sticks.last_error) $("chip-sticks").title = sticks.last_error;
+    renderBars(sticks.output);
+    renderVideo(state.video);
+  } catch {
+    setChip("chip-link", "server offline", "bad");
+  }
+}
+setInterval(poll, POLL_MS);
+poll();
+
+const stream = $("stream");
+stream.onerror = () => setTimeout(() => { stream.src = `/video.mjpg?${Date.now()}`; }, RETRY_VIDEO_MS);
+stream.src = "/video.mjpg";
+</script>
+</body>
+</html>
