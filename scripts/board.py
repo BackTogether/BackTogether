@@ -25,8 +25,8 @@ import time
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
-PROJECT_OWNER = "rorosaga"
-PROJECT_NUMBER = 2
+PROJECT_OWNER = "gra1111"
+PROJECT_NUMBER = 1
 BOARD_URL = f"https://github.com/users/{PROJECT_OWNER}/projects/{PROJECT_NUMBER}"
 REPO = "gra1111/leukerbard-robotics-AI-hackathon-2026"
 

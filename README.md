@@ -20,7 +20,7 @@ The hooks run ruff on every commit and reject commit messages that break
 
 ## How we work
 Read [AGENTS.md](AGENTS.md) (rules for people and agents) and [COMMITS.md](COMMITS.md).
-Tasks are GitHub issues on the [team board](https://github.com/users/rorosaga/projects/2); agents use
+Tasks are GitHub issues on the [team board](https://github.com/users/gra1111/projects/1); agents use
 `python3 scripts/board.py` to create, move and get notified about them. See
 [AGENTS.md](AGENTS.md#task-board-github-issues--projects).
 

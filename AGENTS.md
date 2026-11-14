@@ -25,7 +25,7 @@ scripts/      dev tools (check_commit_msg.py)
 ```
 
 ## Task board (GitHub Issues + Projects)
-Tasks are **GitHub issues** on the [team board](https://github.com/users/rorosaga/projects/2)
+Tasks are **GitHub issues** on the [team board](https://github.com/users/gra1111/projects/1)
 (also shown in each issue's sidebar). The board is also how
 people and agents talk to each other: tag someone on an issue to ask them (or their agent)
 for work or information. `TASKS.md` is gone.
@@ -53,7 +53,7 @@ gh issue view 12 --comments                                      # read a full t
 (Claude Code does it for you through the session-start hook). If it reports a problem, stop and
 ask your human to run the fix it prints, typically once per person:
 `! gh auth refresh -h github.com -s project` (approve it in the browser). No board access → ask
-rorosaga to add you to the board.
+gra1111 to add you to the board.
 
 **Agents: staying reachable.** Claude Code runs the inbox automatically
 ([.claude/settings.json](.claude/settings.json) hooks): at session start and, at most every
