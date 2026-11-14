@@ -15,6 +15,7 @@
   <arg name="max_vel" default="0.3" doc="m/s, forward, backward and sideways (team limit: 0.4)"/>
   <arg name="max_vel_theta" default="0.8" doc="rad/s (team limit: 0.8)"/>
   <arg name="nav_params" value="$(find bobac3_navigation)/param"/>
+  <arg name="rviz" default="true" doc="needs the robot screen, or DISPLAY=:0 from SSH"/>
   <arg name="joy" default="true" doc="joystick teleop (it only publishes while enabled on the pad)"/>
   <arg name="slam" value="$(eval arg('mode') == 'slam')"/>
 
@@ -80,4 +81,8 @@
       - {name: inflation_layer, type: "costmap_2d::InflationLayer"}
     </rosparam>
   </node>
+
+  <!-- map, scans, costmaps and plans; "2D Nav Goal" sends the robot somewhere -->
+  <node if="$(arg rviz)" pkg="rviz" type="rviz" name="rviz"
+        args="-d $(find bobac3_navigation)/rviz/robot_navigation.rviz"/>
 </launch>
