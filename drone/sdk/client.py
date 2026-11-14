@@ -9,11 +9,14 @@ robot and import it from rospy code (see ros_node.py).
         print(status["telemetry"]["pose"])
     for jpeg in drone.frames():            # MJPEG frames as JPEG bytes
         ...
+    for jpeg, meta in drone.frames_with_meta():   # + {"frame_time", "pose"} of each frame
+        drone.mission_target(meta["frame_time"], [0.4, 0.3, 0.6, 0.7], confidence=0.9)
 """
 
 from __future__ import annotations
 
 import json
+import math
 import urllib.error
 import urllib.request
 from collections.abc import Iterator
@@ -23,7 +26,9 @@ DEFAULT_URL = "http://127.0.0.1:8077"
 TIMEOUT_S = 5.0
 STREAM_TIMEOUT_S = 10.0  # no byte for this long on /events or /video.mjpg: the stream ends
 SSE_DATA = "data:"
-MJPEG_LENGTH_HEADER = b"content-length:"
+MJPEG_LENGTH_HEADER = "content-length"
+FRAME_TIME_HEADER = "x-frame-time"  # unix time (the Mac's clock) of the frame
+DRONE_POSE_HEADER = "x-drone-pose"  # JSON: the drone's pose and camera tilt at that time
 
 
 class DroneApiError(Exception):
@@ -125,8 +130,46 @@ class DroneClient:
 
     def frame(self) -> bytes:
         """The latest frame as JPEG bytes."""
+        return self.frame_with_meta()[0]
+
+    def frame_with_meta(self) -> tuple[bytes, dict[str, Any]]:
+        """The latest frame and {"frame_time", "pose"} (see frames_with_meta)."""
         with self._open("GET", "/frame.jpg", None, self.timeout) as response:
-            return response.read()
+            headers = {key.lower(): value for key, value in response.headers.items()}
+            return response.read(), _frame_meta(headers)
+
+    # --- lost-child mission (API.md, "Mission") -------------------------------------------------
+
+    def mission(self) -> dict[str, Any]:
+        """The mission's state, child position (drone, launch and map frames) and more."""
+        return self._request("GET", "/mission")
+
+    def mission_start(self, **config: Any) -> dict[str, Any]:
+        """Start the mission: waypoints, frame, strategy, patrol_alt_m, orbit_radius_m... (see
+        API.md). Flying or not: on the ground it waits for the button takeoff."""
+        return self._request("POST", "/mission/start", config)
+
+    def mission_target(
+        self,
+        frame_time: float | None,
+        bbox: list[float],
+        confidence: float = 1.0,
+        label: str | None = None,
+    ) -> dict[str, Any]:
+        """Report a detection: bbox [x0, y0, x1, y1] as fractions of the image (y down),
+        frame_time = the frame's X-Frame-Time. The reply says if the mission used it."""
+        body: dict[str, Any] = {"frame_time": frame_time, "bbox": bbox, "confidence": confidence}
+        if label is not None:
+            body["label"] = label
+        return self._request("POST", "/mission/target", body)
+
+    def mission_launch_pose(self, x: float, y: float, yaw: float) -> dict[str, Any]:
+        """The robot's pose in `map` at takeoff (metres, radians): enables map coordinates."""
+        return self._request("POST", "/mission/launch_pose", {"x": x, "y": y, "yaw": yaw})
+
+    def mission_abort(self) -> dict[str, Any]:
+        """End the mission: back to the takeoff point and land."""
+        return self._request("POST", "/mission/abort")
 
     # --- streams ------------------------------------------------------------------------------
 
@@ -144,12 +187,19 @@ class DroneClient:
 
     def frames(self) -> Iterator[bytes]:
         """JPEG frames from GET /video.mjpg until the stream ends or breaks."""
+        for jpeg, _meta in self.frames_with_meta():
+            yield jpeg
+
+    def frames_with_meta(self) -> Iterator[tuple[bytes, dict[str, Any]]]:
+        """(JPEG, {"frame_time", "pose"}) from GET /video.mjpg: frame_time is the unix time
+        of the frame on the Mac's clock (send it back with mission_target), pose the drone's
+        {"x", "y", "alt", "heading_deg", "tilt_deg"} then. Either is None when unknown."""
         with self._open("GET", "/video.mjpg", None, STREAM_TIMEOUT_S) as response:
             while True:
-                length = _read_part_length(response)
-                if length is None:
+                headers = _read_part_headers(response)
+                if headers is None:
                     return
-                yield response.read(length)
+                yield response.read(int(headers[MJPEG_LENGTH_HEADER])), _frame_meta(headers)
 
     # --- plumbing -----------------------------------------------------------------------------
 
@@ -179,15 +229,39 @@ def _error_message(error: urllib.error.HTTPError) -> str:
         return str(error.reason)
 
 
-def _read_part_length(response: Any) -> int | None:
-    """Skip to the next MJPEG part and return its Content-Length (None at the end)."""
-    length = None
+def _read_part_headers(response: Any) -> dict[str, str] | None:
+    """Skip to the next MJPEG part and return its headers, lower-case names (None at the
+    end). The part always has a Content-Length."""
+    headers: dict[str, str] = {}
     while True:
         line = response.readline()
         if not line:
             return None
-        stripped = line.strip()
-        if stripped.lower().startswith(MJPEG_LENGTH_HEADER):
-            length = int(stripped[len(MJPEG_LENGTH_HEADER) :])
-        elif not stripped and length is not None:
-            return length
+        stripped = line.decode("latin-1").strip()
+        name, colon, value = stripped.partition(":")
+        if colon:
+            headers[name.strip().lower()] = value.strip()
+        elif not stripped and MJPEG_LENGTH_HEADER in headers:
+            return headers
+
+
+def _frame_meta(headers: dict[str, str]) -> dict[str, Any]:
+    raw_time, raw_pose = headers.get(FRAME_TIME_HEADER), headers.get(DRONE_POSE_HEADER)
+    return {
+        "frame_time": float(raw_time) if raw_time else None,
+        "pose": json.loads(raw_pose) if raw_pose else None,
+    }
+
+
+def standoff_goal(
+    robot_x: float, robot_y: float, child_x: float, child_y: float, standoff: float
+) -> tuple[float, float, float]:
+    """A goal (x, y, yaw) on the line from the robot to the child, `standoff` metres short of
+    the child, facing it (ROS: yaw in radians, counter-clockwise). Closer than that: stay."""
+    dx, dy = child_x - robot_x, child_y - robot_y
+    distance = math.hypot(dx, dy)
+    yaw = math.atan2(dy, dx)
+    if distance <= standoff:
+        return robot_x, robot_y, yaw
+    keep = (distance - standoff) / distance
+    return robot_x + dx * keep, robot_y + dy * keep, yaw

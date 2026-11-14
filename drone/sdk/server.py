@@ -8,6 +8,10 @@ autopilot action, like STOP; while an action runs, the page's idle neutral posts
 Outside commands (/move, e.g. ROS cmd_vel or drone.patrol.bounce --sdk) run under a "remote"
 task that applies the same safety rules (Navigator.supervise). STOP wins over them too: after
 any STOP, /move answers 409 until a client sends it with "resume": true.
+
+The lost-child mission (mission.py, /mission/*) runs as one autopilot action; STOP ends it too.
+Every video frame (/frame.jpg, each /video.mjpg part) carries X-Frame-Time and X-Drone-Pose, so
+a detector can report a bbox for that exact frame (POST /mission/target).
 """
 
 import contextlib
@@ -24,13 +28,23 @@ from urllib.parse import parse_qs, urlsplit
 
 from drone.hoverctl.protocol import NEUTRAL
 from drone.hoverctl.sticks import GATE_LIVE
-from drone.hoverctl.web import WebHandler, WebServer
+from drone.hoverctl.web import MJPEG_BOUNDARY, WebHandler, WebServer
 
 from .drone import Drone
+from .mission import (
+    FRAME_LAUNCH,
+    FRAMES,
+    STRATEGIES,
+    STRATEGY_WAYPOINTS,
+    Detection,
+    Mission,
+    MissionConfig,
+)
+from .mission_geometry import LaunchPose
 from .navigate import Navigator
 from .patrol import Patrol, PatrolOptions, Waypoint
 from .safety import Interrupted, NotReady, SafetyLanding, SafetyLimits
-from .sim import FAULTS, SimLink
+from .sim import FAULTS, SimDetector, SimLink
 from .telemetry import Pose, Tilt
 from .tilt import GIMBAL_BOTTOM_DEG, GIMBAL_DEADZONE_PCT, GIMBAL_TOP_DEG, gimbal_rate
 
@@ -43,6 +57,13 @@ MOVE_AXES = ("fwd", "right", "up", "turn")
 REMOTE_TASK = "remote"  # the safety task that watches /move streams
 TAKEOVER_WAIT_S = 1.0  # an explicit action waits this long for the remote watcher to end
 STOPPED = 'stopped: send /move with "resume": true to take control again'
+MISSION_TASK = "mission"
+MISSION_OWNS = "stopped: the mission flies the drone now"  # /move clients take it as an end
+MJPEG_IDLE_S = 5.0  # no frame this long: re-subscribe (the stream itself stays open)
+FRAME_TIME_HEADER = "X-Frame-Time"
+DRONE_POSE_HEADER = "X-Drone-Pose"
+MAX_LABEL_CHARS = 64
+MS_PER_S = 1000.0
 
 Reply = tuple[HTTPStatus, dict[str, Any]]
 
@@ -150,6 +171,10 @@ class ApiServer(WebServer):
         self.extra_state = self.estimate
         self.remote_locked = False  # set by STOP: /move needs "resume" to fly again
         self.stopped_at: float | None = None  # last explicit STOP (page, API, ROS), for the page
+        self.mission = Mission(self.navigator)
+        self.sim_detector = SimDetector(drone, self._sim_detection) if self.sim else None
+        if self.sim_detector:
+            self.sim_detector.start()
 
     def autopilot_active(self) -> bool:
         return self.tasks.busy() or self.drone.command_active()
@@ -157,6 +182,7 @@ class ApiServer(WebServer):
     def stop_all(self) -> None:
         """STOP: cancel the running action and lock out /move streams until they resume."""
         self.remote_locked = True
+        self.mission.halt()
         self.drone.stop()
 
     def press_stop(self) -> None:
@@ -183,15 +209,43 @@ class ApiServer(WebServer):
                 "yaw_rate_dps": getattr(self.drone.estimator, "yaw_rate_dps", None),
             },
             "remote_locked": self.remote_locked,
+            "mission": self.mission.status(),
             "simulated": self.sim is not None,
             "updated_at": time.time(),
         }
+
+    def frame_headers(self, decoded_at: float) -> dict[str, str]:
+        """X-Frame-Time and X-Drone-Pose for a frame decoded at unix time `decoded_at`. The
+        frame time is when its picture reached the Mac (decoded_at - the decoder's lag, when
+        the telemetry has it)."""
+        lag_ms = getattr(self.drone.telemetry(), "video_lag_ms", None) or 0.0
+        frame_time = decoded_at - lag_ms / MS_PER_S
+        headers = {FRAME_TIME_HEADER: f"{frame_time:.3f}"}
+        sample = self.mission.history.at(frame_time)
+        if sample:
+            pose, tilt = sample
+            headers[DRONE_POSE_HEADER] = json.dumps(
+                {
+                    "x": round(pose.x, 3),
+                    "y": round(pose.y, 3),
+                    "alt": round(pose.alt, 3),
+                    "heading_deg": round(pose.heading_deg, 1),
+                    "tilt_deg": None if tilt is None else round(tilt, 1),
+                },
+                separators=(",", ":"),
+            )
+        return headers
+
+    def _sim_detection(
+        self, frame_time: float, bbox: tuple[float, ...], confidence: float, label: str
+    ) -> None:
+        self.mission.report_target(Detection(frame_time, bbox, confidence, label))
 
     def estimate(self) -> dict[str, Any]:
         """Extra /api/state fields for the page's compass and map."""
         path = self.drone.path()
         step = max(1, math.ceil(len(path) / MAX_PATH_POINTS))
-        patrol = self.tasks.patrol
+        patrol = self.mission.patrol or self.tasks.patrol
         limits = self.navigator.limits
         estimator = self.drone.estimator
         return {
@@ -227,7 +281,13 @@ class ApiHandler(WebHandler):
         self.end_headers()
 
     def do_GET(self) -> None:
-        routes = {"/status": self._status, "/events": self._events, "/frame.jpg": self._frame}
+        routes = {
+            "/status": self._status,
+            "/events": self._events,
+            "/frame.jpg": self._frame,
+            "/video.mjpg": self._video,
+            "/mission": self._mission,
+        }
         if self.server.sim:
             routes["/sim/truth"] = self._sim_truth
         route = routes.get(urlsplit(self.path).path)
@@ -263,14 +323,50 @@ class ApiHandler(WebHandler):
         self._reply(HTTPStatus.OK, self.server.status())
 
     def _frame(self) -> None:
-        frame = self.server.drone.latest_frame()
-        if frame is None:
+        drone = self.server.drone
+        frame, age = drone.latest_frame(), drone.frame_age_s()
+        if frame is None or age is None:
             self._reply(HTTPStatus.SERVICE_UNAVAILABLE, {"error": "no video frame yet"})
             return
-        self._send(HTTPStatus.OK, "image/jpeg", frame)
+        self.send_response(HTTPStatus.OK)
+        self.send_header("Content-Type", "image/jpeg")
+        self.send_header("Content-Length", str(len(frame)))
+        self.send_header("Cache-Control", "no-store")
+        self.send_header(
+            "Access-Control-Expose-Headers", f"{FRAME_TIME_HEADER}, {DRONE_POSE_HEADER}"
+        )
+        for name, value in self.server.frame_headers(time.time() - age).items():
+            self.send_header(name, value)
+        self.end_headers()
+        self.wfile.write(frame)
+
+    def _video(self) -> None:
+        """MJPEG like hoverctl's page stream, each part with X-Frame-Time and X-Drone-Pose."""
+        self.send_response(HTTPStatus.OK)
+        self.send_header("Content-Type", f"multipart/x-mixed-replace; boundary={MJPEG_BOUNDARY}")
+        self.send_header("Cache-Control", "no-store")
+        self.end_headers()
+        with contextlib.suppress(BrokenPipeError, ConnectionError):
+            while True:
+                for jpeg in self.server.drone.frames(MJPEG_IDLE_S):
+                    head = f"--{MJPEG_BOUNDARY}\r\nContent-Type: image/jpeg\r\n"
+                    head += f"Content-Length: {len(jpeg)}\r\n"
+                    for name, value in self.server.frame_headers(time.time()).items():
+                        head += f"{name}: {value}\r\n"
+                    self.wfile.write(head.encode() + b"\r\n" + jpeg + b"\r\n")
+
+    def _mission(self) -> None:
+        self._reply(HTTPStatus.OK, self.server.mission.status())
 
     def _sim_truth(self) -> None:
-        self._reply(HTTPStatus.OK, self.server.sim.truth())
+        truth = self.server.sim.truth()
+        truth["child"] = self.server.sim_detector.truth()
+        launch = self.server.mission.status()["launch_pose"]
+        if launch:
+            pose = LaunchPose(**launch)
+            x, y = pose.map_from_launch(truth["child"]["fwd"], truth["child"]["left"])
+            truth["child"]["map"] = {"x": round(x, 3), "y": round(y, 3)}
+        self._reply(HTTPStatus.OK, truth)
 
     def _events(self) -> None:
         """Server-Sent Events: one `status` event per telemetry reading (10 Hz)."""
@@ -334,6 +430,10 @@ class ApiHandler(WebHandler):
             "/record": self._record,
             "/drone/photo": self._drone_photo,
             "/drone/record": self._drone_record,
+            "/mission/start": self._mission_start,
+            "/mission/target": self._mission_target,
+            "/mission/launch_pose": self._mission_launch_pose,
+            "/mission/abort": self._mission_abort,
         }
         if self.server.sim:
             routes.update(
@@ -342,6 +442,7 @@ class ApiHandler(WebHandler):
                     "/sim/battery": self._sim_battery,
                     "/sim/cut": self._sim_cut,
                     "/sim/push": self._sim_push,
+                    "/sim/child": self._sim_child,
                 }
             )
         return routes
@@ -360,7 +461,10 @@ class ApiHandler(WebHandler):
         blocking = server.navigator.blocking_reason()
         if blocking:
             return HTTPStatus.CONFLICT, {"error": blocking}
-        if server.tasks.busy() and server.tasks.status()["name"] != REMOTE_TASK:
+        running = server.tasks.status()["name"] if server.tasks.busy() else None
+        if running == MISSION_TASK and not server.mission.accepts_moves():
+            return HTTPStatus.CONFLICT, {"error": MISSION_OWNS}
+        if running not in (None, REMOTE_TASK, MISSION_TASK):
             return _busy()
         scale = min(1.0, server.navigator.limits.max_speed / max(server.drone.speed_cap, 1.0))
         server.drone.command(**{axis: v * scale for axis, v in values.items()}, hold_s=seconds)
@@ -475,6 +579,64 @@ class ApiHandler(WebHandler):
     def _drone_record(self, body: dict[str, Any]) -> Reply:
         return _result(self.server.drone.drone_record(bool(_flag(body, "on", None))))
 
+    def _mission_start(self, body: dict[str, Any]) -> Reply:
+        config = _mission_config(body)
+        busy = self._free()
+        if busy:
+            return busy
+        mission = self.server.mission
+        try:
+            mission.prepare(config)
+        except ValueError as error:
+            raise BadRequest(str(error)) from error
+        return self._start(MISSION_TASK, mission.run, detail={"config": config.as_dict()})
+
+    def _mission_target(self, body: dict[str, Any]) -> Reply:
+        bbox = body.get("bbox")
+        if not isinstance(bbox, list) or len(bbox) != 4:
+            raise BadRequest('"bbox" must be [x0, y0, x1, y1], fractions of the image')
+        corners = [_number({"v": value}, "v", None, 0.0, 1.0) for value in bbox]
+        if not (corners[0] < corners[2] and corners[1] < corners[3]):
+            raise BadRequest('"bbox" needs x0 < x1 and y0 < y1')
+        label = body.get("label")
+        if label is not None and not isinstance(label, str):
+            raise BadRequest('"label" must be a string')
+        detection = Detection(
+            frame_time=_number(body, "frame_time", time.time(), 0.0),
+            bbox=tuple(corners),
+            confidence=_number(body, "confidence", 1.0, 0.0, 1.0),
+            label=label[:MAX_LABEL_CHARS] if label else None,
+        )
+        accepted, why = self.server.mission.report_target(detection)
+        return HTTPStatus.OK, {
+            "accepted": accepted,
+            "state": why if accepted else None,
+            "reason": None if accepted else why,
+        }
+
+    def _mission_launch_pose(self, body: dict[str, Any]) -> Reply:
+        pose = LaunchPose(
+            _number(body, "x"), _number(body, "y"), _number(body, "yaw", None, -10.0, 10.0)
+        )
+        self.server.mission.set_launch_pose(pose)
+        return HTTPStatus.OK, {"ok": True}
+
+    def _mission_abort(self, body: dict[str, Any]) -> Reply:
+        if not self.server.mission.abort():
+            return HTTPStatus.CONFLICT, {"error": "no mission running"}
+        return HTTPStatus.OK, {"ok": True}
+
+    def _sim_child(self, body: dict[str, Any]) -> Reply:
+        detector = self.server.sim_detector
+        detect = _flag(body, "detect", detector.detect)
+        detector.place(
+            _number(body, "fwd", detector.fwd),
+            _number(body, "left", detector.left),
+            detect,
+            _number(body, "miss", detector.miss, 0.0, 1.0),
+        )
+        return HTTPStatus.OK, {"ok": True, "child": detector.truth()}
+
     def _sim_button(self, body: dict[str, Any]) -> Reply:
         return _result(self.server.sim.press_button())
 
@@ -585,6 +747,51 @@ def _waypoint(item: Any) -> Waypoint:
         alt=_number(item, "alt", None),
         dwell_s=_number(item, "dwell_s", None, 0.0, 600.0),
         scan=scan,
+    )
+
+
+def _choice(body: dict[str, Any], key: str, default: str, choices: tuple[str, ...]) -> str:
+    value = body.get(key, default)
+    if value not in choices:
+        raise BadRequest(f'"{key}" must be one of {", ".join(choices)}')
+    return value
+
+
+def _mission_config(body: dict[str, Any]) -> MissionConfig:
+    """POST /mission/start's body (API.md); missing fields keep MissionConfig's defaults."""
+    defaults = MissionConfig()
+    raw = body.get("waypoints", [])
+    if not isinstance(raw, list):
+        raise BadRequest('"waypoints" must be a list of {"x", "y", ...}')
+
+    def number(key: str, low: float = 0.0, high: float = math.inf) -> float:
+        return _number(body, key, getattr(defaults, key), low, high)
+
+    tilt = defaults.patrol_tilt_deg
+    if "patrol_tilt_deg" in body:  # null: leave the camera where it is
+        tilt = _number(body, "patrol_tilt_deg", None, GIMBAL_BOTTOM_DEG, GIMBAL_TOP_DEG)
+    return MissionConfig(
+        waypoints=tuple(_waypoint(item) for item in raw),
+        frame=_choice(body, "frame", FRAME_LAUNCH, FRAMES),
+        strategy=_choice(body, "strategy", STRATEGY_WAYPOINTS, STRATEGIES),
+        loops=int(number("loops", 0, 1000)),
+        dwell_s=number("dwell_s", 0, 600),
+        scan=bool(_flag(body, "scan", defaults.scan)),
+        patrol_alt_m=number("patrol_alt_m"),
+        patrol_tilt_deg=tilt,
+        align_m=number("align_m", 0, 5),
+        approach_tilt_deg=number("approach_tilt_deg", GIMBAL_BOTTOM_DEG, 0),
+        orbit_alt_m=number("orbit_alt_m"),
+        orbit_radius_m=number("orbit_radius_m", 0.5, 5),
+        orbit_turns=number("orbit_turns", 0, 5),
+        standoff_m=number("standoff_m", 0, 5),
+        launch_height_m=number("launch_height_m", 0, 3),
+        target_height_m=number("target_height_m", 0, 2),
+        min_confidence=number("min_confidence", 0, 1),
+        takeoff_timeout_s=number("takeoff_timeout_s", 1, 600),
+        patrol_timeout_s=number("patrol_timeout_s", 1, 3600),
+        approach_timeout_s=number("approach_timeout_s", 5, 600),
+        lost_timeout_s=number("lost_timeout_s", 1, 120),
     )
 
 

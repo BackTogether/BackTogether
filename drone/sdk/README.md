@@ -10,10 +10,13 @@ recording, a simulator, an HTTP API and a ROS client.
 |---|---|
 | `drone.py` | `Drone`: connection, motion, telemetry/video streams, photos, recording, tilt |
 | `estimate.py` | `Estimator` interface and `DeadReckoner` (the default pose estimate) |
+| `flow.py` | `VideoYaw`: yaw measured from the live video (optical flow), optional numpy |
 | `tilt.py` | `TiltEstimator`: camera tilt from the gimbal stick, calibrated on our drone |
 | `camera.py` | approximate camera intrinsics (focal length, FOV) |
 | `navigate.py` | `Navigator` (goto, turn_to, climb_to, hover, supervise) and `calibrate_yaw` |
 | `patrol.py` | `Patrol` of waypoints with dwell, 360 scan and per-waypoint callbacks |
+| `mission.py` | the lost-child mission: launch, align, patrol, approach, report, orbit, return ([below](#for-the-robot-team-ros1)) |
+| `mission_geometry.py` | its frames (drone, launch, map) and the camera model: bbox → floor point, and back for the sim |
 | `safety.py` | `SafetyLimits`: geofence, altitude, battery, loss timeouts, max speed |
 | `sim.py` | the simulator (`connect_sim`): same interface, nothing leaves the laptop |
 | `server.py`, `__main__.py` | the web page + HTTP API ([API.md](API.md)) |
@@ -73,9 +76,10 @@ for status in drone.events():  # SSE, 10 Hz
 ```
 `rosrun <pkg> ros_node.py _url:=http://<mac>:8077` publishes `/drone/odom`, `/drone/battery`,
 `/drone/image/compressed` and `/drone/state`, and takes `/drone/cmd_vel` (Twist),
-`/drone/patrol` (JSON String), `/drone/stop` and `/drone/resume` (see its docstring). **Network:**
-the Mac's Wi-Fi is on the drone's access point, so the robot must reach the Mac another way:
-the robot joins `HoverX1_060039` too, or an Ethernet/USB cable between them.
+`/drone/patrol` (JSON String), `/drone/stop` and `/drone/resume` (see its docstring), plus the
+mission topics of [For the robot team](#for-the-robot-team-ros1). **Network:** the Mac's Wi-Fi is
+on the drone's access point, so the robot must reach the Mac another way: the robot joins
+`HoverX1_060039` too, or an Ethernet/USB cable between them.
 
 ## Patrol example
 ```python
@@ -158,9 +162,11 @@ down; fit 0.124 deg/s per % above 13.5 %. Constants: `GIMBAL_*` in `tilt.py`.
    Check against the stick log (`gimbal` of each packet) and the video's vertical motion (frame to
    frame shift of the horizon / f, see camera.py). Put the numbers in `tilt.py`.
 
-**Camera intrinsics (`camera.py`):** focal length about 850 px at 1280×720, principal point at the
-image centre, so 74° horizontal and 46° vertical FOV. From one measurement: ±10 %. No distortion
-model.
+**Camera intrinsics (`camera.py`):** focal length 627 px at 1280×720, principal point at the
+image centre, so 91° horizontal and 60° vertical FOV (pinhole, no distortion model). Fitted on
+2026-11-14 to three exact 360° spins (the video yaw integrates to 360° per revolution at sticks
+100/80/60, within 0.6 %); the earlier 850 px (one vanishing-point measurement) made video yaw
+~1.3× too small.
 
 ## Bounce patrol (`drone/patrol`, by @andresgilvicente) on the SDK
 The random-bounce patrol (fly straight until a wall is close, turn a random angle) now reads
@@ -180,6 +186,33 @@ uv run --no-project --with numpy --with pillow --with torch --with transformers 
 It sets the camera to `--tilt` (-45°) first and uses the live tilt estimate as the depth
 geometry's pitch, the measured 74° HFOV, and `estimator.yaw_rate_dps` for its timed turns. STOP or
 LAND in the page ends it. Windows: `drone/patrol/winfly` (it now starts `drone.sdk serve`).
+
+## DVD patrol (`drone/patrol/dvd.py`): reflection turns, floor-boundary distance
+Flies straight and, at a wall, turns by the reflection angle (incidence = reflection, off both
+walls in a corner; a random turn when the wall's direction is unclear), so the path sweeps the
+room. Front distance: `floor_boundary.py` takes the depth model's map, finds in each column
+where the floor ends (the column's farthest point: floor depth grows upward, an obstacle's
+grows downward), and turns that row into metres with the camera height and tilt. It never uses
+the model's metric scale. A line through those contact points gives the wall's direction.
+`camera_height.py` filters the altitude (jumps, out-of-range values) and re-scales the height
+from each straight approach: the distance must shrink as fast as the odometry moves.
+```bash
+uv run --offline --no-project --with numpy --with pillow \
+    python -m drone.patrol.dvd --sim --duration 300 --pillars --plot /tmp/dvd.png   # sim room
+# real drone: drone/fly 60 sd --fence 15, MANUAL + takeoff, then
+drone/patrol/live dvd-dry      # decisions only;  drone/patrol/live dvd   to fly
+# a recorded flight through the perception, with its odometry:
+HF_HUB_OFFLINE=1 uv run --offline --no-project --with numpy --with pillow --with torch \
+    --with transformers --with av python -m drone.patrol.replay recordings/<dump>.udp \
+    --push recordings/<push>.bin --start 22:07:15 --end 22:07:40
+```
+Why not the old front distance (2026-11-14 wall approach, odometry as ground truth): it read
+2.1-2.8 m whenever the drone was within ~1.3 m of the wall. Three causes: `--takeoff-height 1.0`
+after a floor takeoff (camera 2.72 m instead of 1.72: x1.6 on every distance); the floor band
+used for the scale check was wall, not floor, once the floor left the image (so the reading
+could never drop below the floor distance of the image's bottom rows); and the model's own
+metric scale was 1.3-2x too far and jumped up to 5x on the plain white wall. The floor boundary
+measured the same approach within 0.1 m (median) at 72 fps (Small on the Mac's GPU, MPS).
 
 ## Operating systems
 - **macOS**: as above. `enter_manual()` joins the drone's Wi-Fi with `networksetup`.
@@ -227,16 +260,27 @@ class Estimator(Protocol):
     def on_command(self, sticks: Axes, dt: float) -> None: ...  # sticks actually sent, 30 Hz
     def pose(self) -> Pose:
         ...  # x, y, z (takeoff frame), heading_deg, heading_sigma_deg,
-        # position_sigma_m, velocity, in_flight
+        # position_sigma_m, velocity, in_flight, heading_source, flow_yaw_rate_dps, flow_confidence
 ```
+Optional: `on_yaw_step(step: YawStep)`, the yaw measured from the video (`flow.py`).
 Plug a new one in with `Drone(..., estimator=MyEstimator())`, `connect_sim(estimator=...)` or
 `Drone.connect(estimator=...)`. Frames are there for it: `drone.on_frame(callback)` (JPEG bytes,
 30 fps) or `drone.frames()`. The page's compass and map draw whatever `pose()` says.
 
 **The default, `DeadReckoner`:**
-- heading = integral of the yaw stick sent × `yaw_rate_dps` (60 deg/s at full stick until
-  `calibrate_yaw` measures it; the sim's true rate is 66), uncertainty growing with each turn and
-  0.5 deg/s of drift;
+- heading = integral of the yaw stick sent × `yaw_rate_dps` (24.2 deg/s at full stick, from the
+  360° spins; the sim's true rate is 66), uncertainty growing with each turn and 0.5 deg/s of drift;
+- **yaw measured from the video** (`flow.py`, needs numpy: `uv run --with numpy`, e.g.
+  `uv run --with bleak --with numpy python -m drone.sdk serve ...`; without numpy the SDK says so
+  at start and uses the sticks only). The decoder's ffmpeg also writes a 320×180 gray copy of every
+  frame; every 6 frames six horizontal strips are phase-correlated with the same strips 0.2 s
+  earlier, and the row profile of the sideways shift gives the yaw for any camera tilt. A trusted
+  step (confidence ≥ 0.3, no gimbal or sideways stick and speed < 1 m/s in the last second)
+  replaces the stick model's turn over the same interval, so decoding delay does not matter; steady
+  turns nudge `yaw_rate_dps` toward what the video saw (online calibration). `pose().heading_source`
+  is `"flow"` while trusted steps arrive (the page's compass says "estimated · video"), `"sticks"`
+  otherwise; `flow_yaw_rate_dps` and `flow_confidence` are in `/status`, SSE and `/api/state`. Not
+  on Windows (no second ffmpeg pipe) and not in the simulator (its test pattern does not turn);
 - heading fix from the direction of travel: when the drone has flown a steady horizontal
   command without yaw for 1.5 s, heading = velocity direction − command direction (1-D Kalman);
   this is also how it learns the unknown angle between the takeoff frame and the camera;
@@ -244,7 +288,9 @@ Plug a new one in with `Drone(..., estimator=MyEstimator())`, `connect_sim(estim
 - a new takeoff starts a new frame (heading reset, uncertainty 45°).
 
 **Its limits:** position only at 1 Hz and lags; extrapolation overshoots when the drone stops;
-heading drifts while hovering and turning (no sensor), and only improves when flying straight;
+without the video yaw (no numpy, blank or blurred images, sideways flight, gimbal moving) the
+heading follows the stick model and drifts while hovering and turning; the video yaw has a scale
+error of about ±5-8 % (focal length, lens distortion) and no absolute reference;
 odometry drift accumulates (the sim adds a random walk); no absolute position: the frame is
 lost at landing.
 
@@ -255,11 +301,7 @@ pulse length are constants at the top. `turn_to` is open loop on the estimated h
 `Navigator.supervise()` applies the safety rules to commands from elsewhere.
 
 **Suggested next steps for a teammate:**
-1. **Optical-flow heading from the video:** between frames, the mean horizontal flow dx (pixels)
-   of distant features gives the yaw: yaw_rate ≈ atan(dx_px / f) × 30 fps with f ≈ 850 px
-   (`camera.py`). Fuse it in `on_command`/`update` instead of the stick model: no calibration,
-   no drift while hovering. Translation also causes flow: use the top of the image, or subtract
-   the odometry velocity.
+1. Optical-flow heading: done (`flow.py`, see above).
 2. **Teach-and-repeat patrol:** fly the route once by hand, store keyframes (JPEG + odometry +
    heading) every metre; on replay, match the live frame to the next keyframe (ORB features,
    homography) to correct heading and lateral offset. Robust indoors, no markers.
@@ -267,6 +309,101 @@ pulse length are constants at the top. `turn_to` is open loop on the estimated h
    such as ORB-SLAM3 monocular, scale from the odometry) gives an absolute position that survives
    the takeoff-frame reset.
 Each one is an `Estimator`: the navigator, patrols, API, ROS node and compass work unchanged.
+
+## For the robot team (ROS1)
+The lost-child demo is one mission on the Mac (`mission.py`, API.md "Mission"); the robot runs
+`ros_node.py` (Python 3.8, rospy + tf2_ros + `client.py`, stdlib only) which turns it into topics.
+
+**Network.** The Mac's Wi-Fi is on the drone's access point (`HoverX1_060039`, drone
+`<DRONE_IP>`, the Mac gets a `<DRONE_SUBNET>.x` by DHCP: `ipconfig getifaddr en0` on the Mac, or
+`local_ip` in the page's video panel). The robot reaches the Mac either by joining
+`HoverX1_060039` too (password in drone/README.md; the robot's own AP may stop while its Wi-Fi
+is a client) or, better, by an Ethernet cable Mac ↔ robot with static addresses (e.g. Mac
+`<LAPTOP_A_IP>`, robot `<LAPTOP_B_IP>`, netmask 255.255.255.0): the drone link stays on the Mac's Wi-Fi.
+On the Mac the server must listen on every interface:
+```bash
+drone/fly 60 sd --bind 0.0.0.0                      # port 8077; anyone on those networks can fly it
+curl http://<mac ip>:8077/mission                   # from the robot: must answer JSON
+```
+
+**Run the node on the robot** (copy `drone/sdk/client.py` and `drone/sdk/ros_node.py` into one
+folder, e.g. `~/drone/`):
+```bash
+cd ~/drone && python3 ros_node.py _url:=http://<mac ip>:8077              # rosrun works too
+# params: _send_goal:=true _standoff:=0.8 _map_frame:=map _robot_frame:=base_footprint
+#         _goal_topic:=/move_base_simple/goal _auto_launch_pose:=true
+```
+
+**Topics** (all in the node's docstring)
+| Topic | Type | What |
+|---|---|---|
+| `/drone/image/compressed` | `sensor_msgs/CompressedImage` | JPEG, `header.stamp` = when the picture reached the Mac, on the robot's clock (offset learned from the 10 Hz status), frame `drone_camera` |
+| `/drone/detection` (in) | `std_msgs/String` | JSON `{"stamp": <the image's header.stamp, s>, "bbox": [x0, y0, x1, y1], "confidence": 0.9, "label": "leo"}`, bbox as fractions of the image (y down) |
+| `/drone/mission` | `std_msgs/String`, latched | JSON of `GET /mission` on every change (`state`, `step`, `child`...) |
+| `/drone/child_pose` | `geometry_msgs/PoseStamped`, latched | the child in `map` (orientation: facing it from the robot); in `drone_takeoff` while the launch pose is unknown |
+| `/move_base_simple/goal` | `geometry_msgs/PoseStamped` | once per child report (`~send_goal`): `~standoff` m short of the child on the line from the robot's current tf pose, facing it |
+| `/drone/pose_map` | `geometry_msgs/PoseStamped` | the drone in `map` once aligned |
+| `/drone/odom` | `nav_msgs/Odometry` | the drone in `drone_takeoff` (as before) |
+| tf | | `map → drone_takeoff` (once aligned) and `drone_takeoff → drone_base`: rviz shows the drone on the map |
+| `/drone/mission/start` (in) | `std_msgs/String` | JSON body of `POST /mission/start` |
+| `/drone/mission/abort`, `/drone/stop` (in) | `std_msgs/Empty` | back home and land / STOP (hover) |
+| `/drone/launch_pose` (in) | `geometry_msgs/PoseStamped` | the robot's map pose at takeoff, only if tf `map → base_footprint` is not available |
+
+**Frames.** The drone's odometry frame starts at the takeoff point and is not aligned with
+anything (no compass on the X1). Two things align it: (a) the robot's pose in `map` at launch:
+the node reads tf `map → base_footprint` while the mission is launching/climbing/aligning and
+posts it (`POST /mission/launch_pose`), so **the robot must not move until the child is
+reported**; (b) the aligning leg: right after the climb the drone flies 1.5 m straight ahead,
+**so launch it facing the robot's forward, with 2 m clear in front of the robot**. The takeoff
+point is taken as `base_footprint` (set `launch_height_m` to the height of the robot's top).
+Without (a) there is no map position or goal (the child is still published in
+`drone_takeoff`); without (b) no `launch`/`map` coordinates.
+
+**Demo sequence** (Mac: `drone/fly 60 sd --bind 0.0.0.0`; robot: navigation up and localised,
+the node running; the drone on the robot's top, camera forward):
+1. Mac: `curl -XPOST <mac>:8077/manual` (or MANUAL CONTROL in the page).
+2. Start the mission, e.g. a patrol 1.5-4 m ahead of the robot (frame `launch`: x ahead, y left):
+   ```bash
+   rostopic pub -1 /drone/mission/start std_msgs/String "data: '{\"waypoints\": [{\"x\": 2, \"y\": -1.5}, {\"x\": 4, \"y\": -1.5}, {\"x\": 4, \"y\": 1.5}, {\"x\": 2, \"y\": 1.5}], \"launch_height_m\": 0.9}'"
+   # or: curl -XPOST <mac>:8077/mission/start -d '{"waypoints": [...], "launch_height_m": 0.9}'
+   ```
+3. Press the drone's button. It climbs to 2 m, sets the camera to -40° (up to ~30 s while it
+   anchors the tilt estimate), flies the 1.5 m leg, patrols.
+4. The detector (drone/identify on the Mac over `/video.mjpg`, or a ROS node on
+   `/drone/image/compressed`) reports the child (`POST /mission/target` or `/drone/detection`).
+   The drone stops, flies over the point, points the camera straight down and centres the
+   child. **While the camera looks down, report the person's bbox (head/body), not only a face
+   match**, or the approach times out (10 s without a detection) and the patrol resumes.
+5. `reporting`: `/drone/child_pose` and `/move_base_simple/goal` are published once: the robot
+   drives to the child, stopping 0.8 m short, facing it.
+6. The drone descends to 1.2 m, circles the child twice (r 1.5 m), flies back to the takeoff
+   point and lands there (on the floor: the robot has left).
+Any time: `rostopic pub -1 /drone/stop std_msgs/Empty` (hover, mission ends) or
+`/drone/mission/abort` (back home and land); STOP/LAND in the page work too.
+
+**Test without the drone** (the simulator has a fake child, 3.5 m ahead and 1.5 m left of the
+launch point, and a fake detector that reports its bbox when it is in the camera view):
+```bash
+uv run python -m drone.sdk sim --http-port 8090 --bind 0.0.0.0 --no-browser       # on the Mac
+curl -XPOST <mac>:8090/sim/child -d '{"fwd": 3, "left": -2}'   # move the child (or "detect": false)
+python3 ros_node.py _url:=http://<mac ip>:8090                     # on the robot
+# no tf map->base_footprint in your test? publish the launch pose by hand:
+rostopic pub -1 /drone/launch_pose geometry_msgs/PoseStamped '{header: {frame_id: "map"}, pose: {position: {x: 1.0, y: 2.0}, orientation: {w: 1.0}}}'
+curl -XPOST <mac>:8090/manual; rostopic pub -1 /drone/mission/start std_msgs/String "data: '{\"waypoints\": [{\"x\": 1.5, \"y\": 0}, {\"x\": 1.5, \"y\": 2.5}], \"orbit_turns\": 1}'"
+curl -XPOST <mac>:8090/sim/button                                   # the takeoff button
+rostopic echo /move_base_simple/goal                                # ~1-2 min later
+curl <mac>:8090/sim/truth                                           # child.map: the true position
+```
+Measured in the sim (seed 1, frame 20° off the heading): child in `map` within 0.09-0.26 m of
+the truth; goal 0.80 m short; whole mission ~3 min with one orbit. The sim's video is a test
+pattern, so a real detector sees nothing there: use the fake one, or read `/sim/truth` →
+`child.bbox` in a test detector.
+
+**Limits.** Untested on the real X1. The aligning leg assumes no yaw during takeoff and the
+camera facing the robot's forward (error ~atan(odometry noise / leg) ≈ 4°, i.e. 0.25 m at 4 m).
+The orbit's heading comes from the estimator (yaw stick × the calibrated 24.2 °/s, or the video
+yaw), so the camera may drift off the child over two turns. Odometry drift adds to the child's
+position error. The patrol restarts from the nearest waypoint after a lost approach.
 
 ## Known limits
 - The SDK has only flown in the simulator: the real-drone path reuses hoverctl's tested link,

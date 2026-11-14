@@ -19,6 +19,10 @@ What it models, on purpose close to what we measured on the X1:
   `wall_hits` counts it); truth()["front_m"] is the true distance to the wall ahead, for
   testing camera-based patrols without a depth model (drone.patrol.bounce --fake-depth).
 - Faults for testing: set_battery(), cut("link" | "telemetry" | "video", seconds), push().
+- `SimDetector`: a fake lost child standing in the room and a fake detector that reports the
+  child's bbox (like drone/identify would) whenever the child is in the simulated camera's view
+  (true pose, the camera tilt estimate, the intrinsics of camera.py), with latency, misses and
+  noise. The mission (mission.py) gets its reports; the server places the child (/sim/child).
 """
 
 import math
@@ -38,6 +42,7 @@ from drone.hoverctl.sticks import StickSender
 
 from .drone import Drone
 from .estimate import DEFAULT_YAW_RATE_DPS, Estimator, wrap_deg
+from .mission_geometry import project_box
 
 PHYSICS_PERIOD_S = 0.02
 MAX_SPEED_MPS = 2.0  # horizontal, at stick 100
@@ -67,6 +72,17 @@ WALL_CONTACT_M = 0.15  # the cage touches the wall this far from the centre
 FRONT_CORRIDOR_HALF_WIDTH_M = 0.5  # like drone.patrol.front_distance's obstacle corridor
 VIDEO_SOURCE = "testsrc2=size=640x360:rate=30"
 VIDEO_READ_BYTES = 1 << 16
+# The fake child, in the robot's frame at launch (x forward, y left; the drone starts facing +x)
+SIM_CHILD_FWD_M = 3.5
+SIM_CHILD_LEFT_M = 1.5
+SIM_CHILD_HEIGHT_M = 0.5  # the point a detector centres on (MissionConfig.target_height_m)
+SIM_CHILD_SIZE_M = 0.5  # bbox width and height, metres
+DETECT_PERIOD_S = 0.3  # with the latency: ~2 detections a second, like a CPU detector
+DETECT_LATENCY_S = 0.25
+DETECT_MISS = 0.2  # fraction of frames where the child is not detected
+DETECT_NOISE = 0.01  # bbox centre noise, fraction of the image
+DETECT_CONFIDENCE = 0.85
+DETECT_LABEL = "sim child"
 OK = {"ok": True, "error": None}
 NOT_CONNECTED = {"ok": False, "error": "not connected"}
 
@@ -273,6 +289,11 @@ class SimLink:
                 "front_m": self._front_m(),
                 "wall_hits": self._wall_hits,
             }
+
+    def frame_point(self, world_x: float, world_y: float) -> tuple[float, float]:
+        """A world point (the start point at 0, 0, x = the start heading) in the takeoff frame."""
+        with self._lock:
+            return self._to_frame(world_x - self._origin[0], world_y - self._origin[1])
 
     # --- physics ------------------------------------------------------------------------------
 
@@ -489,6 +510,8 @@ class SimCamera:
             "width": size[0],
             "height": size[1],
             "fps": round(self.decoder.fps, 1),
+            "decode_lag_ms": None if self.decoder.lag_ms is None else round(self.decoder.lag_ms),
+            "decode_queued": self.decoder.queued,
             "dump": None,
             "previews": [],
         }
@@ -503,6 +526,94 @@ class SimCamera:
             self.decoder.feed(chunk)
             for listener in self._listeners:
                 listener(chunk)
+
+
+Report = Callable[[float, tuple[float, float, float, float], float, str], Any]
+
+
+class SimDetector:
+    """See the module docstring. `report(frame_time, bbox, confidence, label)` gets each
+    detection (bbox = x0, y0, x1, y1 as fractions of the image, y down)."""
+
+    def __init__(self, drone: Drone, report: Report, seed: int | None = None) -> None:
+        self.drone = drone
+        self.link: SimLink = drone.link
+        self.report = report
+        self.fwd = SIM_CHILD_FWD_M
+        self.left = SIM_CHILD_LEFT_M
+        self.detect = True
+        self.miss = DETECT_MISS
+        self.reports = 0
+        self._random = random.Random(seed)
+        self._stop = threading.Event()
+        self._thread = threading.Thread(target=self._run, name="sim-detector", daemon=True)
+
+    def start(self) -> None:
+        self._thread.start()
+
+    def stop(self) -> None:
+        self._stop.set()
+
+    def place(
+        self, fwd: float, left: float, detect: bool | None = None, miss: float | None = None
+    ) -> None:
+        """Put the child `fwd` m ahead of and `left` m left of the launch point."""
+        self.fwd, self.left = fwd, left
+        if detect is not None:
+            self.detect = detect
+        if miss is not None:
+            self.miss = miss
+
+    def truth(self) -> dict[str, Any]:
+        """Where the child is (launch and takeoff frames) and its true bbox in the camera
+        (None out of view), e.g. for a detector on the robot side in tests."""
+        x, y = self._frame_xy()
+        bbox = self.observe()
+        return {
+            "fwd": self.fwd,
+            "left": self.left,
+            "x": round(x, 3),
+            "y": round(y, 3),
+            "detect": self.detect,
+            "miss": self.miss,
+            "in_view": bbox is not None,
+            "bbox": None if bbox is None else [round(v, 4) for v in bbox],
+            "reports": self.reports,
+        }
+
+    def observe(self) -> tuple[float, float, float, float] | None:
+        """The child's true bbox in the camera now, None when it is out of view."""
+        if not self.drone.telemetry().in_flight or self.link.video_cut():
+            return None
+        truth = self.link.truth()
+        x, y = self._frame_xy()
+        heading = math.radians(truth["heading_deg"])
+        dx, dy = x - truth["x"], y - truth["y"]
+        fwd = dx * math.cos(heading) + dy * math.sin(heading)
+        right = -dx * math.sin(heading) + dy * math.cos(heading)
+        down = truth["alt"] - SIM_CHILD_HEIGHT_M
+        return project_box(fwd, right, down, self._tilt_deg(), SIM_CHILD_SIZE_M)
+
+    def _frame_xy(self) -> tuple[float, float]:
+        return self.link.frame_point(self.fwd, -self.left)  # world y is to the right
+
+    def _tilt_deg(self) -> float:
+        tilt = self.drone.camera_tilt()  # the sim has no gimbal: the estimate is the truth
+        return tilt.deg if tilt.deg is not None else (tilt.low_deg + tilt.high_deg) / 2
+
+    def _run(self) -> None:
+        while not self._stop.wait(DETECT_PERIOD_S):
+            frame_time = time.time()
+            bbox = self.observe() if self.detect else None
+            if bbox is None or self._random.random() < self.miss:
+                continue
+            noise = self._random.gauss(0, DETECT_NOISE), self._random.gauss(0, DETECT_NOISE)
+            bbox = (bbox[0] + noise[0], bbox[1] + noise[1], bbox[2] + noise[0], bbox[3] + noise[1])
+            time.sleep(DETECT_LATENCY_S)
+            self.reports += 1
+            self.report(
+                frame_time, tuple(round(v, 4) for v in bbox), DETECT_CONFIDENCE, DETECT_LABEL
+            )
 
 
 def connect_sim(
