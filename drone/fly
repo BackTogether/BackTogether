@@ -2,8 +2,8 @@
 # Start the drone web app with Bluetooth; open http://127.0.0.1:8077/ in one browser tab.
 # No auto-open: macOS can hand the URL to a hidden headless Chrome, which then counts as
 # an extra tab and posts neutral sticks.
-# Usage: drone/fly [max stick speed 0-100, default 60] [ignored] [extra drone.sdk serve args] [more
-# options of `python -m drone.sdk serve`, e.g. --bind 0.0.0.0 so the robot reaches the API]
+# Usage: drone/fly [max stick speed 0-100, default 60] [unused, kept for old commands]
+#                  [options of `python -m drone.sdk serve`, e.g. --fence 15, --bind 0.0.0.0]
 # It serves the hoverctl web page plus the SDK's HTTP API (drone/sdk/API.md) and compass.
 # Plain web page without the SDK: uv run --with bleak python -m drone.hoverctl web ...
 set -euo pipefail
