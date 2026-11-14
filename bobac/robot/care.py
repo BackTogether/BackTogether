@@ -1,6 +1,6 @@
 """What the robot does once it reaches the lost child the drone found.
 
-    greet the child by name -> photo -> video call opens on the robot's screen
+    greet the child by name -> video call opens on the robot's screen
     -> tell the parents (one "join the video call" button)
     -> keep the child company until stop() is called (the robot cannot see the call end).
 
@@ -14,8 +14,6 @@ the screen buttons, `stop()` to abort, `snapshot()` for /status.
 
 import json
 import logging
-import os
-import tempfile
 import threading
 import time
 import urllib.parse
@@ -71,7 +69,6 @@ class CareSession:
         found_time,
         speech,
         telegram,
-        take_photo,
         buzz,
         listen=None,
         call_base="",
@@ -79,8 +76,8 @@ class CareSession:
         call_members=None,
     ):
         """`child`: profile dict (config/child.json). `speech`: module with say / say_text /
-        play_file. `telegram`: caregiver.Telegram (one chat per parent) or None. `take_photo(path)
-        -> bool` and `buzz() -> None` reach the robot hardware. `listen`: module with wait_word
+        play_file. `telegram`: caregiver.Telegram (one chat per parent) or None. `buzz() -> None`
+        reaches the robot hardware. `listen`: module with wait_word
         (listen.py) to also accept spoken answers, or None. `call_base`: Jitsi server URL.
         `show_call(url or None)`: opens / closes the video call on the robot screen, or None.
         `call_members() -> int or None`: people in that call counting the robot (None: unknown)."""
@@ -91,7 +88,6 @@ class CareSession:
         self._found_time = found_time
         self._speech = speech
         self._telegram = telegram
-        self._take_photo = take_photo
         self._buzz = buzz
         self._listen = listen
         self._show_call = show_call
@@ -133,12 +129,10 @@ class CareSession:
             if self._stopped.is_set():
                 return
             self._comfort_after_answers()
-        # photo before the call (the call takes the camera). The robot enters the call first and
-        # the parents are told after, so a parent who joins at once finds the child already there
-        photo_path = os.path.join(tempfile.gettempdir(), "bobac_care_photo.jpg")
-        has_photo = self._take_photo(photo_path)
+        # the robot enters the call first and the parents are told after, so a parent who joins
+        # at once finds the child already there
         self._start_call()
-        self._tell_parents(photo_path if has_photo else None)
+        self._tell_parents()
         self._wait_for_parent()
 
     @property
@@ -219,7 +213,7 @@ class CareSession:
             self._speech.say("all_good")
         self._speech.say("stay_here")
 
-    def _tell_parents(self, photo_path) -> None:
+    def _tell_parents(self) -> None:
         if not self._telegram:
             self._note("no parent channel configured: nobody was told")
             return
@@ -235,7 +229,7 @@ class CareSession:
         buttons = (("📹 Join the video call", self._call_url),)
         for chat_id in self._telegram.chat_ids:
             for attempt in range(1, NOTIFY_ATTEMPTS + 1):
-                if self._telegram.send(chat_id, text, buttons=buttons, photo_path=photo_path):
+                if self._telegram.send(chat_id, text, buttons=buttons):
                     self._note(f"parent message sent (attempt {attempt})")
                     break
                 self._note(f"parent message FAILED (attempt {attempt} of {NOTIFY_ATTEMPTS})")

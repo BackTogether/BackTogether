@@ -24,7 +24,6 @@ DEFAULT_URL = "https://ntfy.sh"
 DEFAULT_NAME = "Your family"
 REQUEST_TIMEOUT_S = 15
 MAX_BUTTONS = 3  # ntfy shows at most 3 actions per notification
-PHOTO_TITLE = "Photo from the robot"
 
 log = logging.getLogger("ntfy")
 
@@ -40,7 +39,7 @@ class Ntfy:
         self.skip_backlog()
         self._sent_ids = set()  # our own messages, to tell them from what parents write
 
-    def send(self, chat_id: str, text: str, buttons=(), photo_path=None) -> bool:
+    def send(self, chat_id: str, text: str, buttons=()) -> bool:
         """Push a notification. `buttons` is a list of (label, answer or https URL): a URL opens
         it (e.g. the video call), anything else posts that answer back to the robot."""
         if len(buttons) > MAX_BUTTONS:
@@ -54,9 +53,6 @@ class Ntfy:
         reply = self._request(self._base, json.dumps(message).encode(), "application/json")
         if reply:
             self._sent_ids.add(reply.get("id"))
-        # the photo goes after: its upload is slow and must never hold back the call button
-        if reply and photo_path and not self._send_photo(photo_path):
-            log.warning("photo not sent")
         return reply is not None
 
     def skip_backlog(self) -> None:
@@ -88,16 +84,6 @@ class Ntfy:
         return {"action": "http", "label": label, "url": url, "method": "POST", "body": data,
                 "clear": True}  # fmt: skip
 
-    def _send_photo(self, path: str) -> bool:
-        with open(path, "rb") as photo:
-            content = photo.read()
-        headers = {"Filename": os.path.basename(path), "Title": PHOTO_TITLE}
-        url = f"{self._base}/{self._topic}"
-        reply = self._request(url, content, "image/jpeg", method="PUT", headers=headers)
-        if reply:
-            self._sent_ids.add(reply.get("id"))
-        return reply is not None
-
     def _poll(self, topic: str) -> list:
         url = f"{self._base}/{topic}/json?poll=1&since={self._since[topic]}"
         try:
@@ -112,10 +98,9 @@ class Ntfy:
             self._since[topic] = messages[-1]["id"]  # next poll starts after this message
         return messages
 
-    def _request(self, url, body: bytes, content_type: str, method="POST", headers=None):
-        all_headers = {"Content-Type": content_type}
-        all_headers.update(headers or {})
-        request = urllib.request.Request(url, data=body, headers=all_headers, method=method)
+    def _request(self, url, body: bytes, content_type: str, method="POST"):
+        headers = {"Content-Type": content_type}
+        request = urllib.request.Request(url, data=body, headers=headers, method=method)
         try:
             with urllib.request.urlopen(request, timeout=REQUEST_TIMEOUT_S) as response:
                 return json.load(response)

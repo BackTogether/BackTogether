@@ -1,4 +1,4 @@
-"""Talk to the parents through a Telegram bot: alerts with photo and buttons, and their replies.
+"""Talk to the parents through a Telegram bot: alerts with buttons, and their replies.
 
 Standard library only (runs on the robot, Python 3.8). Configuration comes from the environment,
 never from the repo:
@@ -13,11 +13,9 @@ import logging
 import os
 import urllib.error
 import urllib.request
-import uuid
 
 DEFAULT_API_URL = "https://api.telegram.org"
 REQUEST_TIMEOUT_S = 15
-MULTIPART_BOUNDARY_PREFIX = "----bobac"
 
 log = logging.getLogger("caregiver")
 
@@ -29,21 +27,15 @@ class Telegram:
         self.chat_ids = list(chat_ids)
         self._next_update_id = None
 
-    def send(self, chat_id: str, text: str, buttons=(), photo_path=None) -> bool:
+    def send(self, chat_id: str, text: str, buttons=()) -> bool:
         """Send a message; `buttons` is a list of (label, callback_data or https URL), one per
         row. A URL becomes a link button (e.g. a video call), anything else a reply button."""
         fields = {"chat_id": chat_id}
         if buttons:
             rows = [[_button(label, data)] for label, data in buttons]
             fields["reply_markup"] = json.dumps({"inline_keyboard": rows})
-        if photo_path:
-            fields["caption"] = text
-            with open(photo_path, "rb") as photo:
-                reply = self._call("sendPhoto", fields, photo=photo.read())
-        else:
-            fields["text"] = text
-            reply = self._call("sendMessage", fields)
-        return reply is not None
+        fields["text"] = text
+        return self._call("sendMessage", fields) is not None
 
     def skip_backlog(self) -> None:
         """Ignore whatever was sent to the bot before now."""
@@ -106,15 +98,11 @@ class Telegram:
             return None
         return event
 
-    def _call(self, method: str, fields: dict, photo=None, timeout_s: float = REQUEST_TIMEOUT_S):
+    def _call(self, method: str, fields: dict, timeout_s: float = REQUEST_TIMEOUT_S):
         """POST to the Bot API; returns the `result` value, or None on any failure."""
         url = f"{self._base}/{method}"
-        if photo is None:
-            body = json.dumps(fields).encode()
-            content_type = "application/json"
-        else:
-            body, content_type = _multipart(fields, photo)
-        request = urllib.request.Request(url, data=body, headers={"Content-Type": content_type})
+        headers = {"Content-Type": "application/json"}
+        request = urllib.request.Request(url, data=json.dumps(fields).encode(), headers=headers)
         try:
             with urllib.request.urlopen(request, timeout=timeout_s) as response:
                 reply = json.load(response)
@@ -131,23 +119,6 @@ def _button(label: str, data: str) -> dict:
     if data.startswith("https://"):
         return {"text": label, "url": data}
     return {"text": label, "callback_data": data}
-
-
-def _multipart(fields: dict, photo: bytes):
-    boundary = MULTIPART_BOUNDARY_PREFIX + uuid.uuid4().hex
-    parts = []
-    for name, value in fields.items():
-        header = f'--{boundary}\r\nContent-Disposition: form-data; name="{name}"\r\n\r\n'
-        parts.append(f"{header}{value}\r\n".encode())
-    photo_header = (
-        f"--{boundary}\r\n"
-        'Content-Disposition: form-data; name="photo"; filename="photo.jpg"\r\n'
-        "Content-Type: image/jpeg\r\n\r\n"
-    )
-    parts.append(photo_header.encode())
-    parts.append(photo)
-    parts.append(f"\r\n--{boundary}--\r\n".encode())
-    return b"".join(parts), "multipart/form-data; boundary=" + boundary
 
 
 def from_environment():

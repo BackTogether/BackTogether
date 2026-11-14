@@ -45,8 +45,6 @@ DEFAULT_PORT = 8000
 HERE = Path(__file__).resolve().parent
 UI_DIR = HERE / "ui"
 PROFILE_PATH = HERE.parent / "config" / "child.json"
-HEAD_CAMERA_DEVICE = "/dev/head_camera"
-CAMERA_WARMUP_FRAMES = 5  # the first frames of a USB camera are dark
 BUZZER_TIMEOUT_S = 5
 CALL_PROFILE_DIR = Path.home() / "leuk" / "call-firefox"
 CALL_LOG_PATH = Path.home() / "leuk" / "call-firefox.log"
@@ -79,27 +77,6 @@ CALL_FIREFOX_PREFS = (
 IDLE_STATUS = {"state": "idle", "answer": None, "updated_at": 0.0, "care": None}
 
 log = logging.getLogger("care_server")
-
-
-def take_photo(path: str) -> bool:
-    """Save one head-camera frame. False if OpenCV or the camera is not available (e.g. the
-    camera is already open in a ROS node)."""
-    try:
-        import cv2  # only the robot needs it; keeps the laptop run dependency-free
-    except ImportError:
-        log.warning("OpenCV not installed: no photo")
-        return False
-    camera = cv2.VideoCapture(HEAD_CAMERA_DEVICE)
-    try:
-        frame = None
-        for _ in range(CAMERA_WARMUP_FRAMES):
-            grabbed, frame = camera.read()
-            if not grabbed:
-                log.warning("could not read %s: no photo", HEAD_CAMERA_DEVICE)
-                return False
-        return bool(cv2.imwrite(path, frame))
-    finally:
-        camera.release()
 
 
 def buzz() -> None:
@@ -228,7 +205,6 @@ class CareServer(ThreadingHTTPServer):
                 found_time,
                 speech,
                 self.telegram,
-                take_photo,
                 buzz,
                 self.ears,
                 self.call_base,

@@ -74,7 +74,6 @@ def main() -> None:
         ),
         "lying": write_video(folder / "lying.avi", [lying] * VIDEO_FRAMES),
     }
-    photo_path = str(folder / "photo.jpg")
     checks = [
         ("is_standing, person standing", "still", responsiveness.is_standing, True),
         ("is_standing, person upside down", "lying", responsiveness.is_standing, False),
@@ -82,7 +81,6 @@ def main() -> None:
         ("is_moving, only camera noise", "noise", lambda: responsiveness.is_moving(CHECK_S), False),
         ("is_moving, person swaying", "moving", lambda: responsiveness.is_moving(CHECK_S), True),
         ("hand_raised, arms down", "still", lambda: responsiveness.hand_raised(CHECK_S), False),
-        ("take_photo", "still", lambda: responsiveness.take_photo(photo_path), True),
     ]
     failures = 0
     for name, video, check, expected in checks:
@@ -90,7 +88,7 @@ def main() -> None:
         answer = check()
         failures += answer != expected
         print(f"{'ok  ' if answer == expected else 'FAIL'} {name}: {answer} (expected {expected})")
-    print("cropped photo and videos in", folder)
+    print("videos in", folder)
     sys.exit(1 if failures else 0)
 
 

@@ -11,7 +11,6 @@ Try it on the robot, or on a laptop with a webcam or a recorded video:
     python3 responsiveness.py hand --seconds 8        # "raise your hand if you can hear me"
     python3 responsiveness.py moving --seconds 3
     python3 responsiveness.py standing
-    python3 responsiveness.py photo --path out.jpg
     python3 responsiveness.py standing --camera 0            # laptop webcam
     python3 responsiveness.py moving --camera person.mp4     # recorded video
 
@@ -22,8 +21,8 @@ does not replace the robot's OpenCV and numpy, then add the small ones it really
     python3 -m pip install --user --no-deps mediapipe==0.10.9
     python3 -m pip install --user absl-py attrs flatbuffers "protobuf>=3.11,<4"
 
-Without MediaPipe, is_moving and take_photo still work on the whole image; hand_raised and
-is_standing answer False.
+Without MediaPipe, is_moving still works on the whole image; hand_raised and is_standing
+answer False.
 """
 
 import argparse
@@ -52,8 +51,6 @@ MOTION_PIXEL_CHANGE = 25  # grey levels (0-255) for a pixel to count as changed
 MOTION_AREA = 0.01  # fraction of the body area that must change in one comparison
 MOTION_SAMPLES = 2  # comparisons that must show movement
 MOTION_BOX_MARGIN = 0.15
-PHOTO_LOOK_S = 1.0
-PHOTO_MARGIN = 0.25
 # MediaPipe pose landmark indexes
 LEFT_SHOULDER, RIGHT_SHOULDER = 11, 12
 LEFT_WRIST, RIGHT_WRIST = 15, 16
@@ -293,28 +290,12 @@ def is_standing() -> bool:
     return seen > 0 and upright > seen / 2.0
 
 
-def take_photo(path: str) -> bool:
-    """Save the sharpest frame of a short look, cropped around the person (the whole frame if
-    nobody is seen). Same signature as the take_photo the care flow expects."""
-    best = None
-    best_sharpness = -1.0
-    for _, frame in _frames_for(PHOTO_LOOK_S):
-        sharpness = cv2.Laplacian(cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY), cv2.CV_64F).var()
-        if sharpness > best_sharpness:
-            best, best_sharpness = frame, sharpness
-    if best is None:
-        return False
-    left, top, right, bottom = _person_box(_find_person(best), best, PHOTO_MARGIN)
-    return bool(cv2.imwrite(path, best[top:bottom, left:right]))
-
-
 def main() -> None:
     global camera
     parser = argparse.ArgumentParser(description="responsiveness checks on the head camera")
-    parser.add_argument("check", choices=["hand", "moving", "standing", "photo"])
+    parser.add_argument("check", choices=["hand", "moving", "standing"])
     parser.add_argument("--camera", default=HEAD_CAMERA_DEVICE, help="device, index or video")
     parser.add_argument("--seconds", type=float, default=5.0, help="for hand and moving")
-    parser.add_argument("--path", default="photo.jpg", help="for photo")
     args = parser.parse_args()
     logging.basicConfig(level=logging.INFO, format="%(name)s: %(message)s")
     camera = int(args.camera) if args.camera.isdigit() else args.camera
@@ -322,7 +303,6 @@ def main() -> None:
         "hand": lambda: hand_raised(args.seconds),
         "moving": lambda: is_moving(args.seconds),
         "standing": is_standing,
-        "photo": lambda: take_photo(args.path),
     }
     print(args.check, "->", checks[args.check]())
 
