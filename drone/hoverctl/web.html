@@ -675,6 +675,10 @@ function renderDrone(state) {
     element.hidden = !present;
   }
   $("d-manual").classList.toggle("off", !present);
+  // The Wi-Fi starts by itself on every Bluetooth connect; the form is only a fallback.
+  const wifi = present ? drone.wifi : null;
+  $("d-wifi").hidden = !wifi || wifi.state === "on" || wifi.state === "pending";
+  if (wifi && wifi.password && !$("d-wifi-pw").value) $("d-wifi-pw").value = wifi.password;
   $("d-wifi-note").textContent = [wifiText(present ? drone.wifi : null),
     announceText(present ? drone.app_announced : null)].filter(Boolean).join(" · ");
   autoStartVideo(state);

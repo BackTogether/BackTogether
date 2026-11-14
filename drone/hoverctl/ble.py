@@ -133,7 +133,7 @@ class DroneLink:
         now = time.time()
         with self._lock:
             values = dict(self._values)
-            wifi = dict(self._wifi)
+            wifi = {**self._wifi, "password": self._wifi_password}  # local UI only
             app_announced = dict(self._app_announced)
             manual_entry = {
                 "session": self._manual_session,
