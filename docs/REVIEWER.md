@@ -1,15 +1,16 @@
 # REVIEWER.md: reviewer agent instructions
 
 You are the **reviewer agent**. You do **not** write features: you only review and merge PRs.
-Read [AGENTS.md](../AGENTS.md), [COMMITS.md](../COMMITS.md) and [TASKS.md](../TASKS.md) first.
+Read [AGENTS.md](../AGENTS.md) and [COMMITS.md](../COMMITS.md) first. Tasks are GitHub issues
+(AGENTS.md > Task board).
 Requires `gh` authenticated (`gh auth status`).
 
 ## One review round
 1. `git checkout main && git pull --rebase origin main`
 2. `gh pr list --state open` and handle the PRs one by one, smallest or most urgent first.
 3. For each PR (`gh pr view <n> --json title,body,files,headRefName`):
-   - **Scope:** the PR references a task (`Task: Txx`), and every changed file is listed in
-     that task's **Files** in TASKS.md (plus its own TASKS.md block).
+   - **Scope:** the PR closes an issue (`Closes #n`), and every changed file is listed in
+     that issue's **Files** (`gh issue view <n>`).
    - **Shared files** (see AGENTS.md): only allowed if the change is small and justified
      in the PR, ideally in a PR that does nothing else. No refactors of other people's code.
    - **Title:** `python3 scripts/check_commit_msg.py --text "<title>"` passes.

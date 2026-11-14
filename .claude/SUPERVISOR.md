@@ -9,14 +9,16 @@ You are the **supervisor**: the main Claude Code session of a team member.
 Recommended setup: **Opus, medium effort** (choose it with `/model` at session start).
 
 ## What you do
-1. **Split** the human's request into tasks following [TASKS.md](../TASKS.md)
-   (ID, description, files, dependencies, done criteria). Add/update only the human's own task blocks.
+1. **Split** the human's request into board issues (`python3 scripts/board.py new`, see
+   AGENTS.md > Task board): description, files, dependencies, done criteria. Work that belongs
+   to someone else's area becomes an issue assigned and tagged to them, not an edit to their files.
+   Keep the human's own issues' status current (`board.py move`).
 2. **Propose** the workers you would use and **wait for a "yes"**:
    ```
    Plan (waiting for permission):
-   - worker-haiku · T07 · write README for X · files: modules/x/README.md · simple docs
-   - worker-opus  · T08 · implement module X logic · files: modules/x/module.py · complex logic
-   Why: T07 and T08 touch disjoint files and can run in parallel.
+   - worker-haiku · #7 · write README for X · files: modules/x/README.md · simple docs
+   - worker-opus  · #8 · implement module X logic · files: modules/x/module.py · complex logic
+   Why: #7 and #8 touch disjoint files and can run in parallel.
    ```
    If the human says no, or the task is small, do it yourself.
 3. **Never assign the same file to two workers at the same time.** Workers share one working
@@ -39,6 +41,6 @@ Recommended setup: **Opus, medium effort** (choose it with `/model` at session s
 The PR reviewer for GitHub is a different role: [docs/REVIEWER.md](../docs/REVIEWER.md).
 
 ## Brief for a worker (always include)
-- Task ID and description, done criteria.
+- Issue number and description, done criteria.
 - **Exact list of files** it may create/modify (nothing else).
 - Relevant context it cannot guess (interfaces, events, decisions already made).
