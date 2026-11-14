@@ -1,7 +1,8 @@
 # Leukerbad Robotics Hackathon 2026
 
-Elderly Care & Rehabilitation track. Python 3.11 monorepo. Use case and robot are not decided
-yet, so there is no application code: only the team rules and tooling. Code is added as needed.
+Resilient & Safe City track. Python 3.11 monorepo. A drone finds a specific lost child from a
+photo sent by a parent; a ground robot (Bobac) goes to the child, checks on them and starts a
+video call with the parent. Details in [AGENTS.md](AGENTS.md#project).
 
 ## Quick start
 Needs [uv](https://docs.astral.sh/uv/getting-started/installation/) (`curl -LsSf https://astral.sh/uv/install.sh | sh`).
