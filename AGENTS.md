@@ -9,10 +9,14 @@ Rules for every person and coding agent (Claude Code, Codex, ...) working on thi
 - Always `git commit -m "<type>(<scope>): <summary>"` with a single `-m`. A `commit-msg` hook and CI reject anything else.
 
 ## Project
-Leukerbad Robotics Hackathon 2026, track Elderly Care & Rehabilitation. Code deadline:
-**Mon 16 Nov, 12:00**, live demo with a real robot. Six people, each with an agent, in parallel.
-Use case and robot are **not decided yet**: there is no application code yet. Add folders
-and code only when a task needs them, following this planned layout:
+Leukerbad Robotics Hackathon 2026, track **Resilient & Safe City**. Code deadline:
+**Mon 16 Nov, 12:00**, live demo with real robots. Six people, each with an agent, in parallel.
+
+**Use case: finding a lost child.** A parent sends a photo of their child; the HoverAir X1
+drone searches the area and recognises that child in its video; the child's position goes to
+the Bobac ground robot, which drives there, asks the child how they are and whether they are
+hurt, tells the parents and opens a video call with them on its screen until they arrive.
+Add folders and code only when a task needs them, following this planned layout:
 
 ```
 interfaces/   shared message schemas + local event bus              (SHARED)

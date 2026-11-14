@@ -1,7 +1,7 @@
 [project]
 name = "leukerbad-hackathon"
 version = "0.1.0"
-description = "Leukerbad Robotics Hackathon 2026 - Elderly Care & Rehabilitation"
+description = "Leukerbad Robotics Hackathon 2026 - Resilient & Safe City: finding a lost child"
 readme = "README.md"
 requires-python = ">=3.11"
 dependencies = [

@@ -5,23 +5,28 @@ screen page works unchanged once the real bridge calls CareSession itself:
 
     GET  /ui/           screen page (bobac/robot/ui/)
     GET  /status        contract fields + "care" (extra details for the screen)
-    POST /care/start    {"zone": str, "fall_time": epoch seconds (optional)} -> the robot "arrived"
+    POST /care/start    {"zone": str, "found_time": epoch seconds (optional)} -> the robot
+                        reached the lost child in that zone
     POST /ui/answer     {"answer": "ok" | "help" | "yes" | "no"}
     POST /stop
 
 On the robot (system Python 3.8) or on a laptop:
 
     python3 care_server.py            # then open http://localhost:8000/ui/
-    curl -X POST localhost:8000/care/start -d '{"zone": "sofa"}'
+    curl -X POST localhost:8000/care/start -d '{"zone": "park"}'
 
-Caregiver alerts need TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_IDS (see caregiver.py). Spoken
-answers need Vosk and its model (see listen.py); without them only the buttons work.
+Messages to the parents go through ntfy if NTFY_TOPIC is set (no account needed, see
+ntfy_channel.py), else Telegram with TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_IDS (caregiver.py). Spoken
+answers need Vosk and its model (see listen.py); without them only the buttons work. The video
+call uses CALL_BASE_URL (a Jitsi server, default in care.py).
 """
 
 import argparse
+import contextlib
 import json
 import logging
 import mimetypes
+import os
 import shutil
 import subprocess
 import threading
@@ -32,15 +37,45 @@ from pathlib import Path
 import care
 import caregiver
 import listen
+import marionette
+import ntfy_channel
 import speech
 
 DEFAULT_PORT = 8000
 HERE = Path(__file__).resolve().parent
 UI_DIR = HERE / "ui"
-PROFILE_PATH = HERE.parent / "config" / "patient.json"
+PROFILE_PATH = HERE.parent / "config" / "child.json"
 HEAD_CAMERA_DEVICE = "/dev/head_camera"
 CAMERA_WARMUP_FRAMES = 5  # the first frames of a USB camera are dark
 BUZZER_TIMEOUT_S = 5
+CALL_PROFILE_DIR = Path.home() / "leuk" / "call-firefox"
+CALL_LOG_PATH = Path.home() / "leuk" / "call-firefox.log"
+CALL_PROFILE_LOCKS = ("lock", ".parentlock")  # left behind when Firefox is killed
+CALL_CLOSE_TIMEOUT_S = 3
+CALL_MARIONETTE_PORT = 2829  # localhost only: lets this program press Join in the call window
+CALL_JOIN_TIMEOUT_S = 300  # the call page can take minutes to load on the robot's connection
+CALL_JOIN_POLL_S = 1
+# Runs in the call page: press Join on the name screen once it can be pressed.
+CALL_JOIN_SCRIPT = """
+const page = window.wrappedJSObject || window;
+try { if (page.APP.conference.isJoined()) return "joined"; } catch (error) {}
+const join = document.querySelector('[data-testid="prejoin.joinMeeting"]');
+if (!join || join.disabled || join.getAttribute("aria-disabled") === "true") return "loading";
+join.click();
+return "pressed";
+"""
+# The call window must use the camera and microphone with nobody there to tap "Allow".
+CALL_FIREFOX_PREFS = (
+    'user_pref("media.navigator.permission.disabled", true);\n'
+    'user_pref("permissions.default.camera", 1);\n'
+    'user_pref("permissions.default.microphone", 1);\n'
+    'user_pref("media.autoplay.default", 0);\n'
+    f'user_pref("marionette.port", {CALL_MARIONETTE_PORT});\n'
+    # Firefox's default camera on the robot is the floor-level base camera: use the head one
+    'user_pref("media.video_loopback_dev", "A68-1600W: A68-1600W");\n'
+    'user_pref("browser.shell.checkDefaultBrowser", false);\n'
+    'user_pref("browser.sessionstore.resume_from_crash", false);\n'
+)
 IDLE_STATUS = {"state": "idle", "answer": None, "updated_at": 0.0, "care": None}
 
 log = logging.getLogger("care_server")
@@ -79,26 +114,118 @@ def buzz() -> None:
         log.warning("buzzer call timed out")
 
 
+class CallWindow:
+    """The video call, full screen on the robot display, in a Firefox of its own (Jitsi servers
+    do not allow being embedded in our page). Opens on top of the screen page, closes after."""
+
+    def __init__(self):
+        self._process = None
+        self._lock = threading.Lock()
+
+    def show(self, url) -> None:
+        with self._lock:
+            self._close()
+            if url:
+                self._open(url)
+
+    def _open(self, url: str) -> None:
+        if shutil.which("firefox") is None:
+            log.warning("firefox not installed: open the call yourself: %s", url)
+            return
+        self._free_profile()
+        CALL_PROFILE_DIR.mkdir(parents=True, exist_ok=True)
+        (CALL_PROFILE_DIR / "user.js").write_text(CALL_FIREFOX_PREFS)
+        env = dict(os.environ, DISPLAY=os.environ.get("DISPLAY", ":0"))
+        command = ["firefox", "--new-instance", "--marionette", "--profile", str(CALL_PROFILE_DIR)]
+        command += ["--kiosk", url]
+        # Firefox errors go to a file: when the window does not appear, the reason is there.
+        with open(str(CALL_LOG_PATH), "ab") as output:
+            self._process = subprocess.Popen(command, env=env, stdout=output, stderr=output)
+        log.info("video call window opened: %s (firefox log: %s)", url, CALL_LOG_PATH)
+        threading.Thread(target=self._press_join, args=(self._process,), daemon=True).start()
+
+    def _press_join(self, process) -> None:
+        """The call server only turns the camera and microphone on when Join is pressed on its
+        name screen (skipping that screen by URL joins muted, without camera), and a lost child
+        will not press it: do it for them, as soon as the page lets us."""
+        browser = marionette.Marionette(CALL_MARIONETTE_PORT)
+        deadline = time.time() + CALL_JOIN_TIMEOUT_S
+        pressed = False
+        try:
+            while process.poll() is None and time.time() < deadline:
+                try:
+                    state = browser.run_script(CALL_JOIN_SCRIPT)
+                except OSError:
+                    state = "starting"  # Firefox is not up yet
+                if state == "joined":
+                    log.info("call window: the robot is in the call")
+                    return
+                if state == "pressed" and not pressed:
+                    pressed = True
+                    log.info("call window: Join pressed")
+                time.sleep(CALL_JOIN_POLL_S)
+            if process.poll() is None:
+                log.warning("call window: not in the call after %d s", CALL_JOIN_TIMEOUT_S)
+        finally:
+            browser.close()
+
+    def _close(self) -> None:
+        if self._process and self._process.poll() is None:
+            self._process.terminate()
+            try:
+                self._process.wait(CALL_CLOSE_TIMEOUT_S)
+            except subprocess.TimeoutExpired:
+                self._process.kill()
+                self._process.wait()
+            log.info("video call window closed")
+        self._process = None
+
+    def _free_profile(self) -> None:
+        """A call Firefox left by an earlier run (server killed or restarted during a call) still
+        holds the camera, the microphone and the profile, and the new call would hang: end it."""
+        if shutil.which("pkill") is not None:
+            leftover = subprocess.run(
+                ["pkill", "-f", str(CALL_PROFILE_DIR)], check=False, stdout=subprocess.DEVNULL
+            )
+            if leftover.returncode == 0:
+                log.warning("closed a call window left open by an earlier run")
+                time.sleep(CALL_CLOSE_TIMEOUT_S)
+        for lock in CALL_PROFILE_LOCKS:
+            with contextlib.suppress(OSError):  # no stale lock: nothing to remove
+                (CALL_PROFILE_DIR / lock).unlink()
+
+
 class CareServer(ThreadingHTTPServer):
     daemon_threads = True
 
-    def __init__(self, address, profile, telegram, ears):
+    def __init__(self, address, profile, telegram, ears, call_base):
         super().__init__(address, Handler)
         self.profile = profile
         self.telegram = telegram
         self.ears = ears
+        self.call_base = call_base
+        self.call_window = CallWindow()
         self.session = None
         self.session_thread = None
         self.session_lock = threading.Lock()
 
-    def start_session(self, zone: str, fall_time: float) -> bool:
+    def start_session(self, zone: str, found_time: float) -> bool:
         with self.session_lock:
             if self.session_thread and self.session_thread.is_alive():
                 return False
             if self.telegram:
                 self.telegram.skip_backlog()
             self.session = care.CareSession(
-                self.profile, zone, fall_time, speech, self.telegram, take_photo, buzz, self.ears
+                self.profile,
+                zone,
+                found_time,
+                speech,
+                self.telegram,
+                take_photo,
+                buzz,
+                self.ears,
+                self.call_base,
+                self.call_window.show,
             )
             self.session_thread = threading.Thread(target=self.session.run, daemon=True)
             self.session_thread.start()
@@ -134,10 +261,10 @@ class Handler(BaseHTTPRequestHandler):
 
     def _start(self, body: dict) -> None:
         zone = body.get("zone")
-        fall_time = body.get("fall_time", time.time())
-        if not isinstance(zone, str) or not zone or not isinstance(fall_time, (int, float)):
-            self._send_json(400, {"error": "zone (str) required, fall_time must be a number"})
-        elif self.server.start_session(zone, float(fall_time)):
+        found_time = body.get("found_time", time.time())
+        if not isinstance(zone, str) or not zone or not isinstance(found_time, (int, float)):
+            self._send_json(400, {"error": "zone (str) required, found_time must be a number"})
+        elif self.server.start_session(zone, float(found_time)):
             self._send_json(202, {"accepted": True})
         else:
             self._send_json(409, {"error": "busy"})
@@ -157,7 +284,6 @@ class Handler(BaseHTTPRequestHandler):
             "state": care_status["state"],
             "place": care_status["care"]["zone"] if care_status["care"] else None,
             "person_found": session is not None,
-            "is_fallen": None,
             "answer": care_status["answer"],
             "battery_v": None,
             "estop_pressed": None,
@@ -214,12 +340,21 @@ def main() -> None:
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(name)s: %(message)s")
     profile = json.loads(PROFILE_PATH.read_text(encoding="utf-8"))
     ears = listen if listen.available() else None
-    server = CareServer(("0.0.0.0", args.port), profile, caregiver.from_environment(), ears)
+    call_base = os.environ.get("CALL_BASE_URL", "")
+    first_parent = profile["parents"][0]["name"].split()[0]
+    parents = ntfy_channel.from_environment(first_parent) or caregiver.from_environment()
+    log.info("parents are told through %s", type(parents).__name__ if parents else "nothing")
+    server = CareServer(("0.0.0.0", args.port), profile, parents, ears, call_base)
     log.info("care server on port %d, screen page at /ui/", args.port)
     try:
         server.serve_forever()
     except KeyboardInterrupt:
         log.info("bye")
+    finally:
+        # never leave the call window open: it would keep the camera and block the next call
+        if server.session:
+            server.session.stop()
+        server.call_window.show(None)
 
 
 if __name__ == "__main__":

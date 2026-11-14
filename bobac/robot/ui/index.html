@@ -3,137 +3,135 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Care robot</title>
+<title>Helper robot</title>
 <style>
   :root {
-    --ink: #14232e; --muted: #5b6b76; --page: #f3f6f8; --card: #ffffff; --line: #d5dde3;
-    --ok: #1f8a4c; --help: #c62f2f; --calm: #2a6f97; --alert-bg: #fdecec;
+    --ink: #2b3a55; --soft: #6b7a99; --sky: #dff1ff; --cream: #fff8ec; --card: #ffffffd9;
+    --mint: #5cc8a0; --mint-dark: #3fa983; --peach: #ff9a8b; --peach-dark: #f07b6a;
+    --sun: #ffd36e; --face: #8fd3ff; --face-dark: #5bb6ee;
   }
   * { box-sizing: border-box; }
   html, body { height: 100%; margin: 0; }
   body {
-    background: var(--page); color: var(--ink);
-    font: 22px/1.4 system-ui, "Segoe UI", Roboto, sans-serif;
-    display: flex; flex-direction: column;
+    color: var(--ink); overflow: hidden;
+    background: linear-gradient(180deg, var(--sky) 0%, var(--cream) 75%);
+    font: 600 26px/1.35 "Nunito", "Varela Round", "Quicksand", "Ubuntu", ui-rounded, system-ui, sans-serif;
+    display: flex; flex-direction: column; align-items: center; justify-content: center;
+    padding: 24px 32px; gap: 18px; text-align: center;
   }
-  header {
-    display: flex; justify-content: space-between; align-items: baseline; gap: 24px;
-    padding: 18px 32px; background: var(--card); border-bottom: 2px solid var(--line);
-  }
-  header h1 { margin: 0; font-size: 34px; }
-  header .side { color: var(--muted); font-variant-numeric: tabular-nums; text-align: right; }
-  body.escalated header { background: var(--alert-bg); border-color: var(--help); }
-  main { flex: 1; padding: 28px 32px; display: none; min-height: 0; }
-  body.idle #idle, body.asking #asking { display: flex; }
-  body.escalated #helping { display: grid; }
+  /* soft clouds drifting behind everything */
+  .cloud { position: fixed; width: 260px; height: 80px; background: #fff; border-radius: 80px; opacity: .7; z-index: -1; animation: drift 60s linear infinite; }
+  .cloud::before, .cloud::after { content: ""; position: absolute; background: #fff; border-radius: 50%; }
+  .cloud::before { width: 110px; height: 110px; left: 40px; top: -50px; }
+  .cloud::after { width: 80px; height: 80px; left: 130px; top: -30px; }
+  .c1 { top: 70px; left: -280px; } .c2 { top: 230px; left: -280px; animation-delay: -25s; transform: scale(.7); }
+  .c3 { bottom: 90px; left: -280px; animation-delay: -45s; transform: scale(.85); }
+  @keyframes drift { to { left: 110%; } }
 
-  #idle, #asking { flex-direction: column; align-items: center; justify-content: center; text-align: center; }
-  #idle .clock { font-size: 120px; font-weight: 600; font-variant-numeric: tabular-nums; }
-  #asking h2 { font-size: 72px; margin: 0 0 12px; text-wrap: balance; }
-  #asking p { color: var(--muted); font-size: 28px; margin: 0 0 40px; min-height: 1.4em; }
-  #buttons { display: flex; gap: 40px; flex-wrap: wrap; justify-content: center; }
+  /* the robot face */
+  .robot { width: 230px; height: 190px; position: relative; flex: none; animation: bob 4s ease-in-out infinite; }
+  .robot .antenna { position: absolute; left: 50%; top: -34px; width: 8px; height: 34px; margin-left: -4px; background: var(--face-dark); border-radius: 4px; }
+  .robot .antenna::after { content: ""; position: absolute; left: -10px; top: -22px; width: 28px; height: 28px; border-radius: 50%; background: var(--sun); box-shadow: 0 0 22px var(--sun); }
+  .robot .head { position: absolute; inset: 0; background: var(--face); border-radius: 70px; box-shadow: inset 0 -14px 0 var(--face-dark), 0 18px 40px #5bb6ee44; }
+  .robot .eye { position: absolute; top: 62px; width: 34px; height: 44px; background: var(--ink); border-radius: 50%; animation: blink 5s infinite; }
+  .robot .eye::after { content: ""; position: absolute; top: 8px; left: 8px; width: 11px; height: 11px; border-radius: 50%; background: #fff; }
+  .robot .eye.l { left: 54px; } .robot .eye.r { right: 54px; }
+  .robot .cheek { position: absolute; top: 110px; width: 34px; height: 18px; border-radius: 50%; background: var(--peach); opacity: .55; }
+  .robot .cheek.l { left: 26px; } .robot .cheek.r { right: 26px; }
+  .robot .mouth { position: absolute; left: 50%; top: 116px; width: 62px; height: 30px; margin-left: -31px; border: 7px solid var(--ink); border-top: 0; border-radius: 0 0 40px 40px; }
+  .robot.small { width: 150px; height: 124px; }
+  .robot.small .eye { top: 40px; width: 22px; height: 29px; } .robot.small .eye.l { left: 35px; } .robot.small .eye.r { right: 35px; }
+  .robot.small .eye::after { top: 5px; left: 5px; width: 7px; height: 7px; }
+  .robot.small .cheek { top: 72px; width: 22px; height: 12px; } .robot.small .cheek.l { left: 17px; } .robot.small .cheek.r { right: 17px; }
+  .robot.small .mouth { top: 76px; width: 40px; height: 20px; margin-left: -20px; border-width: 5px; }
+  .robot.small .antenna { top: -24px; height: 24px; } .robot.small .antenna::after { left: -7px; top: -16px; width: 20px; height: 20px; }
+  @keyframes bob { 50% { transform: translateY(-10px); } }
+  @keyframes blink { 0%, 92%, 100% { transform: scaleY(1); } 95% { transform: scaleY(.1); } }
+
+  h1 { margin: 0; font-size: 58px; line-height: 1.15; font-weight: 800; text-wrap: balance; }
+  .sub { margin: 0; color: var(--soft); font-size: 30px; min-height: 1.35em; text-wrap: balance; }
+  section { display: none; flex-direction: column; align-items: center; gap: 18px; }
+  body.idle #idle, body.asking #asking, body.call #call { display: flex; }
+
+  #buttons { display: flex; gap: 40px; margin-top: 12px; flex-wrap: wrap; justify-content: center; }
   #buttons button {
-    font: inherit; font-size: 48px; font-weight: 700; color: #fff; border: 0; border-radius: 28px;
-    min-width: 380px; padding: 56px 40px; cursor: pointer;
+    font: inherit; font-size: 46px; font-weight: 800; color: #fff; border: 0; border-radius: 48px;
+    min-width: 360px; padding: 34px 44px; cursor: pointer; display: flex; align-items: center;
+    gap: 18px; justify-content: center; box-shadow: 0 10px 0 var(--shadow), 0 18px 30px #0002;
   }
-  #buttons button.positive { background: var(--ok); }
-  #buttons button.negative { background: var(--help); }
-  #buttons button:active { transform: scale(0.97); }
+  #buttons button .emoji { font-size: 70px; line-height: 1; }
+  #buttons button.positive { background: var(--mint); --shadow: var(--mint-dark); }
+  #buttons button.negative { background: var(--peach); --shadow: var(--peach-dark); }
+  #buttons button:active { transform: translateY(8px); box-shadow: 0 2px 0 var(--shadow); }
 
-  #helping { grid-template-columns: 1.1fr 1fr; gap: 28px; align-items: start; }
-  .card { background: var(--card); border: 2px solid var(--line); border-radius: 18px; padding: 22px 26px; }
-  .card h3 { margin: 0 0 10px; font-size: 20px; letter-spacing: .06em; text-transform: uppercase; color: var(--muted); }
-  #help-status { font-size: 44px; font-weight: 700; text-wrap: balance; }
-  #countdown { font-size: 84px; line-height: 1.1; font-weight: 700; font-variant-numeric: tabular-nums; color: var(--calm); }
-  #breathing { display: none; flex-direction: column; align-items: center; padding: 56px 0 6px; }
-  #breathing.on { display: flex; }
-  #circle {
-    width: 120px; height: 120px; border-radius: 50%; background: var(--calm); opacity: .85;
-    transition: transform 6s ease-in-out;
-  }
-  #circle.in { transform: scale(1.6); transition-duration: 4s; }
-  #breath-word { margin-top: 48px; font-size: 40px; font-weight: 600; color: var(--calm); }
-  .bystander { border-color: var(--help); }
-  .bystander p { margin: 0 0 6px; font-size: 26px; font-weight: 600; }
-  .bystander .number { color: var(--help); }
-  dl { margin: 0; display: grid; grid-template-columns: max-content 1fr; gap: 6px 18px; }
-  dt { color: var(--muted); }
-  dd { margin: 0; font-weight: 600; }
-  .stack { display: grid; gap: 20px; }
-  @media (max-width: 900px) { #helping { grid-template-columns: 1fr; } #asking h2 { font-size: 44px; } }
-  @media (prefers-reduced-motion: reduce) { #circle { transition: none; } }
+  .bubble { background: var(--card); border-radius: 40px; padding: 18px 40px; box-shadow: 0 10px 30px #2b3a5514; }
+  #countdown { font-size: 96px; font-weight: 800; color: var(--face-dark); font-variant-numeric: tabular-nums; line-height: 1; }
+  #count { display: none; width: 220px; height: 220px; border-radius: 50%; background: var(--sun); color: var(--ink); font-size: 150px; font-weight: 800; line-height: 220px; box-shadow: 0 14px 0 #f2b84b; }
+  #count.on { display: block; animation: pop .5s ease-out; }
+  #count-fingers { font-size: 56px; letter-spacing: 6px; min-height: 1.2em; }
+  @keyframes pop { from { transform: scale(.6); } }
+  .dots span { display: inline-block; animation: hop 1.2s infinite; } .dots span:nth-child(2) { animation-delay: .2s; } .dots span:nth-child(3) { animation-delay: .4s; }
+  @keyframes hop { 50% { transform: translateY(-10px); } }
+
+  footer { position: fixed; bottom: 0; left: 0; right: 0; padding: 12px 24px; font-size: 20px; font-weight: 700;
+           color: var(--soft); background: #ffffffb3; display: none; }
+  body.call footer { display: block; }
+  footer b { color: var(--peach-dark); }
+  @media (prefers-reduced-motion: reduce) { *, *::before, *::after { animation: none !important; } }
 </style>
 </head>
 <body class="idle">
-<header>
-  <h1 id="title">Care robot</h1>
-  <div class="side"><span id="floor-time"></span> <span id="clock"></span></div>
-</header>
+<div class="cloud c1"></div><div class="cloud c2"></div><div class="cloud c3"></div>
 
-<main id="idle">
-  <div class="clock" id="big-clock"></div>
-  <p id="idle-note">Everything is fine.</p>
-</main>
+<div class="robot" id="robot" aria-hidden="true">
+  <div class="antenna"></div><div class="head"></div>
+  <div class="eye l"></div><div class="eye r"></div><div class="cheek l"></div><div class="cheek r"></div>
+  <div class="mouth"></div>
+</div>
 
-<main id="asking">
-  <h2 id="question"></h2>
-  <p id="hint"></p>
+<section id="idle">
+  <h1 id="idle-title">Hello! I'm a helper robot</h1>
+  <p class="sub" id="idle-note">I help children find their family.</p>
+</section>
+
+<section id="asking">
+  <h1 id="question"></h1>
+  <p class="sub" id="hint"></p>
   <div id="buttons"></div>
-</main>
+</section>
 
-<main id="helping">
-  <div class="stack">
-    <div class="card">
-      <div id="help-status"></div>
-      <div id="countdown"></div>
-      <div id="breathing"><div id="circle"></div><div id="breath-word"></div></div>
-    </div>
-    <div class="card" id="triage-card"><h3>What they told the robot</h3><dl id="triage"></dl></div>
-  </div>
-  <div class="stack">
-    <div class="card bystander">
-      <h3>If you are nearby</h3>
-      <p id="bystander-fall"></p>
-      <p>Do not lift them. Keep them warm and talk to them.</p>
-      <p>Emergency: call <span class="number" id="emergency-number"></span></p>
-    </div>
-    <div class="card"><h3>Emergency card</h3><dl id="profile"></dl></div>
-  </div>
-</main>
+<section id="call">
+  <h1 id="call-title"></h1>
+  <div class="bubble" id="call-status"><p class="sub" id="parent-status"></p><div id="countdown"></div></div>
+  <div id="count"></div>
+  <div id="count-fingers"></div>
+</section>
+
+<footer id="adults"></footer>
 
 <script>
 const POLL_MS = 1000;
 const BUTTONS = {
-  ok: ["I'm fine", "positive"], help: ["I need help", "negative"],
-  yes: ["Yes", "positive"], no: ["No", "negative"],
+  ok: ["😊", "I'm okay", "positive"], help: ["😟", "Not okay", "negative"],
+  yes: ["🤕", "Yes", "negative"], no: ["🙂", "No", "positive"],  // the yes/no question is "did you get hurt?"
 };
-const TRIAGE_LABELS = { hit_head: "Hit their head", in_pain: "In pain", can_move_legs: "Can move legs" };
 const $ = (id) => document.getElementById(id);
 let shownOptions = "";
 
-const clock = (epochS) => new Date(epochS * 1000).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
 const minSec = (seconds) => {
   const s = Math.max(0, Math.round(seconds));
   return String(Math.floor(s / 60)).padStart(2, "0") + ":" + String(s % 60).padStart(2, "0");
 };
 
-function fillList(dl, pairs) {
-  dl.replaceChildren();
-  for (const [term, value] of pairs) {
-    const dt = document.createElement("dt"); dt.textContent = term;
-    const dd = document.createElement("dd"); dd.textContent = value;
-    dl.append(dt, dd);
-  }
-}
-
 function showButtons(options) {
   const key = options.join(",");
-  if (key === shownOptions) return;  // do not rebuild under the user's finger
+  if (key === shownOptions) return;  // do not rebuild under the child's finger
   shownOptions = key;
   $("buttons").replaceChildren(...options.map((option) => {
-    const [label, kind] = BUTTONS[option];
+    const [emoji, label, kind] = BUTTONS[option];
     const button = document.createElement("button");
-    button.textContent = label; button.className = kind;
+    const icon = document.createElement("span"); icon.className = "emoji"; icon.textContent = emoji;
+    button.append(icon, label); button.className = kind;
     button.onclick = () => fetch("/ui/answer", {
       method: "POST", headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ answer: option }),
@@ -142,61 +140,60 @@ function showButtons(options) {
   }));
 }
 
+function showIdle(note) {
+  document.body.className = "idle";
+  $("robot").className = "robot";
+  $("idle-note").textContent = note;
+  shownOptions = ""; $("buttons").replaceChildren();
+}
+
 function render(status) {
   const care = status.care;
-  const now = Date.now() / 1000;
-  const nowText = new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
-  $("clock").textContent = nowText;
-  $("big-clock").textContent = nowText;
+  const inCall = care && status.state === "video_call";
+  const asking = care && !inCall && ["talking", "waiting_answer"].includes(status.state);
+  if (!inCall && !asking) return showIdle("I help children find their family.");
 
-  const escalated = status.state === "escalated" && care;
-  const asking = !escalated && care && ["talking", "waiting_answer"].includes(status.state);
-  document.body.className = escalated ? "escalated" : asking ? "asking" : "idle";
-  $("floor-time").textContent = care && (escalated || asking)
-    ? "Since the fall: " + minSec(now - care.fall_time) + " ·" : "";
-
-  if (asking || (escalated && care.question)) {
+  const child = care.child;
+  const first = child.name.split(" ")[0];
+  const parent = child.parents[0].called;
+  if (asking) {
     document.body.className = "asking";
-    $("title").textContent = care.profile.name.split(" ")[0] + ", I am here with you";
-    $("question").textContent = care.question || "Are you okay?";
-    $("hint").textContent = !care.options.length ? "Listen to the robot…"
-      : care.listening ? "You can also answer out loud." : "";
+    $("robot").className = "robot small";
+    $("question").textContent = care.question ? first + ", " + care.question.charAt(0).toLowerCase() + care.question.slice(1)
+                                              : "Hi " + first + "! I'm here with you";
+    $("hint").textContent = !care.options.length ? "Listen to me…"
+      : care.listening ? "You can tap a button or just say it" : "Tap a button";
     showButtons(care.options);
-  } else if (escalated) {
-    $("title").textContent = "Help is coming";
-    const eta = care.eta_at ? care.eta_at - now : null;
-    $("help-status").textContent = care.caregiver
-      ? (eta === null ? care.caregiver + " is getting help" : care.caregiver + " arrives in")
-      : (care.alerts_sent ? "Calling your family…" : "Staying with you");
-    $("countdown").textContent = eta === null ? "" : (eta > 0 ? minSec(eta) : "any moment");
-    $("breathing").className = care.breath ? "on" : "";
-    $("circle").className = care.breath === "in" ? "in" : "";
-    $("breath-word").textContent = care.breath === "in" ? "Breathe in" : care.breath === "out" ? "Breathe out" : "";
-    const answers = Object.entries(care.triage);
-    $("triage-card").style.display = answers.length ? "" : "none";
-    fillList($("triage"), answers.map(([key, value]) => [TRIAGE_LABELS[key] || key, value]));
-    const p = care.profile;
-    $("bystander-fall").textContent = p.name + " fell at " + clock(care.fall_time) + ".";
-    $("emergency-number").textContent = p.emergency_number;
-    fillList($("profile"), [
-      ["Name", p.name + ", " + p.age], ["Conditions", p.conditions.join(", ")],
-      ["Medication", p.medication.join(", ")], ["Allergies", p.allergies.join(", ")],
-      ...p.contacts.map((c) => [c.relation, c.name + " · " + c.phone]),
-    ]);
-  } else {
-    $("title").textContent = "Care robot";
-    $("idle-note").textContent = "Everything is fine.";
-    shownOptions = ""; $("buttons").replaceChildren();
+    return;
   }
+  document.body.className = "call";
+  $("robot").className = care.count ? "robot small" : "robot";
+  const eta = care.eta_at ? care.eta_at - Date.now() / 1000 : null;
+  $("call-title").textContent = care.count ? "Let's count together!"
+    : care.parent_coming ? "Your family is coming, " + first + "!" : "Calling your " + parent;
+  $("parent-status").replaceChildren();
+  if (care.parent_coming) {
+    $("parent-status").textContent = eta === null ? care.parent_coming + " is on the way" : care.parent_coming + " will be here in";
+  } else {
+    const dots = document.createElement("span"); dots.className = "dots";
+    dots.innerHTML = "<span>•</span><span>•</span><span>•</span>";
+    $("parent-status").append("Please wait with me ", dots);
+  }
+  $("countdown").textContent = eta === null ? "" : (eta > 0 ? minSec(eta) : "any moment");
+  $("call-status").style.display = care.count ? "none" : "";
+  $("count").className = care.count ? "on" : "";
+  if ($("count").textContent !== String(care.count || "")) $("count").textContent = care.count || "";
+  $("count-fingers").textContent = care.count ? "⭐".repeat(care.count) : "";  // one star per finger
+  $("adults").replaceChildren("For adults nearby: this child was lost and their family is on the way. Please stay with them. Emergency: ");
+  const number = document.createElement("b"); number.textContent = child.emergency_number;
+  $("adults").append(number);
 }
 
 async function poll() {
   try {
     render(await (await fetch("/status", { cache: "no-store" })).json());
   } catch (error) {
-    document.body.className = "idle";
-    $("title").textContent = "Care robot";
-    $("idle-note").textContent = "No connection to the robot.";
+    showIdle("I'm waking up…");
   }
   setTimeout(poll, POLL_MS);
 }

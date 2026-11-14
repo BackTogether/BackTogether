@@ -1,47 +1,59 @@
-"""What the robot does once it is next to the person who fell.
+"""What the robot does once it reaches the lost child the drone found.
 
-    ask "are you okay?" -> fine: tell the caregiver and close
-                        -> help / no answer: alert the caregiver (photo + buttons), triage
-                           questions, then stay: calm phrases, guided breathing, the caregiver's
-                           ETA, their text and voice messages, next contact if nobody replies,
-                           until the caregiver says they arrived. A report closes the episode.
+    greet the child by name -> photo -> video call opens on the robot's screen
+    -> tell the parents (one "join the video call" button)
+    -> keep the child company until stop() is called (the robot cannot see the call end).
+
+The two questions ("are you okay?", "did you get hurt?") are switched off with ASK_QUESTIONS:
+reaching the parent comes first, and a voice agent is meant to talk with the child meanwhile.
 
 Plain Python 3.8, no ROS: everything that touches hardware is passed in, so it runs on a laptop.
 The HTTP bridge (or care_server.py) owns one CareSession: `run()` in a thread, `answer()` from
 the screen buttons, `stop()` to abort, `snapshot()` for /status.
 """
 
+import json
 import logging
-import math
 import os
 import tempfile
 import threading
 import time
+import urllib.parse
+import uuid
 
+ASK_QUESTIONS = False  # ask "are you okay?" / "did you get hurt?" before calling the parents
+ROBOT_KEEPS_COMPANY = True  # calm phrases + counting game; turn off when a voice agent talks
+NOTIFY_ATTEMPTS = 3  # the parents must get the message: retry on a flaky connection
+NOTIFY_RETRY_S = 5
 ASK_ATTEMPTS = 2
 ANSWER_WAIT_S = 20
-TRIAGE_WAIT_S = 12
-POLL_S = 2  # how long one wait for caregiver events lasts
+HURT_WAIT_S = 15
+POLL_S = 2  # how long one wait for parent events lasts
 CALM_EVERY_S = 40
-NEXT_CONTACT_AFTER_S = 60  # nobody acknowledged: alert the next caregiver
-BREATH_CYCLES = 3
-BREATH_IN_S = 4
-BREATH_OUT_S = 6
+COUNT_TO = 5
+COUNT_STEP_S = 1.5  # one number every 1.5 s: slow enough for a child to follow
 MAX_SPOKEN_MESSAGE_CHARS = 300
 TIMELINE_IN_SNAPSHOT = 8
+# Public Jitsi server that lets anyone open a room without logging in (meet.jit.si no longer
+# does). The robot and the parent both open the same room URL.
+DEFAULT_CALL_BASE_URL = "https://meet.ffmuc.net"
+# Only for the robot's own window: hide everything that is not the parent's face, so it is calm
+# for a child. The "enter your name" screen is NOT skipped here: skipping it by URL makes the
+# server join with microphone and camera off. The call window presses its Join button instead.
+ROBOT_CALL_OPTIONS = (
+    "config.requireDisplayName=false",
+    "config.startWithAudioMuted=false",
+    "config.startWithVideoMuted=false",
+    "config.toolbarButtons=[]",
+    "config.hideConferenceSubject=true",
+    "config.hideConferenceTimer=true",
+    "config.disableInviteFunctions=true",
+    "config.disableReactions=true",
+    "config.notifications=[]",
+    "config.disableDeepLinking=true",
+    "config.enableWelcomePage=false",
+)
 
-TRIAGE_QUESTIONS = (
-    ("hit_head", "Did you hit your head?"),
-    ("in_pain", "Are you in pain?"),
-    ("can_move_legs", "Can you move your legs?"),
-)
-ETA_BUTTONS = (
-    ("I'm on my way (5 min)", "eta:5"),
-    ("I'm on my way (15 min)", "eta:15"),
-    ("I'm on my way (30 min)", "eta:30"),
-    ("I'm calling the emergency services", "emergency"),
-)
-ARRIVED_BUTTON = (("I have arrived", "arrived"),)
 # words that mean each screen answer when said out loud (only the current options are used)
 SPOKEN_ANSWERS = {
     "ok": ("yes", "fine", "okay", "good"),
@@ -49,24 +61,47 @@ SPOKEN_ANSWERS = {
     "yes": ("yes", "yeah"),
     "no": ("no", "nope"),
 }
+HOW_ARE_YOU = {"ok": "says they are okay", "help": "says they are NOT okay", None: "did not answer"}
+HURT = {"yes": "says they got hurt", "no": "says they are not hurt", None: "did not say if hurt"}
 
 log = logging.getLogger("care")
 
 
 class CareSession:
-    def __init__(self, profile, zone, fall_time, speech, telegram, take_photo, buzz, listen=None):
-        """`speech`: module with say / say_text / play_file. `telegram`: caregiver.Telegram or
-        None. `take_photo(path) -> bool` and `buzz() -> None` reach the robot hardware.
-        `listen`: module with wait_word (listen.py) to also accept spoken answers, or None."""
-        self._profile = profile
-        self._name = profile["name"].split()[0]
+    def __init__(
+        self,
+        child,
+        zone,
+        found_time,
+        speech,
+        telegram,
+        take_photo,
+        buzz,
+        listen=None,
+        call_base="",
+        show_call=None,
+    ):
+        """`child`: profile dict (config/child.json). `speech`: module with say / say_text /
+        play_file. `telegram`: caregiver.Telegram (one chat per parent) or None. `take_photo(path)
+        -> bool` and `buzz() -> None` reach the robot hardware. `listen`: module with wait_word
+        (listen.py) to also accept spoken answers, or None. `call_base`: Jitsi server URL.
+        `show_call(url or None)`: opens / closes the video call on the robot screen, or None."""
+        self._child = child
+        self._name = child["name"].split()[0]
+        self._parent = child["parents"][0]["called"]
         self._zone = zone
-        self._fall_time = fall_time
+        self._found_time = found_time
         self._speech = speech
         self._telegram = telegram
         self._take_photo = take_photo
         self._buzz = buzz
         self._listen = listen
+        self._show_call = show_call
+        room = f"find-{self._name.lower()}-{uuid.uuid4().hex[:8]}"
+        self._call_url = "{}/{}".format((call_base or DEFAULT_CALL_BASE_URL).rstrip("/"), room)
+        robot_name = urllib.parse.quote(json.dumps(self._name))
+        options = ROBOT_CALL_OPTIONS + ("userInfo.displayName=" + robot_name,)
+        self._robot_call_url = self._call_url + "#" + "&".join(options)
 
         self._lock = threading.Lock()
         self._stopped = threading.Event()
@@ -76,31 +111,35 @@ class CareSession:
         self._question = None
         self._options = []
         self._answer = None
-        self._first_answer = None
-        self._triage = {}
-        self._caregiver = None
-        self._eta_at = None
-        self._breath = None
-        self._alerted = []  # chat ids already alerted, in order
-        self._last_alert_at = 0.0
+        self._how_are_you = None
+        self._hurt = None
+        self._call_active = False
+        self._count = None
         self._timeline = []
 
     # ---------------------------------------------------------------- called by the bridge
 
     def run(self) -> None:
-        """The whole episode; blocks until it is closed or stop() is called."""
+        """The whole episode; blocks until stop() is called."""
         self._note(f"robot is with {self._name} in the {self._zone}")
-        self._speech.say_text(f"Hello {self._name}. I am your care robot. I am here.")
-        self._first_answer = self._ask_if_ok()
-        if self._stopped.is_set():
-            return
-        if self._first_answer == "ok":
-            self._close_fine()
-            return
-        self._escalate()
-        if self._first_answer == "help":
-            self._ask_triage()
-        self._stay_until_help_arrives()
+        self._speech.say_text(
+            f"Hi {self._name}! I am a friendly robot. Your {self._parent} sent me to find you."
+        )
+        if ASK_QUESTIONS:
+            self._how_are_you = self._ask_how_are_you()
+            if self._stopped.is_set():
+                return
+            self._hurt = self._ask_if_hurt()
+            if self._stopped.is_set():
+                return
+            self._comfort_after_answers()
+        # photo before the call (the call takes the camera). The robot enters the call first and
+        # the parents are told after, so a parent who joins at once finds the child already there
+        photo_path = os.path.join(tempfile.gettempdir(), "bobac_care_photo.jpg")
+        has_photo = self._take_photo(photo_path)
+        self._start_call()
+        self._tell_parents(photo_path if has_photo else None)
+        self._keep_company_until_stopped()
 
     def answer(self, value: str) -> bool:
         """A button was pressed on the screen. False if that answer is not expected now."""
@@ -114,33 +153,33 @@ class CareSession:
     def stop(self) -> None:
         self._stopped.set()
         self._answered.set()
+        self._end_call()
         self._set_state("idle")
 
     def snapshot(self) -> dict:
         with self._lock:
             return {
                 "state": self._state,
-                "answer": self._first_answer,
+                "answer": self._how_are_you,
                 "updated_at": self._updated_at,
                 "care": {
                     "zone": self._zone,
-                    "fall_time": self._fall_time,
+                    "found_time": self._found_time,
                     "question": self._question,
                     "options": list(self._options),
-                    "triage": dict(self._triage),
-                    "caregiver": self._caregiver,
-                    "eta_at": self._eta_at,
-                    "alerts_sent": len(self._alerted),
-                    "breath": self._breath,
+                    "how_are_you": self._how_are_you,
+                    "hurt": self._hurt,
+                    "call_url": self._call_url if self._call_active else None,
+                    "count": self._count,
                     "listening": self._listen is not None and bool(self._options),
                     "timeline": self._timeline[-TIMELINE_IN_SNAPSHOT:],
-                    "profile": self._profile,
+                    "child": self._child,
                 },
             }
 
     # ---------------------------------------------------------------- steps
 
-    def _ask_if_ok(self):
+    def _ask_how_are_you(self):
         for _ in range(ASK_ATTEMPTS):
             self._set_state("talking")
             self._speech.say("are_you_ok")
@@ -148,43 +187,66 @@ class CareSession:
             self._set_state("waiting_answer")
             answer = self._wait_answer("Are you okay?", ("ok", "help"), ANSWER_WAIT_S)
             if answer or self._stopped.is_set():
-                self._note(f"answered: {answer}")
+                self._note(f"are you okay? -> {answer}")
                 return answer
-        self._note(f"no answer after {ASK_ATTEMPTS} attempts")
+        self._note(f"no answer to 'are you okay?' after {ASK_ATTEMPTS} attempts")
         return None
 
-    def _close_fine(self) -> None:
+    def _ask_if_hurt(self):
         self._set_state("talking")
-        self._speech.say("all_good")
-        self._note("says they are fine: closed")
-        self._tell_all_contacts(
-            f"ℹ️ {self._name} fell in the {self._zone} at {_clock(self._fall_time)} "
-            f"but says they are fine. Please check on them.\n\n{self._report()}"
+        self._speech.say("did_you_get_hurt")
+        self._set_state("waiting_answer")
+        answer = self._wait_answer("Did you get hurt?", ("yes", "no"), HURT_WAIT_S)
+        self._note(f"did you get hurt? -> {answer or 'no answer'}")
+        return answer
+
+    def _comfort_after_answers(self) -> None:
+        self._set_state("talking")
+        if self._hurt == "yes":
+            self._speech.say("sorry_hurt")
+        elif self._how_are_you is None and self._hurt is None:
+            # a silent child may be scared or unwell: get the attention of adults nearby
+            self._buzz()
+            self._note("child did not answer: buzzer to call adults nearby")
+        else:
+            self._speech.say("all_good")
+        self._speech.say("stay_here")
+
+    def _tell_parents(self, photo_path) -> None:
+        if not self._telegram:
+            self._note("no parent channel configured: nobody was told")
+            return
+        text = (
+            f"✅ We found {self._name} in the {self._zone} at {_clock(self._found_time)}. "
+            "The robot is with them."
         )
-        self._set_state("idle")
+        if ASK_QUESTIONS:
+            text += f" {self._name} {HOW_ARE_YOU[self._how_are_you]} and {HURT[self._hurt]}."
+            if self._hurt == "yes":
+                text += "\n🚑 Consider calling {}.".format(self._child["emergency_number"])
+        text += "\n\nJoin the video call to see and talk to them now."
+        buttons = (("📹 Join the video call", self._call_url),)
+        for chat_id in self._telegram.chat_ids:
+            for attempt in range(1, NOTIFY_ATTEMPTS + 1):
+                if self._telegram.send(chat_id, text, buttons=buttons, photo_path=photo_path):
+                    self._note(f"parent message sent (attempt {attempt})")
+                    break
+                self._note(f"parent message FAILED (attempt {attempt} of {NOTIFY_ATTEMPTS})")
+                if self._stopped.wait(NOTIFY_RETRY_S):
+                    return
 
-    def _escalate(self) -> None:
-        self._set_state("escalated")
-        self._speech.say("calling_help" if self._first_answer == "help" else "no_answer")
-        self._buzz()
-        self._alert_next_contact()
-        self._speech.say("do_not_get_up")
+    def _start_call(self) -> None:
+        with self._lock:
+            self._call_active = True
+        if self._show_call:
+            self._show_call(self._robot_call_url)
+        self._set_state("video_call")
+        self._note("video call open on the screen: " + self._call_url)
+        self._speech.say_text(f"I am calling your {self._parent}. Look at my screen!")
 
-    def _ask_triage(self) -> None:
-        for key, question in TRIAGE_QUESTIONS:
-            if self._stopped.is_set():
-                return
-            self._speech.say_text(question + " Say or press yes or no.")
-            answer = self._wait_answer(question, ("yes", "no"), TRIAGE_WAIT_S)
-            with self._lock:
-                self._triage[key] = answer or "no answer"
-            self._note("{} -> {}".format(question, answer or "no answer"))
-        lines = [f"{q} {self._triage[k]}" for k, q in TRIAGE_QUESTIONS]
-        self._tell_alerted("📝 {} answered:\n{}".format(self._name, "\n".join(lines)))
-
-    def _stay_until_help_arrives(self) -> None:
+    def _keep_company_until_stopped(self) -> None:
         next_calm_at = time.time() + CALM_EVERY_S
-        breathe_next = False
+        count_next = False
         while not self._stopped.is_set():
             if self._telegram:
                 events = self._telegram.events(POLL_S)
@@ -192,85 +254,26 @@ class CareSession:
                 self._stopped.wait(POLL_S)
                 events = []
             for event in events:
-                if self._handle_caregiver(event) == "arrived":
-                    self._close_arrived()
-                    return
-            now = time.time()
-            nobody_replied = self._caregiver is None
-            if nobody_replied and now - self._last_alert_at > NEXT_CONTACT_AFTER_S:
-                self._alert_next_contact()
-            if now >= next_calm_at:
-                if breathe_next:
-                    self._guide_breathing()
+                self._play_parent_message(event)
+            if ROBOT_KEEPS_COMPANY and time.time() >= next_calm_at:
+                if count_next:
+                    self._counting_game()
                 else:
-                    self._reassure()
-                breathe_next = not breathe_next
+                    self._speech.say("still_here")
+                count_next = not count_next
                 next_calm_at = time.time() + CALM_EVERY_S
 
-    def _close_arrived(self) -> None:
-        self._speech.say("help_arrived")
-        self._note(f"{self._caregiver} arrived: closed")
-        self._tell_alerted("✅ Episode closed.\n\n" + self._report())
-        self._set_state("idle")
+    def _end_call(self) -> None:
+        with self._lock:
+            was_active, self._call_active = self._call_active, False
+        if was_active and self._show_call:
+            self._show_call(None)
 
-    # ---------------------------------------------------------------- caregiver
+    # ---------------------------------------------------------------- parents
 
-    def _alert_next_contact(self) -> None:
-        self._last_alert_at = time.time()
-        if not self._telegram:
-            self._note("no caregiver channel configured: nobody was alerted")
-            return
-        pending = [c for c in self._telegram.chat_ids if c not in self._alerted]
-        if not pending:
-            return
-        chat_id = pending[0]
-        answer = {"help": "asked for help", None: "did NOT answer"}[self._first_answer]
-        text = (
-            f"🚨 {self._name} fell in the {self._zone} at {_clock(self._fall_time)} "
-            f"and {answer}. The robot is with them."
-        )
-        photo_path = os.path.join(tempfile.gettempdir(), "bobac_care_photo.jpg")
-        has_photo = self._take_photo(photo_path)
-        sent = self._telegram.send(
-            chat_id, text, buttons=ETA_BUTTONS, photo_path=photo_path if has_photo else None
-        )
-        self._alerted.append(chat_id)
-        self._note(
-            "alert {} to contact {} ({})".format(
-                "sent" if sent else "FAILED",
-                len(self._alerted),
-                "with photo" if has_photo else "no photo",
-            )
-        )
-
-    def _handle_caregiver(self, event: dict):
+    def _play_parent_message(self, event: dict) -> None:
         name = event["name"]
-        if event["kind"] == "button" and event["data"].startswith("eta:"):
-            minutes = int(event["data"].split(":")[1])
-            with self._lock:
-                self._caregiver = name
-                self._eta_at = time.time() + minutes * 60
-            self._note(f"{name} is on the way, about {minutes} min")
-            self._speech.say_text(
-                f"{self._name}, {name} is coming and will be here in about {minutes} minutes."
-            )
-            self._telegram.send(
-                event["chat_id"],
-                f"I told {self._name}. Text or voice messages you send here are played by "
-                "the robot. Press the button when you are there.",
-                buttons=ARRIVED_BUTTON,
-            )
-        elif event["kind"] == "button" and event["data"] == "emergency":
-            with self._lock:
-                self._caregiver = name
-            self._note(f"{name} is calling the emergency services")
-            self._speech.say_text(f"{name} is calling the emergency services.")
-            self._telegram.send(event["chat_id"], f"I told {self._name}.", buttons=ARRIVED_BUTTON)
-        elif event["kind"] == "button" and event["data"] == "arrived":
-            with self._lock:
-                self._caregiver = name
-            return "arrived"
-        elif event["kind"] == "text":
+        if event["kind"] == "text":
             self._note("message from {}: {}".format(name, event["text"]))
             spoken = event["text"][:MAX_SPOKEN_MESSAGE_CHARS]
             self._speech.say_text(f"Message from {name}: {spoken}")
@@ -280,46 +283,21 @@ class CareSession:
             if self._telegram.download(event["file_id"], voice_path):
                 self._speech.say_text(f"Voice message from {name}.")
                 self._speech.play_file(voice_path)
-        return None
 
-    def _tell_alerted(self, text: str) -> None:
-        if self._telegram:
-            for chat_id in self._alerted:
-                self._telegram.send(chat_id, text)
+    # ---------------------------------------------------------------- comforting
 
-    def _tell_all_contacts(self, text: str) -> None:
-        if self._telegram:
-            for chat_id in self._telegram.chat_ids:
-                self._telegram.send(chat_id, text)
-
-    # ---------------------------------------------------------------- calming
-
-    def _reassure(self) -> None:
-        if self._eta_at is None:
-            self._speech.say("still_here" if self._caregiver is None else "help_on_way")
-            return
-        minutes_left = max(1, math.ceil((self._eta_at - time.time()) / 60))
-        self._speech.say_text(
-            "{} will be here in about {} {}. I am staying with you.".format(
-                self._caregiver, minutes_left, "minute" if minutes_left == 1 else "minutes"
-            )
-        )
-
-    def _guide_breathing(self) -> None:
-        self._speech.say_text(f"Let us breathe together, {self._name}.")
-        for _ in range(BREATH_CYCLES):
-            for phase, phrase, seconds in (
-                ("in", "breathe_in", BREATH_IN_S),
-                ("out", "breathe_out", BREATH_OUT_S),
-            ):
-                self._set_breath(phase)
-                started = time.time()
-                self._speech.say(phrase)
-                remaining = seconds - (time.time() - started)
-                if self._stopped.wait(max(0.0, remaining)):
-                    self._set_breath(None)
-                    return
-        self._set_breath(None)
+    def _counting_game(self) -> None:
+        """Count to five together, one finger at a time: simple, and it keeps them busy."""
+        self._speech.say("count_intro")
+        for number in range(1, COUNT_TO + 1):
+            self._set_count(number)
+            started = time.time()
+            self._speech.say_text(str(number))
+            if self._stopped.wait(max(0.0, COUNT_STEP_S - (time.time() - started))):
+                break
+        self._set_count(None)
+        if not self._stopped.is_set():
+            self._speech.say("count_done")
 
     # ---------------------------------------------------------------- helpers
 
@@ -354,23 +332,14 @@ class CareSession:
             self._state = state
             self._updated_at = time.time()
 
-    def _set_breath(self, phase) -> None:
+    def _set_count(self, number) -> None:
         with self._lock:
-            self._breath = phase
+            self._count = number
 
     def _note(self, event: str) -> None:
         log.info(event)
         with self._lock:
             self._timeline.append({"time": time.time(), "event": event})
-
-    def _report(self) -> str:
-        with self._lock:
-            lines = ["{}  {}".format(_clock(e["time"]), e["event"]) for e in self._timeline]
-        minutes = (time.time() - self._fall_time) / 60
-        header = (
-            f"Report: fall at {_clock(self._fall_time)} in the {self._zone}, {minutes:.0f} min ago."
-        )
-        return "\n".join([header] + lines)
 
 
 def _clock(epoch_s: float) -> str:
