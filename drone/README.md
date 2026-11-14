@@ -8,6 +8,8 @@ Code that talks to the drone, its adapters and its notes all live here.
 ## Goal
 Control the drone from a laptop instead of the phone app: manual sticks, Follow mode, land, status and live video. The CLI and a small web app live in `drone/hoverctl/`.
 
+**SDK, autopilot and API: [`drone/sdk/`](sdk/README.md).** A Python `Drone` (telemetry and video streams, photos, MP4 recording, camera tilt estimate), an estimated pose with a pluggable `Estimator`, a `Navigator` (goto, turn, patrols of waypoints) with safety rules (STOP wins, geofence, altitude, low battery returns home, link/video loss lands), a simulator, an HTTP API for the robot ([API.md](sdk/API.md)) with a Python 3.8 client and an example rospy node. `drone/fly` now runs it: the same web page plus a compass and path map (marked "estimated"), camera tilt, PHOTO/REC, and the API on port 8077. The bounce patrol in `drone/patrol/` (front distance from the camera) runs on it: `python -m drone.patrol.bounce --sdk URL`, or `--sim --fake-depth` to test without the drone or the depth model.
+
 ## Protocol (reverse-engineered from app v3.12.0, 2026-11-14)
 The drone is the original X1 ("HOVER CAMERA X1"), Wi-Fi SSID `HoverX1_<last 6 of SN>`, drone IP `<DRONE_IP>`.
 

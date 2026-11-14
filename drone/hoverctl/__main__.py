@@ -137,21 +137,24 @@ def _add_wifi_options(parser: argparse.ArgumentParser) -> None:
     )
 
 
-def _start_link(args: argparse.Namespace) -> tuple["DroneLink | None", str]:
-    """The Bluetooth link and a note for the UI when there is none. Imports ble lazily."""
+def _make_link(args: argparse.Namespace) -> tuple["DroneLink | None", str]:
+    """The Bluetooth link (not started) and a note for the UI when there is none. Imports ble
+    lazily."""
     if args.no_ble:
         return None, NO_BLE_NOTE
     try:
         from .ble import DroneLink
     except ImportError:  # bleak is not installed
         return None, NO_BLEAK_NOTE
-    link = DroneLink(**_wifi_options(args), video_quality=args.video_quality)
-    link.start()
-    return link, ""
+    return DroneLink(**_wifi_options(args), video_quality=args.video_quality), ""
 
 
-def cmd_web(args: argparse.Namespace) -> None:
-    link, ble_note = _start_link(args)
+def make_web_parts(
+    args: argparse.Namespace,
+) -> tuple["DroneLink | None", str, StickSender, VideoReceiver]:
+    """Link, UI note, stick sender (with the interlock) and video receiver for `web` options,
+    none of them started. Also used by `python -m drone.sdk serve`."""
+    link, ble_note = _make_link(args)
     if link:
         gate = link.is_manual
     elif args.no_ble:
@@ -167,8 +170,13 @@ def cmd_web(args: argparse.Namespace) -> None:
             f"WARNING: {NO_BLEAK_NOTE}. Sticks stay locked (use --no-ble to send anyway).",
             file=sys.stderr,
         )
-    receiver = _make_receiver(args)
-    sender = _make_sender(args, gate)
+    return link, ble_note, _make_sender(args, gate), _make_receiver(args)
+
+
+def cmd_web(args: argparse.Namespace) -> None:
+    link, ble_note, sender, receiver = make_web_parts(args)
+    if link:
+        link.start()
     server = WebServer(args.bind, args.http_port, sender, receiver, link, ble_note)
     url = f"http://{args.bind}:{args.http_port}/"
     receiver.start()
@@ -243,6 +251,25 @@ def main() -> None:
     video.set_defaults(run=cmd_video)
 
     web = commands.add_parser("web", help="browser UI: video, virtual sticks, STOP")
+    add_web_arguments(web)
+    web.set_defaults(run=cmd_web)
+
+    status = commands.add_parser("status", help="live drone state over Bluetooth (needs bleak)")
+    status.add_argument("--name", default="HoverX1", help="drone name prefix (default %(default)s)")
+    status.add_argument("--land", action="store_true", help="send land once connected")
+    status.add_argument("--manual", action="store_true", help="switch to MANUAL once connected")
+    status.add_argument("--wifi", metavar="PASSWORD", help="start the drone's Wi-Fi once connected")
+    _add_wifi_options(status)
+    status.set_defaults(run=cmd_status)
+
+    args = parser.parse_args()
+    signal.signal(signal.SIGTERM, _raise_interrupt)
+    with contextlib.suppress(KeyboardInterrupt):
+        args.run(args)
+
+
+def add_web_arguments(web: argparse.ArgumentParser) -> None:
+    """The `web` options; also used by `python -m drone.sdk serve`."""
     _add_stick_options(web)
     _add_video_options(web)
     web.add_argument("--http-port", type=int, default=WEB_PORT)
@@ -262,20 +289,6 @@ def main() -> None:
         "(default %(default)s)",
     )
     web.add_argument("--no-browser", action="store_true", help="don't open a browser tab")
-    web.set_defaults(run=cmd_web)
-
-    status = commands.add_parser("status", help="live drone state over Bluetooth (needs bleak)")
-    status.add_argument("--name", default="HoverX1", help="drone name prefix (default %(default)s)")
-    status.add_argument("--land", action="store_true", help="send land once connected")
-    status.add_argument("--manual", action="store_true", help="switch to MANUAL once connected")
-    status.add_argument("--wifi", metavar="PASSWORD", help="start the drone's Wi-Fi once connected")
-    _add_wifi_options(status)
-    status.set_defaults(run=cmd_status)
-
-    args = parser.parse_args()
-    signal.signal(signal.SIGTERM, _raise_interrupt)
-    with contextlib.suppress(KeyboardInterrupt):
-        args.run(args)
 
 
 if __name__ == "__main__":

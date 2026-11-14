@@ -173,6 +173,37 @@
   .controls.locked .stick { opacity: .3; }
   .controls.locked .legend .gate { color: var(--ink); }
 
+  /* photos and recording (drone.sdk server only) */
+  .capture { position: absolute; left: 8px; bottom: 8px; z-index: 1; display: flex; align-items: center; }
+  .capture .btn { height: 28px; padding: 0 10px; margin-right: -1px; gap: 6px; background: var(--panel);
+    grid-auto-flow: column; }
+  .capture .btn kbd { min-width: 0; height: 16px; padding: 0 4px; font-size: 10px; }
+  .capture .btn.rec-on { border-color: var(--red); color: var(--red); }
+  .capture .btn.rec-on kbd { border-color: var(--red); color: var(--red); }
+  .rec-dot { display: inline-block; width: 8px; height: 8px; margin-right: 4px; border-radius: 50%;
+    background: var(--red); vertical-align: middle; }
+  .capture-status { margin-left: 10px; padding: 2px 6px; background: var(--panel); color: var(--muted);
+    max-width: 360px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .capture-status.warn { color: var(--red); }
+  body.mini .capture { display: none; }
+
+  /* estimated pose: compass and path map */
+  .dials { display: grid; grid-template-columns: 1fr 1fr; border-bottom: 1px solid var(--rule); }
+  .dial { padding: 10px 12px 8px; display: grid; gap: 6px; min-width: 0; }
+  .dial + .dial { border-left: 1px solid var(--rule); }
+  .dial label { color: var(--faint); font-size: 10.5px; display: flex; justify-content: space-between; }
+  .dial svg { width: 100%; aspect-ratio: 1; display: block; overflow: hidden; }
+  .est-tag { padding: 0 6px; border: 1px solid var(--line); color: var(--ink); }
+  .ln { fill: none; stroke: var(--ink); stroke-width: 1; vector-effect: non-scaling-stroke; }
+  .ln.faint { stroke: var(--faint); }
+  .ln.rule { stroke: var(--rule); }
+  .ln.dash { stroke-dasharray: 3 3; }
+  .ink { fill: var(--ink); stroke: none; }
+  .wedge { fill: var(--ink); fill-opacity: .14; stroke: var(--faint); stroke-width: 1; vector-effect: non-scaling-stroke; }
+  .svg-text { fill: var(--muted); font-family: var(--mono); }
+  #needle { transition: transform 250ms linear; }
+  .est-note { padding: 8px 16px 12px; color: var(--faint); }
+
   @media (max-width: 900px) {
     body { height: auto; overflow: auto; padding: 0; }
     .frame { height: auto; border: 0; }
@@ -216,6 +247,13 @@
         </div>
         <span class="stall mono" id="stall" hidden></span>
         <div class="takeoff" id="takeoff" hidden><b id="takeoff-title"></b><span class="mono" id="takeoff-hint"></span></div>
+        <div class="capture" id="capture" hidden>
+          <button class="btn" id="c-photo" type="button" title="Save the current frame on the Mac (recordings/)"><kbd>P</kbd>photo</button>
+          <button class="btn" id="c-record" type="button" title="Record the live stream to an MP4 on the Mac (recordings/), no re-encode"><kbd>R</kbd><span id="c-record-label">rec</span></button>
+          <button class="btn" id="c-drone-photo" type="button" title="Full-quality photo on the drone's SD card (camera_take_photo_request)">photo on drone</button>
+          <button class="btn" id="c-drone-record" type="button" title="Recording on the drone's SD card (camera_start_video_request)">rec on drone</button>
+          <span class="capture-status mono" id="c-status" hidden></span>
+        </div>
       </div>
 
       <div class="controls">
@@ -236,6 +274,36 @@
     </section>
 
     <aside class="side">
+      <section id="estimate" hidden>
+        <h2 class="mono"><span>Position · estimated</span><span id="e-source"></span></h2>
+        <div class="dials">
+          <div class="dial">
+            <label class="mono"><span>heading</span><span class="est-tag">estimated</span></label>
+            <svg viewBox="-100 -100 200 200" aria-label="estimated heading">
+              <circle class="ln" r="88"></circle>
+              <g id="ticks"></g>
+              <path class="wedge" id="wedge"></path>
+              <g id="travel"><line class="ln dash" x1="0" y1="0" x2="0" y2="-60" id="travel-line"></line>
+                <polygon class="ln" id="travel-head" points="0,-66 -5,-56 5,-56"></polygon></g>
+              <g id="needle"><polygon class="ink" points="0,-80 4,0 -4,0"></polygon>
+                <line class="ln faint" x1="0" y1="0" x2="0" y2="22"></line></g>
+              <circle class="ink" r="3"></circle>
+            </svg>
+          </div>
+          <div class="dial">
+            <label class="mono"><span>path since takeoff</span><span id="e-scale"></span></label>
+            <svg id="map" viewBox="-5 -5 10 10" aria-label="estimated path"></svg>
+          </div>
+        </div>
+        <div class="kv">
+          <div><label class="mono">heading · ± 1 sd</label><output id="e-heading">—</output></div>
+          <div><label class="mono">travel · speed</label><output id="e-travel">—</output></div>
+          <div><label class="mono">position x y · ± 1 sd</label><output id="e-position">—</output></div>
+          <div><label class="mono">altitude</label><output id="e-alt">—</output></div>
+          <div class="wide"><label class="mono">autopilot</label><output class="wrap" id="e-task">—</output></div>
+        </div>
+        <div class="mono est-note" id="e-note"></div>
+      </section>
       <section id="drone">
         <h2 class="mono"><span>Drone · bluetooth</span><span id="d-link-age"></span></h2>
         <div class="dronemode"><div class="big" id="d-mode">—</div><div class="mono" id="d-note"></div><div class="mono" id="d-wifi-note"></div></div>
@@ -328,6 +396,13 @@ const DRONE_NETWORK_PREFIX = "<DRONE_SUBNET>.";  // the laptop's address here me
 const KIB_PER_GIB = 1024 ** 2;  // the drone's storage fields are named bytes but read as KiB (32 GB card = 33554432)
 const STOP_KEY = " ";
 const VIDEO_KEY = "v";
+const PHOTO_KEY = "p";        // photo / recording on the Mac (drone.sdk server only)
+const RECORD_KEY = "r";
+const COMPASS_TICK_DEG = 30;
+const TRAVEL_MIN_SPEED = 0.1; // m/s: below this no direction-of-travel arrow
+const TRAVEL_MIN_LEN = 24, TRAVEL_MAX_LEN = 70, TRAVEL_LEN_PER_MPS = 40;  // compass units
+const MAP_MIN_HALF_M = 3;     // the map shows at least ±3 m
+const MAP_MARGIN_M = 1;
 const SPORT_KEY_CODES = ["Backslash", "Tab"];  // toggle is_sport_mode; Tab would move the focus
 // Takeoff states, shown large over the video: the drone flies these on its own.
 const TAKEOFF_STATES = {
@@ -464,6 +539,10 @@ window.addEventListener("keydown", (event) => {
   const key = keyName(event);
   if (key === STOP_KEY) { event.preventDefault(); if (!event.repeat) stop(); return; }
   if (key === VIDEO_KEY) { if (!event.repeat) toggleVideo(); return; }
+  if (key === PHOTO_KEY || key === RECORD_KEY) {
+    if (!event.repeat && captureAvailable) (key === PHOTO_KEY ? takePhoto : toggleRecord)();
+    return;
+  }
   if (!(key in BINDINGS)) return;
   event.preventDefault();
   if (event.repeat) return;
@@ -475,8 +554,16 @@ window.addEventListener("keyup", (event) => {
   drawInput();
 });
 $("d-wifi-pw").addEventListener("focus", releaseKeys);
-window.addEventListener("blur", stop);
-document.addEventListener("visibilitychange", () => { if (document.hidden) stop(); });
+// Losing focus releases this page's keys and pads at once (posting neutral), but is not STOP:
+// an autopilot action (patrol from ROS, the API) keeps flying while the window is in the back.
+function releaseAll() {
+  keys.clear();
+  for (const pad of pads) pad.release();
+  drawInput();
+  post(`/api/sticks?tab=${TAB_ID}`, inputAxes());
+}
+window.addEventListener("blur", releaseAll);
+document.addEventListener("visibilitychange", () => { if (document.hidden) releaseAll(); });
 
 $("stop").addEventListener("pointerdown", (event) => { event.preventDefault(); stop(); });
 $("toggle-video").addEventListener("click", toggleVideo);
@@ -693,9 +780,8 @@ const DRONE_GROUPS = [
     ["velocity x y z", "wide", (d) => xyz(d.odometry.velocity)],
     ["motor rpm", "wide", (d) => (d.odometry.motors_rpm || []).join("  ") || "—"],
     ["total current", "", (d) => num(d.odometry.total_current)]] },
-  { id: "camera", title: "Camera", ts: (d) => d.camera_tilt.ts, rows: [
-    ["camera tilt °", "wide", (d) => (d.camera_tilt.degrees === null
-      ? "not reported (the X1 never sent it)" : `${d.camera_tilt.degrees.toFixed(0)}°`)]] },
+  { id: "camera", title: "Camera", ts: (d) => d.camera_tilt.ts ?? (tiltEstimate ? serverNow : null), rows: [
+    ["camera tilt ° · 0 = level, −90 = down", "wide", (d) => tiltText(d)]] },
   { id: "storage", title: "Storage", ts: (d) => d.storage.ts, rows: [
     ["free", "", (d) => `${gigabytes(d.storage.available_bytes)} GB`],
     ["total", "", (d) => `${gigabytes(d.storage.total_bytes)} GB`]] },
@@ -703,6 +789,19 @@ const DRONE_GROUPS = [
     ["codes", "wide", (d) => (d.exception.errors ? d.exception.errors.join(", ") || "none" : "—")],
     ["event", "", (d) => num(d.exception.event)]] },
 ];
+
+// The SDK server (drone.sdk) estimates the camera tilt from the gimbal stick sent (sdk/tilt.py).
+let tiltEstimate = null;
+let serverNow = null;
+const degrees = (value) => `${value < 0 ? "−" : "+"}${Math.abs(value).toFixed(0)}°`;
+function tiltText(d) {
+  if (d.camera_tilt.degrees !== null) return `${degrees(d.camera_tilt.degrees)} · reported`;
+  if (!tiltEstimate) return "not reported (the X1 never sent it)";
+  if (!tiltEstimate.anchored) {
+    return `unknown — hold U or O to a stop (${degrees(tiltEstimate.low_deg)} … ${degrees(tiltEstimate.high_deg)})`;
+  }
+  return `≈ ${degrees(tiltEstimate.deg)} · estimated`;
+}
 
 for (const group of DRONE_GROUPS) {
   const rows = group.rows.map(([label, cls, , ], i) =>
@@ -741,6 +840,8 @@ function linkText(connection, note) {
 
 function renderDrone(state) {
   const drone = state.drone, sticks = state.sticks;
+  tiltEstimate = state.estimate ? state.estimate.tilt : null;
+  serverNow = state.now;
   const present = Boolean(drone);
   for (const element of [$("d-groups"), ...document.querySelectorAll("#drone .actions")]) {
     element.hidden = !present;
@@ -812,7 +913,7 @@ function renderLock(sticks, present) {
 function renderManualSteps(state, present) {
   const element = $("d-manual-steps");
   const entry = present ? state.drone.manual_entry : null;
-  const onDroneWifi = (state.video.local_ip || "").startsWith(DRONE_NETWORK_PREFIX);
+  const onDroneWifi = state.simulated || (state.video.local_ip || "").startsWith(DRONE_NETWORK_PREFIX);
   if (!present) { element.textContent = ""; return; }
   const ssid = state.drone.wifi.ssid ?? "the drone's Wi-Fi";
   const mode = state.drone.mode.name ?? "—";
@@ -902,6 +1003,169 @@ $("d-wifi").addEventListener("submit", (event) => {
 // Typing a password must not fly the drone, and Space must not stop on a text field.
 const typing = () => document.activeElement === $("d-wifi-pw");
 
+// ---- estimated pose: compass + path map (drone.sdk server only, from its Estimator) ----
+// Frame: the odometry's takeoff frame. Heading 0 = its +x, drawn up; + = clockwise (turn right).
+// So a frame point (x, y) is drawn at (y, -x).
+
+const SVG_NS = "http://www.w3.org/2000/svg";
+const svgEl = (tag, attrs, text) => {
+  const element = document.createElementNS(SVG_NS, tag);
+  for (const [key, value] of Object.entries(attrs)) element.setAttribute(key, value);
+  if (text !== undefined) element.textContent = text;
+  return element;
+};
+const onDial = (deg, r) => [r * Math.sin(deg * Math.PI / 180), -r * Math.cos(deg * Math.PI / 180)];
+
+for (let deg = 0; deg < 360; deg += COMPASS_TICK_DEG) {
+  const major = deg % 90 === 0;
+  const [x1, y1] = onDial(deg, major ? 76 : 81), [x2, y2] = onDial(deg, 88);
+  $("ticks").append(svgEl("line", { class: "ln", x1, y1, x2, y2 }));
+  if (major) {
+    const [x, y] = onDial(deg, 64);
+    $("ticks").append(svgEl("text", { class: "svg-text", x, y: y + 4, "font-size": 11,
+      "text-anchor": "middle" }, deg === 0 ? "+x" : String(deg)));
+  }
+}
+
+let needleAngle = 0;  // unwrapped, so the needle turns the short way through 0
+function unwrap(previous, deg) {
+  return previous + ((((deg - previous) % 360) + 540) % 360) - 180;
+}
+
+function wedgePath(heading, sigma) {
+  if (sigma >= 180) return "M -88 0 A 88 88 0 1 1 88 0 A 88 88 0 1 1 -88 0 Z";
+  const [x1, y1] = onDial(heading - sigma, 88), [x2, y2] = onDial(heading + sigma, 88);
+  return `M 0 0 L ${x1} ${y1} A 88 88 0 ${sigma > 90 ? 1 : 0} 1 ${x2} ${y2} Z`;
+}
+
+function renderEstimate(estimate) {
+  $("estimate").hidden = !estimate;
+  if (!estimate) return;
+  const pose = estimate.pose;
+  const [vx, vy] = pose.velocity;
+  const speed = Math.hypot(vx, vy);
+  const travel = Math.atan2(vy, vx) * 180 / Math.PI;
+  needleAngle = unwrap(needleAngle, pose.heading_deg);
+  $("needle").style.transform = `rotate(${needleAngle}deg)`;
+  $("wedge").setAttribute("d", wedgePath(pose.heading_deg, pose.heading_sigma_deg));
+  const moving = pose.in_flight && speed >= TRAVEL_MIN_SPEED;
+  $("travel").style.display = moving ? "" : "none";
+  const length = Math.min(TRAVEL_MAX_LEN, TRAVEL_MIN_LEN + speed * TRAVEL_LEN_PER_MPS);
+  $("travel").setAttribute("transform", `rotate(${travel})`);
+  $("travel-line").setAttribute("y2", -length);
+  $("travel-head").setAttribute("points", `0,${-length - 6} -5,${-length + 4} 5,${-length + 4}`);
+  setText("e-heading", `${degrees(pose.heading_deg)} · ±${pose.heading_sigma_deg.toFixed(0)}°`,
+    pose.heading_sigma_deg > 45);
+  setText("e-travel", moving ? `${degrees(travel)} · ${speed.toFixed(2)} m/s` : "hovering");
+  setText("e-position", pose.in_flight
+    ? `${signed(pose.x, 2)} ${signed(pose.y, 2)} · ±${pose.position_sigma_m.toFixed(1)} m` : "on ground");
+  setText("e-alt", pose.in_flight ? `${pose.alt.toFixed(2)} m` : "—");
+  const task = estimate.task;
+  const progress = task.patrol && task.state === "running"
+    ? ` · loop ${task.patrol.loop} wp ${task.patrol.index ?? "—"} ${task.patrol.state}` : "";
+  setText("e-task", task.name ? `${task.name} · ${task.state}${progress}${task.message ? ` · ${task.message}` : ""}`
+    : "idle", task.state === "failed" || task.state === "landed");
+  $("e-source").textContent = estimate.estimator;
+  $("e-note").textContent = `${estimate.estimator}: heading = yaw stick × ${estimate.yaw_rate_dps?.toFixed(0) ?? "?"}°/s` +
+    " + direction of travel; position = 1 Hz odometry, extrapolated. Not a real compass: 0° is the takeoff frame's +x.";
+  renderMap(estimate);
+}
+
+function renderMap(estimate) {
+  const pose = estimate.pose;
+  const here = pose.in_flight ? [pose.x, pose.y] : [0, 0];
+  const points = [[0, 0], here, ...estimate.path, ...estimate.waypoints];
+  if (estimate.target) points.push(estimate.target.slice(0, 2));
+  const xs = points.map((p) => p[0]), ys = points.map((p) => p[1]);
+  const half = Math.max(MAP_MIN_HALF_M,
+    (Math.max(...xs) - Math.min(...xs)) / 2 + MAP_MARGIN_M, (Math.max(...ys) - Math.min(...ys)) / 2 + MAP_MARGIN_M);
+  const cx = (Math.max(...xs) + Math.min(...xs)) / 2, cy = (Math.max(...ys) + Math.min(...ys)) / 2;
+  const map = $("map");
+  map.setAttribute("viewBox", `${cy - half} ${-cx - half} ${2 * half} ${2 * half}`);
+  map.replaceChildren();
+  const grid = half > 8 ? 2 : 1;
+  $("e-scale").textContent = `grid ${grid} m`;
+  for (let v = Math.ceil((cy - half) / grid) * grid; v <= cy + half; v += grid) {
+    map.append(svgEl("line", { class: "ln rule", x1: v, y1: -cx - half, x2: v, y2: -cx + half }));
+  }
+  for (let v = Math.ceil((cx - half) / grid) * grid; v <= cx + half; v += grid) {
+    map.append(svgEl("line", { class: "ln rule", x1: cy - half, y1: -v, x2: cy + half, y2: -v }));
+  }
+  const [xMin, xMax, yMin, yMax] = estimate.fence;
+  map.append(svgEl("rect", { class: "ln faint dash", x: yMin, y: -xMax, width: yMax - yMin, height: xMax - xMin }));
+  const mark = half * 0.05, font = half * 0.09;
+  map.append(svgEl("path", { class: "ln faint", d: `M ${-mark} 0 H ${mark} M 0 ${-mark} V ${mark}` }));
+  map.append(svgEl("text", { class: "svg-text", x: mark * 1.4, y: font * 1.2, "font-size": font }, "takeoff"));
+  if (estimate.path.length > 1) {
+    map.append(svgEl("polyline", { class: "ln", points: estimate.path.map(([x, y]) => `${y},${-x}`).join(" ") }));
+  }
+  estimate.waypoints.forEach(([x, y], i) => {
+    map.append(svgEl("rect", { class: "ln", x: y - mark, y: -x - mark, width: 2 * mark, height: 2 * mark }));
+    map.append(svgEl("text", { class: "svg-text", x: y + mark * 1.5, y: -x - mark * 1.5, "font-size": font }, String(i)));
+  });
+  if (estimate.target) {
+    const [x, y] = estimate.target;
+    map.append(svgEl("circle", { class: "ln dash", cx: y, cy: -x, r: mark * 2 }));
+  }
+  if (!pose.in_flight) return;
+  map.append(svgEl("circle", { class: "ln faint", cx: pose.y, cy: -pose.x, r: Math.max(pose.position_sigma_m, mark) }));
+  const drone = svgEl("polygon", { class: "ink", points: `0,${-mark * 2.2} ${mark},${mark} ${-mark},${mark}`,
+    transform: `translate(${pose.y} ${-pose.x}) rotate(${pose.heading_deg})` });
+  map.append(drone);
+}
+
+// ---- photos and recording on the Mac, and on the drone's SD card (drone.sdk server only) ----
+let captureAvailable = false;
+let recordingOn = false;
+let droneRecording = false;  // the drone does not report it: what we last asked
+let captureTimer = 0;
+
+function showCapture(text, warn = false) {
+  const element = $("c-status");
+  element.hidden = false;
+  element.textContent = text;
+  element.classList.toggle("warn", warn);
+  clearTimeout(captureTimer);
+  captureTimer = setTimeout(() => { element.hidden = true; }, STATUS_MS);
+}
+
+async function capture(label, path, body) {
+  try {
+    const response = await fetch(path, { method: "POST", body: JSON.stringify(body ?? {}) });
+    const result = await response.json();
+    const ok = response.ok && result.ok !== false;
+    showCapture(`${label} · ${ok ? result.path ?? "ok" : result.error ?? "failed"}`, !ok);
+    return ok ? result : null;
+  } catch (error) {
+    showCapture(`${label} · ${error.message}`, true);
+    return null;
+  }
+}
+
+const takePhoto = () => capture("photo", "/photo");
+const toggleRecord = () => capture(recordingOn ? "recording saved" : "recording", "/record", { on: !recordingOn });
+$("c-photo").addEventListener("click", takePhoto);
+$("c-record").addEventListener("click", toggleRecord);
+$("c-drone-photo").addEventListener("click", () => capture("photo on drone", "/drone/photo"));
+$("c-drone-record").addEventListener("click", async () => {
+  const on = !droneRecording;
+  if (await capture(on ? "rec on drone" : "rec on drone stopped", "/drone/record", { on })) droneRecording = on;
+});
+
+function renderCapture(state) {
+  captureAvailable = state.recording !== undefined;
+  $("capture").hidden = !captureAvailable;
+  if (!captureAvailable) return;
+  recordingOn = state.recording.on;
+  const seconds = Math.floor(state.recording.elapsed_s ?? 0);
+  const elapsed = `${Math.floor(seconds / 60)}:${String(seconds % 60).padStart(2, "0")}`;
+  $("c-record").classList.toggle("rec-on", recordingOn);
+  $("c-record-label").innerHTML = recordingOn
+    ? `<span class="rec-dot"></span> rec ${elapsed}${state.recording.writing ? "" : " · waiting for keyframe"}` : "rec";
+  $("c-drone-record").textContent = droneRecording ? "stop rec on drone" : "rec on drone";
+  $("c-drone-record").classList.toggle("rec-on", droneRecording);
+}
+
 let stateAt = 0;
 let serverLost = false;
 let seenFrames = 0;
@@ -924,6 +1188,8 @@ async function poll() {
     renderSticks(state.sticks);
     renderVideo(state.video);
     renderDrone(state);
+    renderEstimate(state.estimate);
+    renderCapture(state);
   } catch {
     serverLost = true; // the freshness clock shows the link as lost
   }

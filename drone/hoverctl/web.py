@@ -190,6 +190,8 @@ class _Handler(BaseHTTPRequestHandler):
                 "local_ip": drone_network_ip(),
             },
         }
+        if self.server.extra_state:
+            state.update(self.server.extra_state())
         self._send(HTTPStatus.OK, "application/json", json.dumps(state).encode())
 
     def _mjpeg(self) -> None:
@@ -213,6 +215,9 @@ class _Handler(BaseHTTPRequestHandler):
                 self.wfile.write(head.encode() + jpeg + b"\r\n")
         except (BrokenPipeError, ConnectionResetError):
             pass  # browser tab closed
+
+
+WebHandler = _Handler  # public name for servers that add routes (drone/sdk/server.py)
 
 
 class PilotFilter:
@@ -256,8 +261,12 @@ class WebServer(ThreadingHTTPServer):
         receiver: VideoReceiver,
         link: "DroneLink | None" = None,
         ble_note: str = "",
+        handler: type[_Handler] = _Handler,
     ):
-        super().__init__((bind, port), _Handler)
+        """`handler` may be a subclass that adds routes; `extra_state` (set after) adds
+        fields to /api/state."""
+        super().__init__((bind, port), handler)
+        self.extra_state: Callable[[], dict[str, Any]] | None = None
         self.sender = sender
         self.receiver = receiver
         self.pilot = PilotFilter()

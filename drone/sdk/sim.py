@@ -1,0 +1,525 @@
+"""A simulated HoverAir X1 behind the same interface as the real one.
+
+    drone = connect_sim()          # a Drone, like Drone.connect(), but nothing leaves the laptop
+    drone.enter_manual()
+    drone.link.press_button()      # the drone's takeoff button
+    drone.wait_for_takeoff()
+
+What it models, on purpose close to what we measured on the X1:
+- `SimLink`: DroneLink's snapshot() shape and commands. States idle -> pre_takeoff ->
+  taking_off (its own climb, drifting backward) -> flying_manual -> landing -> idle.
+- Kinematics at 50 Hz from the stick packets actually sent (ramp, gates and cap included):
+  velocity lag, a true yaw rate 10 % off the estimator's default.
+- Odometry at a fixed 1 Hz with noise and a random-walk drift, in a frame that resets at
+  takeoff and is rotated from the drone's heading by `frame_yaw_offset_deg`. On the ground it
+  reads an old frame, like the real drone.
+- `SimCamera`: an ffmpeg test pattern encoded to H.264 and fed to the real decoder.
+- A square room around the start point (`room_half_m`; by default larger than the default
+  geofence, so only patrols that look for walls meet them). The drone stops at a wall (and
+  `wall_hits` counts it); truth()["front_m"] is the true distance to the wall ahead, for
+  testing camera-based patrols without a depth model (drone.patrol.bounce --fake-depth).
+- Faults for testing: set_battery(), cut("link" | "telemetry" | "video", seconds), push().
+"""
+
+import math
+import os
+import random
+import shutil
+import subprocess
+import threading
+import time
+from collections.abc import Callable
+from typing import Any
+
+from drone.hoverctl.decoder import MjpegDecoder
+from drone.hoverctl.pbwire import IN_FLIGHT_STATES, VIDEO_QUALITY_SD, FlightMode
+from drone.hoverctl.protocol import AXIS_LIMIT, NEUTRAL, encode_rocker_command
+from drone.hoverctl.sticks import StickSender
+
+from .drone import Drone
+from .estimate import DEFAULT_YAW_RATE_DPS, Estimator, wrap_deg
+
+PHYSICS_PERIOD_S = 0.02
+MAX_SPEED_MPS = 2.0  # horizontal, at stick 100
+MAX_CLIMB_MPS = 1.0
+TRUE_YAW_RATE_DPS = DEFAULT_YAW_RATE_DPS * 1.1  # calibrate_yaw() should find this
+VELOCITY_TAU_S = 0.4
+ODOMETRY_PERIOD_S = 1.0
+ODOMETRY_NOISE_M = 0.03
+VELOCITY_NOISE_MPS = 0.03
+DRIFT_STEP_M = 0.01  # random walk of the odometry bias, per sample
+DEFAULT_FRAME_YAW_OFFSET_DEG = 20.0
+OLD_FRAME_POSITION = (3.2, -1.5, 0.05)  # what the odometry reads on the ground
+PRE_TAKEOFF_S = 1.0
+TAKING_OFF_S = 1.5
+TAKEOFF_ALT_M = 1.0
+TAKEOFF_DRIFT_MPS = 0.15  # backward, like the X1's own climb
+LANDING_MPS = 0.6
+BATTERY_START_PCT = 90.0
+BATTERY_DRAIN_PCT_S = 0.05
+CRITICAL_BATTERY_PCT = 8.0  # the drone lands by itself
+SIM_RSSI = -55
+SIM_LINK_AGE_S = 0.2
+MOTOR_RPM_FLYING = 9000
+FAULTS = ("link", "telemetry", "video")
+DEFAULT_ROOM_HALF_M = 10.0  # walls this far from the start point, in x and y
+WALL_CONTACT_M = 0.15  # the cage touches the wall this far from the centre
+FRONT_CORRIDOR_HALF_WIDTH_M = 0.5  # like drone.patrol.front_distance's obstacle corridor
+VIDEO_SOURCE = "testsrc2=size=640x360:rate=30"
+VIDEO_READ_BYTES = 1 << 16
+OK = {"ok": True, "error": None}
+NOT_CONNECTED = {"ok": False, "error": "not connected"}
+
+
+class SimLink:
+    """The simulated drone: DroneLink's interface plus fault injection."""
+
+    def __init__(
+        self,
+        frame_yaw_offset_deg: float = DEFAULT_FRAME_YAW_OFFSET_DEG,
+        seed: int | None = None,
+        room_half_m: float = DEFAULT_ROOM_HALF_M,
+    ) -> None:
+        self.frame_yaw_offset_deg = frame_yaw_offset_deg
+        self.room = (-room_half_m, room_half_m, -room_half_m, room_half_m)  # world x, y
+        self.sticks: StickSender | None = None  # set by connect_sim
+        self.photos = 0  # drone-side photos taken (take_photo)
+        self.recording = False  # drone-side recording (record_video)
+        self._random = random.Random(seed)
+        self._lock = threading.Lock()
+        self._stop = threading.Event()
+        self._thread = threading.Thread(target=self._run, name="sim-physics", daemon=True)
+        now = time.time()
+        self._state = "idle"
+        self._state_since = time.monotonic()
+        self._mode = FlightMode.HOVER
+        self._session = False
+        self._video_quality = VIDEO_QUALITY_SD
+        self._battery = BATTERY_START_PCT
+        self._x = self._y = self._alt = 0.0  # true position, world frame, alt up
+        self._heading = 0.0  # true heading, world degrees
+        self._vx = self._vy = self._vz = 0.0
+        self._origin = (0.0, 0.0)
+        self._frame_yaw = 0.0
+        self._bias = (0.0, 0.0)
+        self._odometry: tuple[tuple[float, ...], tuple[float, ...]] | None = None
+        self._odometry_ts: float | None = None
+        self._next_odometry = 0.0
+        self._seen = now  # last time the link delivered anything
+        self._wall_hits = 0
+        self._touching_wall = False
+        self._cut_until = dict.fromkeys(FAULTS, 0.0)
+
+    # --- DroneLink interface ------------------------------------------------------------------
+
+    def start(self) -> None:
+        self._thread.start()
+
+    def stop(self) -> None:
+        self._stop.set()
+        if self._thread.is_alive():
+            self._thread.join()
+
+    def snapshot(self) -> dict[str, Any]:
+        now = time.time()
+        with self._lock:
+            up = self._link_up(now)
+            seen = self._seen
+            odometry, odometry_ts = self._odometry, self._odometry_ts
+            state, mode, battery, session = self._state, self._mode, self._battery, self._session
+            quality = self._video_quality
+        position, velocity = odometry if odometry else (None, None)
+        flying = state in IN_FLIGHT_STATES
+        return {
+            "connection": {
+                "connected": up,
+                "rssi": SIM_RSSI,
+                "last_message_age_s": SIM_LINK_AGE_S if up else round(now - seen, 2),
+                "error": None if up else "simulated link loss",
+            },
+            "wifi": {"state": "on", "ssid": "simulator", "password": None},
+            "app_announced": OK,
+            "manual_entry": {
+                "session": session,
+                "steps": ["connect", "wifi", "preview", "manual", "video"] if session else [],
+                "error": None,
+            },
+            "video_quality": {
+                "wanted": quality,
+                "applied": None,
+                "drone_default": None,
+                "error": None,
+            },
+            "mode": {"value": int(mode), "name": mode.name, "ts": seen},
+            "flight_state": {"value": state, "in_flight": flying, "ts": seen},
+            "battery": {
+                "soc": round(battery),
+                "voltage": None,
+                "current": None,
+                "temp": None,
+                "ts": seen,
+                "charging": False,
+                "charger_connected": False,
+                "fully_charged": False,
+                "charger_ts": seen,
+            },
+            "odometry": {
+                "position": _xyz(position),
+                "velocity": _xyz(velocity),
+                "motors_rpm": [MOTOR_RPM_FLYING if flying else 0] * 4,
+                "battery_voltage": None,
+                "total_current": None,
+                "ts": odometry_ts,
+            },
+            "storage": {"available_bytes": None, "total_bytes": None, "ts": None},
+            "exception": {"errors": None, "event": None, "ts": None},
+            "camera_tilt": {"degrees": None, "ts": None},  # the X1 never reports it
+        }
+
+    def is_manual(self) -> bool:
+        with self._lock:
+            return self._link_up(time.time()) and self._mode == FlightMode.MANUAL
+
+    def in_manual_session(self) -> bool:
+        with self._lock:
+            return self._session
+
+    def enter_manual(self) -> dict[str, Any]:
+        with self._lock:
+            self._session = True
+            self._mode = FlightMode.MANUAL
+            if self._state == "flying_traj":
+                self._set_state("flying_manual")
+        return OK
+
+    def set_manual(self) -> dict[str, Any]:
+        return self.enter_manual()
+
+    def land(self) -> dict[str, Any]:
+        with self._lock:
+            if not self._link_up(time.time()):
+                return NOT_CONNECTED
+            if self._state in IN_FLIGHT_STATES - {"landing"} or self._state == "pre_takeoff":
+                self._set_state("landing")
+        return OK
+
+    def start_wifi(self, password: str) -> dict[str, Any]:
+        return OK
+
+    def start_video(self) -> dict[str, Any]:
+        return OK
+
+    def stop_video(self) -> dict[str, Any]:
+        with self._lock:
+            self._session = False
+        return OK
+
+    def set_video_quality(self, quality: str) -> dict[str, Any]:
+        with self._lock:
+            self._video_quality = quality
+        return OK
+
+    def take_photo(self) -> dict[str, Any]:
+        self.photos += 1
+        return OK
+
+    def record_video(self, on: bool) -> dict[str, Any]:
+        self.recording = on
+        return OK
+
+    # --- simulator controls -------------------------------------------------------------------
+
+    def press_button(self) -> dict[str, Any]:
+        """The drone's takeoff button."""
+        with self._lock:
+            if self._state != "idle":
+                return {"ok": False, "error": f"button ignored: {self._state}"}
+            self._set_state("pre_takeoff")
+        return OK
+
+    def set_battery(self, pct: float) -> None:
+        with self._lock:
+            self._battery = max(0.0, min(100.0, pct))
+
+    def cut(self, what: str, seconds: float) -> None:
+        """Lose the Bluetooth link, the odometry or the video for `seconds`."""
+        if what not in FAULTS:
+            raise ValueError(f"cut one of {', '.join(FAULTS)}")
+        with self._lock:
+            self._cut_until[what] = time.time() + seconds
+
+    def video_cut(self) -> bool:
+        with self._lock:
+            return time.time() < self._cut_until["video"]
+
+    def push(self, dx: float, dy: float) -> None:
+        """A gust: move the drone by (dx, dy) metres in the takeoff frame."""
+        with self._lock:
+            yaw = math.radians(self._frame_yaw)
+            self._x += dx * math.cos(yaw) - dy * math.sin(yaw)
+            self._y += dx * math.sin(yaw) + dy * math.cos(yaw)
+
+    def truth(self) -> dict[str, float]:
+        """The true pose in the takeoff frame (what a perfect estimator would say), the true
+        distance to the wall ahead (`front_m`, metres) and the number of wall contacts."""
+        with self._lock:
+            x, y = self._to_frame(self._x - self._origin[0], self._y - self._origin[1])
+            heading = wrap_deg(self._heading - self._frame_yaw)
+            return {
+                "x": x,
+                "y": y,
+                "alt": self._alt,
+                "heading_deg": heading,
+                "front_m": self._front_m(),
+                "wall_hits": self._wall_hits,
+            }
+
+    # --- physics ------------------------------------------------------------------------------
+
+    def _run(self) -> None:
+        last = time.monotonic()
+        while not self._stop.wait(PHYSICS_PERIOD_S):
+            now = time.monotonic()
+            with self._lock:
+                self._step(now - last, now)
+            last = now
+
+    def _step(self, dt: float, now: float) -> None:
+        sticks = self.sticks.output if self.sticks else NEUTRAL
+        elapsed = now - self._state_since
+        if self._state == "pre_takeoff" and elapsed >= PRE_TAKEOFF_S:
+            self._new_frame()
+            self._set_state("taking_off")
+        elif self._state == "taking_off":
+            self._fly(dt, -TAKEOFF_DRIFT_MPS, 0.0, TAKEOFF_ALT_M / TAKING_OFF_S, 0.0)
+            if elapsed >= TAKING_OFF_S:
+                manual = self._mode == FlightMode.MANUAL
+                self._set_state("flying_manual" if manual else "flying_traj")
+        elif self._state == "flying_manual":
+            self._fly(
+                dt,
+                sticks.pitch / AXIS_LIMIT * MAX_SPEED_MPS,
+                sticks.roll / AXIS_LIMIT * MAX_SPEED_MPS,
+                sticks.thrust / AXIS_LIMIT * MAX_CLIMB_MPS,
+                sticks.yaw / AXIS_LIMIT * TRUE_YAW_RATE_DPS,
+            )
+        elif self._state == "flying_traj":
+            self._fly(dt, 0.0, 0.0, 0.0, 0.0)
+        elif self._state == "landing":
+            self._fly(dt, 0.0, 0.0, -LANDING_MPS, 0.0)
+            if self._alt <= 0:
+                self._alt = self._vx = self._vy = self._vz = 0.0
+                self._set_state("idle")
+        if self._state in IN_FLIGHT_STATES:
+            self._battery = max(0.0, self._battery - BATTERY_DRAIN_PCT_S * dt)
+            if self._battery <= CRITICAL_BATTERY_PCT and self._state != "landing":
+                self._set_state("landing")
+        self._sample_odometry(now)
+
+    def _fly(self, dt: float, fwd: float, right: float, up: float, yaw_rate: float) -> None:
+        heading = math.radians(self._heading)
+        target_vx = fwd * math.cos(heading) - right * math.sin(heading)
+        target_vy = fwd * math.sin(heading) + right * math.cos(heading)
+        blend = min(1.0, dt / VELOCITY_TAU_S)
+        self._vx += (target_vx - self._vx) * blend
+        self._vy += (target_vy - self._vy) * blend
+        self._vz += (up - self._vz) * blend
+        self._x += self._vx * dt
+        self._y += self._vy * dt
+        self._alt = max(0.0, self._alt + self._vz * dt)
+        self._heading = wrap_deg(self._heading + yaw_rate * dt)
+        self._stop_at_walls()
+
+    def _stop_at_walls(self) -> None:
+        x_min, x_max, y_min, y_max = self.room
+        x = min(max(self._x, x_min + WALL_CONTACT_M), x_max - WALL_CONTACT_M)
+        y = min(max(self._y, y_min + WALL_CONTACT_M), y_max - WALL_CONTACT_M)
+        touching = (x, y) != (self._x, self._y)
+        if touching and not self._touching_wall:
+            self._wall_hits += 1
+        self._touching_wall = touching
+        if x != self._x:
+            self._vx = 0.0
+        if y != self._y:
+            self._vy = 0.0
+        self._x, self._y = x, y
+
+    def _front_m(self) -> float:
+        """Distance ahead to the room's wall, within a corridor as wide as the drone's path."""
+        heading = math.radians(self._heading)
+        dx, dy = math.cos(heading), math.sin(heading)
+        offsets = (-FRONT_CORRIDOR_HALF_WIDTH_M, 0.0, FRONT_CORRIDOR_HALF_WIDTH_M)
+        return min(self._wall_ahead(self._x - o * dy, self._y + o * dx, dx, dy) for o in offsets)
+
+    def _wall_ahead(self, x: float, y: float, dx: float, dy: float) -> float:
+        """Distance from (x, y) along (dx, dy) to the room's wall (0 if outside)."""
+        x_min, x_max, y_min, y_max = self.room
+        hits = []
+        if dx:
+            hits.append(((x_max if dx > 0 else x_min) - x) / dx)
+        if dy:
+            hits.append(((y_max if dy > 0 else y_min) - y) / dy)
+        return max(0.0, min(hits))
+
+    def _new_frame(self) -> None:
+        """Takeoff: the odometry starts over here, its axes rotated from the heading."""
+        self._origin = (self._x, self._y)
+        self._frame_yaw = self._heading + self.frame_yaw_offset_deg
+        self._bias = (0.0, 0.0)
+
+    def _sample_odometry(self, now: float) -> None:
+        if now < self._next_odometry:
+            return
+        self._next_odometry = now + ODOMETRY_PERIOD_S
+        wall = time.time()
+        if not self._link_up(wall):
+            return
+        self._seen = wall
+        if wall < self._cut_until["telemetry"]:
+            return
+        if self._state not in IN_FLIGHT_STATES:
+            self._odometry = (OLD_FRAME_POSITION, (0.0, 0.0, 0.0))
+            self._odometry_ts = wall
+            return
+        noise = self._random.gauss
+        self._bias = (
+            self._bias[0] + noise(0, DRIFT_STEP_M),
+            self._bias[1] + noise(0, DRIFT_STEP_M),
+        )
+        x, y = self._to_frame(self._x - self._origin[0], self._y - self._origin[1])
+        vx, vy = self._to_frame(self._vx, self._vy)
+        position = (
+            x + self._bias[0] + noise(0, ODOMETRY_NOISE_M),
+            y + self._bias[1] + noise(0, ODOMETRY_NOISE_M),
+            -self._alt + noise(0, ODOMETRY_NOISE_M),
+        )
+        velocity = tuple(v + noise(0, VELOCITY_NOISE_MPS) for v in (vx, vy, -self._vz))
+        self._odometry = (position, velocity)
+        self._odometry_ts = wall
+
+    def _to_frame(self, dx: float, dy: float) -> tuple[float, float]:
+        yaw = math.radians(self._frame_yaw)
+        return dx * math.cos(yaw) + dy * math.sin(yaw), -dx * math.sin(yaw) + dy * math.cos(yaw)
+
+    def _set_state(self, state: str) -> None:
+        self._state = state
+        self._state_since = time.monotonic()
+
+    def _link_up(self, now: float) -> bool:
+        return now >= self._cut_until["link"]
+
+
+class SimSticks(StickSender):
+    """The real stick sender (ramp, cap, watchdog, interlock), without the UDP socket."""
+
+    def __init__(self, link: SimLink, max_magnitude: float) -> None:
+        super().__init__(host="sim", max_magnitude=max_magnitude, dry_run=True, gate=link.is_manual)
+        self.dry_run = False  # nothing is printed or sent: the packet only feeds the physics
+        self.set_session_gate(link.in_manual_session)
+
+    def _send(self, axes: Any) -> None:
+        if self.silent:
+            return
+        seq_num = self._seq_num
+        self._seq_num += 1
+        now = time.time()
+        packet = encode_rocker_command(
+            seq_num, int(now * 1000), axes, self.control_source, self.sport
+        )
+        self._record(seq_num, now, axes, packet, self.sport)
+
+
+class SimCamera:
+    """An ffmpeg test pattern as H.264, fed to the real decoder (VideoReceiver's interface)."""
+
+    def __init__(self, link: SimLink) -> None:
+        self.decoder = MjpegDecoder("h264")
+        self.port = 0
+        self.packets = 0
+        self.bytes = 0
+        self._link = link
+        self._listeners: list[Callable[[bytes], None]] = []
+        self._process: subprocess.Popen | None = None
+        self._thread = threading.Thread(target=self._run, name="sim-camera", daemon=True)
+
+    def start(self) -> None:
+        if not shutil.which("ffmpeg"):
+            raise SystemExit("ffmpeg not found: install it (brew / apt / winget install ffmpeg)")
+        command = [
+            "ffmpeg", "-hide_banner", "-loglevel", "error", "-re",
+            "-f", "lavfi", "-i", VIDEO_SOURCE,
+            "-c:v", "libx264", "-preset", "ultrafast", "-tune", "zerolatency",
+            # SPS/PPS before every keyframe, like the drone (recordings start on one)
+            "-g", "30", "-x264-params", "repeat-headers=1",
+            "-pix_fmt", "yuv420p", "-f", "h264", "pipe:1",
+        ]  # fmt: skip
+        self._process = subprocess.Popen(command, stdout=subprocess.PIPE)
+        self._thread.start()
+
+    def stop(self) -> None:
+        if self._process:
+            self._process.kill()
+            self._process.wait()
+        if self._thread.is_alive():
+            self._thread.join()
+        self.decoder.close()
+
+    def restart_decoder(self) -> None:
+        self.decoder.restart()
+
+    def add_stream_listener(self, listener: Callable[[bytes], None]) -> None:
+        self._listeners = [*self._listeners, listener]
+
+    def remove_stream_listener(self, listener: Callable[[bytes], None]) -> None:
+        self._listeners = [item for item in self._listeners if item != listener]
+
+    def stats(self) -> dict[str, Any]:
+        """VideoReceiver.stats() shape, for the web UI."""
+        size = self.decoder.size or (None, None)
+        return {
+            "port": self.port,
+            "packets": self.packets,
+            "bytes": self.bytes,
+            "pps": 0.0,
+            "bytes_per_s": 0,
+            "senders": ["simulator"],
+            "kind": "annexb (simulated)",
+            "codec": self.decoder.codec,
+            "frames": self.decoder.frames,
+            "width": size[0],
+            "height": size[1],
+            "fps": round(self.decoder.fps, 1),
+            "dump": None,
+            "previews": [],
+        }
+
+    def _run(self) -> None:
+        output = self._process.stdout.fileno()
+        while chunk := os.read(output, VIDEO_READ_BYTES):
+            if self._link.video_cut():
+                continue
+            self.packets += 1
+            self.bytes += len(chunk)
+            self.decoder.feed(chunk)
+            for listener in self._listeners:
+                listener(chunk)
+
+
+def connect_sim(
+    max_speed: float = 60.0,
+    estimator: Estimator | None = None,
+    frame_yaw_offset_deg: float = DEFAULT_FRAME_YAW_OFFSET_DEG,
+    seed: int | None = None,
+    room_half_m: float = DEFAULT_ROOM_HALF_M,
+) -> Drone:
+    """A started Drone on the simulator; the SimLink is `drone.link`."""
+    link = SimLink(frame_yaw_offset_deg, seed, room_half_m)
+    sticks = SimSticks(link, max_speed)
+    link.sticks = sticks
+    drone = Drone(link, sticks, SimCamera(link), estimator)
+    drone.start()
+    return drone
+
+
+def _xyz(values: tuple[float, ...] | None) -> dict[str, float] | None:
+    return None if values is None else dict(zip("xyz", values, strict=True))

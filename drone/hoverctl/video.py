@@ -9,6 +9,7 @@ import struct
 import threading
 import time
 from collections import deque
+from collections.abc import Callable
 from pathlib import Path
 from typing import BinaryIO
 
@@ -47,6 +48,7 @@ class VideoReceiver:
         self.senders: set[str] = set()
         self.previews: list[str] = []
         self._recent: deque[tuple[float, int]] = deque()
+        self._stream_listeners: list[Callable[[bytes], None]] = []
         self._stop = threading.Event()
         self._socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         self._socket.setsockopt(socket.SOL_SOCKET, socket.SO_RCVBUF, SOCKET_RCVBUF)
@@ -63,6 +65,14 @@ class VideoReceiver:
         was asked for another resolution."""
         if self.decoder:
             self.decoder.restart()
+
+    def add_stream_listener(self, listener: Callable[[bytes], None]) -> None:
+        """Call `listener(annexb_bytes)` on the receive thread with every piece of the
+        elementary stream (e.g. an MP4 recorder). It must be quick and must not raise."""
+        self._stream_listeners = [*self._stream_listeners, listener]
+
+    def remove_stream_listener(self, listener: Callable[[bytes], None]) -> None:
+        self._stream_listeners = [item for item in self._stream_listeners if item != listener]
 
     def stop(self) -> None:
         """Stop receiving, close the dump and the decoder."""
@@ -130,6 +140,9 @@ class VideoReceiver:
         stream = self.extractor.feed(datagram)
         if self.decoder:
             self.decoder.feed(stream)
+        if stream:
+            for listener in self._stream_listeners:
+                listener(stream)
 
 
 def _preview(datagram: bytes, sender: str) -> str:

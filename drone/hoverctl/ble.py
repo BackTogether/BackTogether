@@ -325,6 +325,16 @@ class DroneLink:
             lambda rid: pbwire.encode_camera_start_preview_request(rid, pbwire.VIDEO_CODEC_AVC)
         )
 
+    def take_photo(self) -> dict[str, Any]:
+        """camera_take_photo_request over the Wi-Fi RPC, like the app's shutter button: a
+        full-quality photo on the drone's SD card. Needs the laptop on the drone's Wi-Fi."""
+        return _wifi_rpc(lambda rid: pbwire.encode_rpc_request(rid, pbwire.REQ_CAMERA_TAKE_PHOTO))
+
+    def record_video(self, on: bool) -> dict[str, Any]:
+        """camera_start_video_request(on) over the Wi-Fi RPC, like the app's record button:
+        start or stop a recording on the drone's SD card."""
+        return _wifi_rpc(lambda rid: pbwire.encode_camera_start_video_request(rid, on))
+
     def stop_video(self) -> dict[str, Any]:
         """Stop the video push and the heartbeat; this also ends the manual session."""
         self._stop_heartbeat()

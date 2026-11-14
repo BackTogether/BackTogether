@@ -39,6 +39,9 @@ REQ_CONNECT_TYPE = 75  # ConnectTypeRequest: tells the drone an app is the contr
 REQ_SET_PREVIEW_RESOLUTION = 148  # PreviewResolutionParams; the app never sends it
 REQ_GET_PREVIEW_RESOLUTION = 149  # FlightModeConfig
 REQ_CAMERA_START_PREVIEW = 240  # StartPreviewParams
+# The X1's preview screen (com.zerozerorobotics.preview.c) sends these two over the Wi-Fi RPC
+REQ_CAMERA_START_VIDEO = 243  # bool: start/stop recording on the drone's SD card
+REQ_CAMERA_TAKE_PHOTO = 244  # Empty: full-quality photo on the drone's SD card
 REQ_SET_UDP_SERVER_IP = 245  # string: where the drone pushes video
 REQ_SWITCH_TO_MANUAL_CAPTURE = 249  # bool
 REQ_EXIT_PREVIEW_MODE = 250  # Empty
@@ -419,6 +422,11 @@ def encode_set_preview_resolution_request(request_id: int, resolution: int) -> b
         _PREVIEW_RES, resolution
     )
     return encode_rpc_request(request_id, REQ_SET_PREVIEW_RESOLUTION, body)
+
+
+def encode_camera_start_video_request(request_id: int, on: bool) -> bytes:
+    """Start (True) or stop recording on the drone. A oneof keeps false on the wire."""
+    return _int_field(REQUEST_ID, request_id) + _int_field(REQ_CAMERA_START_VIDEO, int(on))
 
 
 def encode_stop_preview_request(request_id: int, codec: int) -> bytes:
