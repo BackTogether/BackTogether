@@ -37,6 +37,7 @@ from pathlib import Path
 import care
 import caregiver
 import listen
+import marionette
 import ntfy_channel
 import speech
 
@@ -51,12 +52,27 @@ CALL_PROFILE_DIR = Path.home() / "leuk" / "call-firefox"
 CALL_LOG_PATH = Path.home() / "leuk" / "call-firefox.log"
 CALL_PROFILE_LOCKS = ("lock", ".parentlock")  # left behind when Firefox is killed
 CALL_CLOSE_TIMEOUT_S = 3
+CALL_MARIONETTE_PORT = 2829  # localhost only: lets this program press Join in the call window
+CALL_JOIN_TIMEOUT_S = 300  # the call page can take minutes to load on the robot's connection
+CALL_JOIN_POLL_S = 1
+# Runs in the call page: press Join on the name screen once it can be pressed.
+CALL_JOIN_SCRIPT = """
+const page = window.wrappedJSObject || window;
+try { if (page.APP.conference.isJoined()) return "joined"; } catch (error) {}
+const join = document.querySelector('[data-testid="prejoin.joinMeeting"]');
+if (!join || join.disabled || join.getAttribute("aria-disabled") === "true") return "loading";
+join.click();
+return "pressed";
+"""
 # The call window must use the camera and microphone with nobody there to tap "Allow".
 CALL_FIREFOX_PREFS = (
     'user_pref("media.navigator.permission.disabled", true);\n'
     'user_pref("permissions.default.camera", 1);\n'
     'user_pref("permissions.default.microphone", 1);\n'
     'user_pref("media.autoplay.default", 0);\n'
+    f'user_pref("marionette.port", {CALL_MARIONETTE_PORT});\n'
+    # Firefox's default camera on the robot is the floor-level base camera: use the head one
+    'user_pref("media.video_loopback_dev", "A68-1600W: A68-1600W");\n'
     'user_pref("browser.shell.checkDefaultBrowser", false);\n'
     'user_pref("browser.sessionstore.resume_from_crash", false);\n'
 )
@@ -120,11 +136,38 @@ class CallWindow:
         CALL_PROFILE_DIR.mkdir(parents=True, exist_ok=True)
         (CALL_PROFILE_DIR / "user.js").write_text(CALL_FIREFOX_PREFS)
         env = dict(os.environ, DISPLAY=os.environ.get("DISPLAY", ":0"))
-        command = ["firefox", "--new-instance", "--profile", str(CALL_PROFILE_DIR), "--kiosk", url]
+        command = ["firefox", "--new-instance", "--marionette", "--profile", str(CALL_PROFILE_DIR)]
+        command += ["--kiosk", url]
         # Firefox errors go to a file: when the window does not appear, the reason is there.
         with open(str(CALL_LOG_PATH), "ab") as output:
             self._process = subprocess.Popen(command, env=env, stdout=output, stderr=output)
         log.info("video call window opened: %s (firefox log: %s)", url, CALL_LOG_PATH)
+        threading.Thread(target=self._press_join, args=(self._process,), daemon=True).start()
+
+    def _press_join(self, process) -> None:
+        """The call server only turns the camera and microphone on when Join is pressed on its
+        name screen (skipping that screen by URL joins muted, without camera), and a lost child
+        will not press it: do it for them, as soon as the page lets us."""
+        browser = marionette.Marionette(CALL_MARIONETTE_PORT)
+        deadline = time.time() + CALL_JOIN_TIMEOUT_S
+        pressed = False
+        try:
+            while process.poll() is None and time.time() < deadline:
+                try:
+                    state = browser.run_script(CALL_JOIN_SCRIPT)
+                except OSError:
+                    state = "starting"  # Firefox is not up yet
+                if state == "joined":
+                    log.info("call window: the robot is in the call")
+                    return
+                if state == "pressed" and not pressed:
+                    pressed = True
+                    log.info("call window: Join pressed")
+                time.sleep(CALL_JOIN_POLL_S)
+            if process.poll() is None:
+                log.warning("call window: not in the call after %d s", CALL_JOIN_TIMEOUT_S)
+        finally:
+            browser.close()
 
     def _close(self) -> None:
         if self._process and self._process.poll() is None:

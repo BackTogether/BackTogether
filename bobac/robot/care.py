@@ -1,10 +1,11 @@
 """What the robot does once it reaches the lost child the drone found.
 
-    greet the child by name -> "are you okay?" -> "did you get hurt?"
-    -> photo -> video call with the parent on the robot's screen (opened first: it is slow)
-    -> tell the parents (photo, answers, video call link, "on my way" buttons)
-    -> keep the child company (calm phrases, a counting game, the parent's ETA, their text and
-       voice messages) until a parent says they are with the child. A report closes it.
+    greet the child by name -> photo -> video call opens on the robot's screen
+    -> tell the parents (one "join the video call" button)
+    -> keep the child company until stop() is called (the robot cannot see the call end).
+
+The two questions ("are you okay?", "did you get hurt?") are switched off with ASK_QUESTIONS:
+reaching the parent comes first, and a voice agent is meant to talk with the child meanwhile.
 
 Plain Python 3.8, no ROS: everything that touches hardware is passed in, so it runs on a laptop.
 The HTTP bridge (or care_server.py) owns one CareSession: `run()` in a thread, `answer()` from
@@ -13,7 +14,6 @@ the screen buttons, `stop()` to abort, `snapshot()` for /status.
 
 import json
 import logging
-import math
 import os
 import tempfile
 import threading
@@ -21,6 +21,10 @@ import time
 import urllib.parse
 import uuid
 
+ASK_QUESTIONS = False  # ask "are you okay?" / "did you get hurt?" before calling the parents
+ROBOT_KEEPS_COMPANY = True  # calm phrases + counting game; turn off when a voice agent talks
+NOTIFY_ATTEMPTS = 3  # the parents must get the message: retry on a flaky connection
+NOTIFY_RETRY_S = 5
 ASK_ATTEMPTS = 2
 ANSWER_WAIT_S = 20
 HURT_WAIT_S = 15
@@ -33,11 +37,10 @@ TIMELINE_IN_SNAPSHOT = 8
 # Public Jitsi server that lets anyone open a room without logging in (meet.jit.si no longer
 # does). The robot and the parent both open the same room URL.
 DEFAULT_CALL_BASE_URL = "https://meet.ffmuc.net"
-# Only for the robot's own window: join straight away as the child (no "enter your name"
-# screen), and hide everything that is not the parent's face, so it is calm for a child.
+# Only for the robot's own window: hide everything that is not the parent's face, so it is calm
+# for a child. The "enter your name" screen is NOT skipped here: skipping it by URL makes the
+# server join with microphone and camera off. The call window presses its Join button instead.
 ROBOT_CALL_OPTIONS = (
-    "config.prejoinConfig.enabled=false",
-    "config.prejoinPageEnabled=false",
     "config.requireDisplayName=false",
     "config.startWithAudioMuted=false",
     "config.startWithVideoMuted=false",
@@ -51,12 +54,6 @@ ROBOT_CALL_OPTIONS = (
     "config.enableWelcomePage=false",
 )
 
-ETA_BUTTONS = (
-    ("I'm on my way (5 min)", "eta:5"),
-    ("I'm on my way (15 min)", "eta:15"),
-    ("I'm on my way (30 min)", "eta:30"),
-)
-WITH_CHILD_BUTTON = (("I'm with my child now", "arrived"),)
 # words that mean each screen answer when said out loud (only the current options are used)
 SPOKEN_ANSWERS = {
     "ok": ("yes", "fine", "okay", "good"),
@@ -116,8 +113,6 @@ class CareSession:
         self._answer = None
         self._how_are_you = None
         self._hurt = None
-        self._parent_coming = None  # name of the parent who replied
-        self._eta_at = None
         self._call_active = False
         self._count = None
         self._timeline = []
@@ -125,25 +120,26 @@ class CareSession:
     # ---------------------------------------------------------------- called by the bridge
 
     def run(self) -> None:
-        """The whole episode; blocks until a parent is with the child or stop() is called."""
+        """The whole episode; blocks until stop() is called."""
         self._note(f"robot is with {self._name} in the {self._zone}")
         self._speech.say_text(
             f"Hi {self._name}! I am a friendly robot. Your {self._parent} sent me to find you."
         )
-        self._how_are_you = self._ask_how_are_you()
-        if self._stopped.is_set():
-            return
-        self._hurt = self._ask_if_hurt()
-        if self._stopped.is_set():
-            return
-        self._comfort_after_answers()
-        # photo before the call (the call takes the camera), call before the messages (sending
-        # the photo is slow on the robot's connection and the call takes a while to load)
+        if ASK_QUESTIONS:
+            self._how_are_you = self._ask_how_are_you()
+            if self._stopped.is_set():
+                return
+            self._hurt = self._ask_if_hurt()
+            if self._stopped.is_set():
+                return
+            self._comfort_after_answers()
+        # photo before the call (the call takes the camera). The robot enters the call first and
+        # the parents are told after, so a parent who joins at once finds the child already there
         photo_path = os.path.join(tempfile.gettempdir(), "bobac_care_photo.jpg")
         has_photo = self._take_photo(photo_path)
         self._start_call()
         self._tell_parents(photo_path if has_photo else None)
-        self._stay_until_parent_arrives()
+        self._keep_company_until_stopped()
 
     def answer(self, value: str) -> bool:
         """A button was pressed on the screen. False if that answer is not expected now."""
@@ -173,8 +169,6 @@ class CareSession:
                     "options": list(self._options),
                     "how_are_you": self._how_are_you,
                     "hurt": self._hurt,
-                    "parent_coming": self._parent_coming,
-                    "eta_at": self._eta_at,
                     "call_url": self._call_url if self._call_active else None,
                     "count": self._count,
                     "listening": self._listen is not None and bool(self._options),
@@ -222,21 +216,24 @@ class CareSession:
         if not self._telegram:
             self._note("no parent channel configured: nobody was told")
             return
-        hurt_line = "🚑 Consider calling {}.".format(self._child["emergency_number"])
         text = (
             f"✅ We found {self._name} in the {self._zone} at {_clock(self._found_time)}. "
-            f"{self._name} {HOW_ARE_YOU[self._how_are_you]} and {HURT[self._hurt]}. "
-            "The robot is with them.\n\nTap the call button to see them now."
-            + ("\n" + hurt_line if self._hurt == "yes" else "")
+            "The robot is with them."
         )
-        buttons = (("📹 Video call", self._call_url),) + ETA_BUTTONS
+        if ASK_QUESTIONS:
+            text += f" {self._name} {HOW_ARE_YOU[self._how_are_you]} and {HURT[self._hurt]}."
+            if self._hurt == "yes":
+                text += "\n🚑 Consider calling {}.".format(self._child["emergency_number"])
+        text += "\n\nJoin the video call to see and talk to them now."
+        buttons = (("📹 Join the video call", self._call_url),)
         for chat_id in self._telegram.chat_ids:
-            sent = self._telegram.send(chat_id, text, buttons=buttons, photo_path=photo_path)
-            self._note(
-                "parent message {} ({})".format(
-                    "sent" if sent else "FAILED", "with photo" if photo_path else "no photo"
-                )
-            )
+            for attempt in range(1, NOTIFY_ATTEMPTS + 1):
+                if self._telegram.send(chat_id, text, buttons=buttons, photo_path=photo_path):
+                    self._note(f"parent message sent (attempt {attempt})")
+                    break
+                self._note(f"parent message FAILED (attempt {attempt} of {NOTIFY_ATTEMPTS})")
+                if self._stopped.wait(NOTIFY_RETRY_S):
+                    return
 
     def _start_call(self) -> None:
         with self._lock:
@@ -247,7 +244,7 @@ class CareSession:
         self._note("video call open on the screen: " + self._call_url)
         self._speech.say_text(f"I am calling your {self._parent}. Look at my screen!")
 
-    def _stay_until_parent_arrives(self) -> None:
+    def _keep_company_until_stopped(self) -> None:
         next_calm_at = time.time() + CALM_EVERY_S
         count_next = False
         while not self._stopped.is_set():
@@ -257,20 +254,14 @@ class CareSession:
                 self._stopped.wait(POLL_S)
                 events = []
             for event in events:
-                if self._handle_parent(event) == "arrived":
-                    self._close_parent_arrived()
-                    return
-            # once a parent replied they are probably talking on the call: stay quiet
-            if self._parent_coming is None and time.time() >= next_calm_at:
+                self._play_parent_message(event)
+            if ROBOT_KEEPS_COMPANY and time.time() >= next_calm_at:
                 if count_next:
                     self._counting_game()
                 else:
                     self._speech.say("still_here")
                 count_next = not count_next
                 next_calm_at = time.time() + CALM_EVERY_S
-            elif self._parent_coming and self._eta_at and time.time() >= next_calm_at:
-                self._say_eta()
-                next_calm_at = time.time() + CALM_EVERY_S * 3
 
     def _end_call(self) -> None:
         with self._lock:
@@ -278,37 +269,11 @@ class CareSession:
         if was_active and self._show_call:
             self._show_call(None)
 
-    def _close_parent_arrived(self) -> None:
-        self._end_call()
-        self._speech.say_text(f"Yay, {self._name}! Your family is here.")
-        self._note(f"{self._parent_coming} is with {self._name}: closed")
-        self._tell_all_parents("✅ Closed.\n\n" + self._report())
-        self._set_state("idle")
-
     # ---------------------------------------------------------------- parents
 
-    def _handle_parent(self, event: dict):
+    def _play_parent_message(self, event: dict) -> None:
         name = event["name"]
-        if event["kind"] == "button" and event["data"].startswith("eta:"):
-            minutes = int(event["data"].split(":")[1])
-            with self._lock:
-                self._parent_coming = name
-                self._eta_at = time.time() + minutes * 60
-            self._note(f"{name} is on the way, about {minutes} min")
-            self._speech.say_text(
-                f"{self._name}, {name} is coming and will be here in about {minutes} minutes."
-            )
-            self._telegram.send(
-                event["chat_id"],
-                f"I told {self._name}. Messages you send here are read out by the robot. "
-                "Press the button when you are with them.",
-                buttons=WITH_CHILD_BUTTON,
-            )
-        elif event["kind"] == "button" and event["data"] == "arrived":
-            with self._lock:
-                self._parent_coming = name
-            return "arrived"
-        elif event["kind"] == "text":
+        if event["kind"] == "text":
             self._note("message from {}: {}".format(name, event["text"]))
             spoken = event["text"][:MAX_SPOKEN_MESSAGE_CHARS]
             self._speech.say_text(f"Message from {name}: {spoken}")
@@ -318,22 +283,8 @@ class CareSession:
             if self._telegram.download(event["file_id"], voice_path):
                 self._speech.say_text(f"Voice message from {name}.")
                 self._speech.play_file(voice_path)
-        return None
-
-    def _tell_all_parents(self, text: str) -> None:
-        if self._telegram:
-            for chat_id in self._telegram.chat_ids:
-                self._telegram.send(chat_id, text)
 
     # ---------------------------------------------------------------- comforting
-
-    def _say_eta(self) -> None:
-        minutes_left = max(1, math.ceil((self._eta_at - time.time()) / 60))
-        self._speech.say_text(
-            "{} will be here in about {} {}. I am staying with you.".format(
-                self._parent_coming, minutes_left, "minute" if minutes_left == 1 else "minutes"
-            )
-        )
 
     def _counting_game(self) -> None:
         """Count to five together, one finger at a time: simple, and it keeps them busy."""
@@ -389,16 +340,6 @@ class CareSession:
         log.info(event)
         with self._lock:
             self._timeline.append({"time": time.time(), "event": event})
-
-    def _report(self) -> str:
-        with self._lock:
-            lines = ["{}  {}".format(_clock(e["time"]), e["event"]) for e in self._timeline]
-        minutes = (time.time() - self._found_time) / 60
-        found_at = _clock(self._found_time)
-        header = (
-            f"Report: {self._name} found at {found_at} in the {self._zone}, {minutes:.0f} min ago."
-        )
-        return "\n".join([header] + lines)
 
 
 def _clock(epoch_s: float) -> str:

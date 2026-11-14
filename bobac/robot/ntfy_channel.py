@@ -43,8 +43,6 @@ class Ntfy:
     def send(self, chat_id: str, text: str, buttons=(), photo_path=None) -> bool:
         """Push a notification. `buttons` is a list of (label, answer or https URL): a URL opens
         it (e.g. the video call), anything else posts that answer back to the robot."""
-        if photo_path and not self._send_photo(photo_path):
-            log.warning("photo not sent, sending the text alone")
         if len(buttons) > MAX_BUTTONS:
             log.warning("ntfy shows %d buttons: dropped %s", MAX_BUTTONS, buttons[MAX_BUTTONS:])
         message = {
@@ -56,6 +54,9 @@ class Ntfy:
         reply = self._request(self._base, json.dumps(message).encode(), "application/json")
         if reply:
             self._sent_ids.add(reply.get("id"))
+        # the photo goes after: its upload is slow and must never hold back the call button
+        if reply and photo_path and not self._send_photo(photo_path):
+            log.warning("photo not sent")
         return reply is not None
 
     def skip_backlog(self) -> None:
