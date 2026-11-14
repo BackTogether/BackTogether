@@ -1,0 +1,5 @@
+# Code in bobac/robot/ runs ON THE ROBOT with its system Python 3.8 (ROS Noetic rospy).
+# Keep the repo rules but target 3.8, so `ruff check --fix` never rewrites it into
+# 3.10+ syntax (X | None, match, ...) that would fail there.
+extend = "../../pyproject.toml"
+target-version = "py38"
