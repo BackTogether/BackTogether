@@ -14,6 +14,10 @@
        the right distance; 0 = its size when found) and top speed in m/s -->
   <arg name="target_area" default="20736"/>
   <arg name="max_linear" default="0.15"/>
+  <!-- full screen image over the terminals and rviz, and seconds to wait before showing it
+       (rviz opens a few seconds after the launch starts) -->
+  <arg name="splash" default="true"/>
+  <arg name="splash_delay" default="5.0"/>
 
   <!-- Block: SLAM + navigation (base, lidars, gmapping, move_base) -->
   <include file="$(find bringup)/launch/slam_nav.launch">
@@ -32,5 +36,16 @@
     <param name="search_on_start" value="$(arg search_on_start)"/>
     <param name="target_area" value="$(arg target_area)"/>
     <param name="max_linear" value="$(arg max_linear)"/>
+  </node>
+
+  <!-- Block: full screen image (assets/base_image.png) on top of everything, so the demo shows
+       one clean picture instead of the terminals and rviz. Esc closes it, or:
+       rostopic pub -1 /splash/show std_msgs/Bool "data: false" -->
+  <node if="$(arg splash)" name="splash" pkg="bringup" type="splash.py" output="screen">
+    <param name="image" value="$(find bringup)/assets/base_image.png"/>
+    <param name="fit" value="contain"/>
+    <param name="background" value="black"/>
+    <param name="delay" value="$(arg splash_delay)"/>
+    <param name="topmost" value="true"/>
   </node>
 </launch>
