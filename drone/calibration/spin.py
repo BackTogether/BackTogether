@@ -23,15 +23,15 @@ import numpy as np
 from PIL import Image
 
 URL = os.environ.get("HOVER_URL", "http://127.0.0.1:8077")
-EXPECTED_DPS_PER_PCT = 8.3 / 60  # measured at stick 60; only sizes the search window
-SEARCH_FROM = 0.6  # of the expected revolution: start comparing with the first frame
+EXPECTED_DPS_PER_PCT = 0.24  # spin-calibrated 2026-11-14; only sizes the search window
+SEARCH_FROM = 0.3  # of the expected revolution: start comparing (early, never miss turn 1)
 GIVE_UP_AFTER = float(
     os.environ.get("SPIN_GIVE_UP", "2.2")
 )  # of the expected revolution: no match by then -> stop this one
 SEND_S = 0.05  # stick posts (the app goes neutral 0.3 s after the last one)
 SIZE = (160, 90)
 MAX_SHIFT = 40  # px at SIZE, ~ +-18 deg
-MIN_MATCH = 0.35  # median tile correlation (edges) needed to trust a shift
+MIN_MATCH = 0.6  # median tile correlation (edges): real repeats scored 0.84-0.88, false 0.4
 TILES_X, TILES_Y = 4, 2  # vote over tiles: people in a few tiles are outvoted
 PAUSE_S = 3.0
 TAB = "spin"

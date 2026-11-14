@@ -23,9 +23,10 @@ from drone.hoverctl.protocol import AXIS_LIMIT, Axes
 from .telemetry import Pose, Telemetry
 
 # Unknown for the X1 until calibrate_yaw() runs on it: deg/s at full yaw stick (100).
-# Measured 2026-11-14 from video optical flow (f = 850 px): 8.3 deg/s at stick 60, scaled
-# linearly to full stick. A full-stick turn would confirm whether there is a dead zone.
-DEFAULT_YAW_RATE_DPS = 13.8
+# Measured 2026-11-14 with exact 360-degree spins (drone.calibration.spin, view repeat in the
+# video): one turn in 14.9 s at stick 100, 18.7 s at 80, 25.2 s at 60 = 24.2 / 19.3 / 14.3 deg/s,
+# i.e. ~0.24 deg/s per stick % with almost no dead zone.
+DEFAULT_YAW_RATE_DPS = 24.2
 YAW_RATE_ERROR = 0.15  # a turn of D degrees adds D x this to the heading sigma
 HEADING_DRIFT_DPS = 0.5  # the drone may creep in yaw on its own while hovering
 INITIAL_HEADING_SIGMA_DEG = 45.0  # the takeoff frame's axes vs the camera are unknown
