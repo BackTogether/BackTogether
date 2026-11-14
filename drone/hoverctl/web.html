@@ -1163,6 +1163,8 @@ const svgEl = (tag, attrs, text) => {
 };
 const onDial = (deg, r) => [r * Math.sin(deg * Math.PI / 180), -r * Math.cos(deg * Math.PI / 180)];
 const normalDeg = (deg) => ((deg % 360) + 360) % 360;
+// Whole degrees 0..359 for display: round first, then wrap (359.6 shows 0, never 360).
+const headingText = (deg) => `${normalDeg(Math.round(deg))}°`;
 const cardinal = (deg) => CARDINALS[Math.round(normalDeg(deg) / 45) % CARDINALS.length];
 
 const ringLabels = [];
@@ -1210,9 +1212,9 @@ function renderEstimate(estimate) {
   const moving = pose.in_flight && speed >= TRAVEL_MIN_SPEED;
   travelMark.style.display = moving ? "" : "none";
   travelMark.setAttribute("transform", `rotate(${travel})`);
-  $("heading").innerHTML = `${normalDeg(pose.heading_deg).toFixed(0)}°<small>${cardinal(pose.heading_deg)}</small>`;
+  $("heading").innerHTML = `${headingText(pose.heading_deg)}<small>${cardinal(pose.heading_deg)}</small>`;
   setText("heading-sd", `± ${pose.heading_sigma_deg.toFixed(0)}°`, pose.heading_sigma_deg > HEADING_UNSURE_DEG);
-  setReadout("r-speed", pose.in_flight ? [speed.toFixed(2), moving ? `→ ${normalDeg(travel).toFixed(0)}° ${cardinal(travel)}` : "hovering"]
+  setReadout("r-speed", pose.in_flight ? [speed.toFixed(2), moving ? `→ ${headingText(travel)} ${cardinal(travel)}` : "hovering"]
     : ["—", "on ground"], "m/s");
   setText("e-position", pose.in_flight
     ? `${signed(pose.x, 2)} ${signed(pose.y, 2)} · ±${pose.position_sigma_m.toFixed(1)} m` : "on ground");
