@@ -11,6 +11,7 @@ matching frames. With no match for `timeout_s` the search fails.
 
 import logging
 import time
+from collections.abc import Iterator
 from pathlib import Path
 
 import cv2
@@ -43,19 +44,10 @@ def newest_frame(folder: Path, after: Path | None) -> Path | None:
     return frames[-1]
 
 
-def watch(
-    target: str,
-    root: Path,
-    embedder: FaceEmbedder,
-    people: People,
-    timeout_s: float = SEARCH_TIMEOUT_S,
-) -> Sighting | None:
-    """Block until `target` is confirmed in the live frames (a Sighting) or timeout (None)."""
+def live_frames(root: Path, timeout_s: float) -> Iterator[tuple]:
+    """Yield (path, image) for each new frame the drone saves, newest first, for timeout_s."""
     deadline = time.monotonic() + timeout_s
     last = None
-    matches = 0
-    looked = 0
-    best = None
     while time.monotonic() < deadline:
         folder = newest_session(root) if root.is_dir() else root
         frame = newest_frame(folder, last) if folder.is_dir() else None
@@ -64,23 +56,40 @@ def watch(
             continue
         last = frame
         image = cv2.imread(str(frame))
-        if image is None:
-            continue
+        if image is not None:
+            yield frame, image
+
+
+def classified_faces(frame: Path, image, embedder: FaceEmbedder, people: People) -> list:
+    """[(name or None, Sighting)] for every face in the frame, logged as it is seen."""
+    result = []
+    for face in embedder.faces(image):
+        name, similarity = people.classify(face.embedding)
+        log.info("%s: face %dpx -> %s %.2f", frame.name, face.box[2], name or "unknown", similarity)
+        result.append((name, Sighting(frame, face.box, similarity, attempt=0)))
+    return result
+
+
+def watch(
+    target: str,
+    root: Path,
+    embedder: FaceEmbedder,
+    people: People,
+    timeout_s: float = SEARCH_TIMEOUT_S,
+) -> Sighting | None:
+    """Block until `target` is confirmed in the live frames (a Sighting) or timeout (None)."""
+    matches = 0
+    looked = 0
+    best = None
+    for frame, image in live_frames(root, timeout_s):
         looked += 1
-        found = None
-        for face in embedder.faces(image):
-            name, similarity = people.classify(face.embedding)
-            log.info(
-                "%s: face %dpx -> %s %.2f",
-                frame.name,
-                face.box[2],
-                name or "unknown",
-                similarity,
-            )
-            if name == target and (found is None or similarity > found.similarity):
-                found = Sighting(frame, face.box, similarity, attempt=matches + 1)
+        sightings = [
+            s for name, s in classified_faces(frame, image, embedder, people) if name == target
+        ]
+        found = max(sightings, key=lambda s: s.similarity, default=None)
         matches = matches + 1 if found else 0
         if found:
+            found.attempt = matches
             log.info(
                 "%s: %s %.2f (%d/%d)", frame.name, target, found.similarity, matches, CONFIRM_FRAMES
             )
