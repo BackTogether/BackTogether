@@ -84,7 +84,9 @@ class VideoReceiver:
 
     def stats(self) -> dict:
         """Counters, rates and decoder state, JSON-ready. `width`/`height` are the decoded frame
-        size (None until a frame is out), `fps` the decoded frame rate."""
+        size (None until a frame is out), `fps` the decoded frame rate, `decode_lag_ms` the mean
+        time from a picture's arrival to its decoded frame (None without recent frames) and
+        `decode_queued` the pictures still inside ffmpeg."""
         now = time.monotonic()
         size = self.decoder.size if self.decoder and self.decoder.size else (None, None)
         recent = [(t, n) for t, n in list(self._recent) if now - t <= RATE_WINDOW_S]
@@ -101,6 +103,8 @@ class VideoReceiver:
             "width": size[0],
             "height": size[1],
             "fps": round(self.decoder.fps, 1) if self.decoder else 0.0,
+            "decode_lag_ms": _rounded(self.decoder.lag_ms) if self.decoder else None,
+            "decode_queued": self.decoder.queued if self.decoder else 0,
             "dump": str(self.dump_path) if self.dump_path else None,
             "previews": self.previews,
         }
@@ -143,6 +147,10 @@ class VideoReceiver:
         if stream:
             for listener in self._stream_listeners:
                 listener(stream)
+
+
+def _rounded(value: float | None) -> float | None:
+    return None if value is None else round(value)
 
 
 def _preview(datagram: bytes, sender: str) -> str:

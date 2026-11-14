@@ -2,9 +2,11 @@
 
 The X1 gives us position and velocity at a fixed 1 Hz in a frame that resets at takeoff, and
 no heading at all. `DeadReckoner` makes the best of that:
-- heading: integrates the yaw stick that was actually sent x a calibrated yaw rate, and corrects
-  it from the direction of travel whenever the drone flies a steady horizontal command without
-  turning (velocity direction - command direction = heading);
+- heading: integrates the yaw stick that was actually sent x a calibrated yaw rate; where the
+  video measures the yaw (flow.py, `on_yaw_step`) the measured turn replaces the stick model's
+  over the same interval, and steady turns re-calibrate the stick model online. It also corrects
+  the heading from the direction of travel whenever the drone flies a steady horizontal command
+  without turning (velocity direction - command direction = heading);
 - position: the last odometry sample, extrapolated with its velocity for up to
   EXTRAPOLATE_MAX_S;
 - takeoff: a new flight starts a new frame, so heading and uncertainty are reset.
@@ -16,11 +18,14 @@ three methods and is passed as `Drone(estimator=...)`; see drone/sdk/README.md.
 import math
 import threading
 import time
+from collections import deque
 from typing import Protocol
 
 from drone.hoverctl.protocol import AXIS_LIMIT, Axes
 
+from .flow import YawStep
 from .telemetry import Pose, Telemetry
+from .tilt import GIMBAL_DEADZONE_PCT
 
 # Unknown for the X1 until calibrate_yaw() runs on it: deg/s at full yaw stick (100).
 # Measured 2026-11-14 with exact 360-degree spins (drone.calibration.spin, view repeat in the
@@ -38,6 +43,24 @@ FIX_STEADY_S = 1.5  # the command must hold its direction this long (odometry la
 FIX_DIRECTION_TOLERANCE_DEG = 15.0
 FIX_MIN_SPEED_MPS = 0.25
 FIX_SIGMA_DEG = 15.0  # 1-sigma of one velocity-direction measurement
+# Yaw measured from the video (flow.py)
+FLOW_MIN_CONFIDENCE = 0.3  # steps below are ignored (blank, blurred or disturbed images)
+FLOW_STALE_S = 1.0  # no trusted step for this long: the heading is back on the sticks alone
+FLOW_YAW_ERROR = 0.05  # a measured turn of D degrees adds D x this to the heading sigma
+FLOW_DRIFT_DPS = 0.05  # the video sees the slow creep that HEADING_DRIFT_DPS allows for
+FLOW_RATE_WINDOW = 5  # steps (~1 s) averaged for the displayed rate
+STICK_HISTORY = 150  # stick-model turn samples kept (~5 s at 30 Hz), to match a step's interval
+# Image motion that is not yaw: moving the camera, flying sideways or fast
+FLOW_GATE_ROLL_STICK = 10.0
+FLOW_GATE_SPEED_MPS = 1.0
+FLOW_GATE_HOLD_S = 1.0  # the drone keeps drifting after the stick is released
+# Online calibration of yaw_rate_dps from steady measured turns
+CALIBRATE_MIN_STICK = 20.0
+CALIBRATE_STEADY_S = 1.0  # skip the drone's spin-up after the stick settles
+CALIBRATE_GAIN = 0.05  # per step (5 per second): ~4 s of steady turning to mostly converge
+CALIBRATE_MAX_RATIO = 2.0  # one step moves the model at most this far (glitches)
+MIN_YAW_RATE_DPS = 3.0
+MAX_YAW_RATE_DPS = 120.0
 # Position
 EXTRAPOLATE_MAX_S = 1.0  # odometry is 1 Hz: never extrapolate further than one period
 ODOMETRY_SIGMA_M = 0.1
@@ -45,7 +68,9 @@ ODOMETRY_SIGMA_M = 0.1
 
 class Estimator(Protocol):
     """What the Drone feeds and the Navigator reads. Implementations must be thread-safe:
-    update() and on_command() run on the Drone's control thread, pose() on any thread."""
+    update() and on_command() run on the Drone's control thread, pose() on any thread.
+    Optional: on_yaw_step(step: YawStep), called on the video thread when the video measures
+    the yaw (DeadReckoner has it); estimators without it simply do not get the measurement."""
 
     def update(self, telemetry: Telemetry) -> None:
         """A telemetry reading (10 Hz; odometry inside changes at 1 Hz)."""
@@ -64,7 +89,8 @@ def wrap_deg(angle: float) -> float:
 
 
 class DeadReckoner:
-    """The default estimator: yaw-stick integration + travel-direction fixes + 1 Hz odometry."""
+    """The default estimator: yaw from the video where trusted, else yaw-stick integration,
+    + travel-direction fixes + 1 Hz odometry."""
 
     def __init__(self, yaw_rate_dps: float = DEFAULT_YAW_RATE_DPS) -> None:
         self.yaw_rate_dps = yaw_rate_dps
@@ -80,6 +106,14 @@ class DeadReckoner:
         self._odometry_time: float | None = None
         self._steady_direction: float | None = None  # body-frame direction of the command
         self._steady_since = 0.0
+        self._stick_total = 0.0  # stick-model turn since takeoff, deg
+        self._stick_history: deque[tuple[float, float]] = deque(maxlen=STICK_HISTORY)
+        self._flow_gated_until = 0.0  # unix time
+        self._flow_at: float | None = None  # unix time of the last applied step
+        self._recent_steps: deque[YawStep] = deque(maxlen=FLOW_RATE_WINDOW)
+        self._waiting_steps: deque[YawStep] = deque()  # until the stick history covers them
+        self._yaw_stick: float | None = None  # a steady yaw stick for calibration, since:
+        self._yaw_stick_since = 0.0
 
     def update(self, telemetry: Telemetry) -> None:
         with self._lock:
@@ -92,19 +126,53 @@ class DeadReckoner:
             self._position = telemetry.position
             self._velocity = telemetry.velocity or (0.0, 0.0, 0.0)
             self._odometry_time = telemetry.odometry_time
+            if math.hypot(self._velocity[0], self._velocity[1]) > FLOW_GATE_SPEED_MPS:
+                self._flow_gated_until = time.time() + FLOW_GATE_HOLD_S
             self._fix_heading_from_travel()
 
     def on_command(self, sticks: Axes, dt: float) -> None:
         with self._lock:
             if not self._in_flight:
                 return
+            now = time.time()
             turn = sticks.yaw / AXIS_LIMIT * self.yaw_rate_dps * dt
+            self._stick_total += turn
+            self._stick_history.append((now, self._stick_total))
             self._heading = wrap_deg(self._heading + turn)
+            measured = self._heading_source(now) == "flow"
+            turn_error = FLOW_YAW_ERROR if measured else YAW_RATE_ERROR
+            drift = FLOW_DRIFT_DPS if measured else HEADING_DRIFT_DPS
             self._heading_sigma = min(
-                MAX_HEADING_SIGMA_DEG,
-                self._heading_sigma + abs(turn) * YAW_RATE_ERROR + HEADING_DRIFT_DPS * dt,
+                MAX_HEADING_SIGMA_DEG, self._heading_sigma + abs(turn) * turn_error + drift * dt
             )
+            if abs(sticks.gimbal) > GIMBAL_DEADZONE_PCT or abs(sticks.roll) > FLOW_GATE_ROLL_STICK:
+                self._flow_gated_until = now + FLOW_GATE_HOLD_S
+            self._track_yaw_stick(sticks.yaw, now)
             self._track_steady_command(sticks)
+            self._apply_waiting_steps()
+
+    def on_yaw_step(self, step: YawStep) -> None:
+        """A yaw measured from the video: it replaces the stick model's turn over the same
+        interval, so the decoding delay does not matter and nothing is counted twice."""
+        with self._lock:
+            self._recent_steps.append(step)
+            if self._in_flight and step.confidence >= FLOW_MIN_CONFIDENCE:
+                self._waiting_steps.append(step)
+                self._apply_waiting_steps()
+
+    def _apply_waiting_steps(self) -> None:
+        """Apply the steps the stick history now covers: a frame usually comes between two
+        control ticks, and the stick turn up to its time is only known at the next tick
+        (clamping there instead counted ~8 % of every turn twice)."""
+        history = self._stick_history
+        while self._waiting_steps and history and history[-1][0] >= self._waiting_steps[0].end:
+            step = self._waiting_steps.popleft()
+            if step.start < history[0][0] or step.start < self._flow_gated_until:
+                continue
+            stick_turn = self._stick_turn(step.end) - self._stick_turn(step.start)
+            self._heading = wrap_deg(self._heading + step.yaw_deg - stick_turn)
+            self._flow_at = step.end
+            self._calibrate(step, stick_turn)
 
     def pose(self) -> Pose:
         with self._lock:
@@ -122,7 +190,52 @@ class DeadReckoner:
                 position_sigma_m=ODOMETRY_SIGMA_M + speed * age,
                 velocity=self._velocity,
                 in_flight=self._in_flight,
+                heading_source=self._heading_source(time.time()),
+                **self._flow_reading(),
             )
+
+    def _heading_source(self, now: float) -> str:
+        fresh = self._flow_at is not None and now - self._flow_at < FLOW_STALE_S
+        return "flow" if fresh else "sticks"
+
+    def _flow_reading(self) -> dict[str, float | None]:
+        """The video's yaw rate and confidence over the last ~1 s, None when it is silent."""
+        steps = [s for s in self._recent_steps if time.time() - s.end < FLOW_STALE_S]
+        if not steps:
+            return {"flow_yaw_rate_dps": None, "flow_confidence": None}
+        good = [s for s in steps if s.confidence >= FLOW_MIN_CONFIDENCE]
+        span = sum(s.end - s.start for s in good)
+        return {
+            "flow_yaw_rate_dps": sum(s.yaw_deg for s in good) / span if span > 0 else None,
+            "flow_confidence": sum(s.confidence for s in steps) / len(steps),
+        }
+
+    def _stick_turn(self, at: float) -> float:
+        """The stick model's total turn at unix time `at`, interpolated in the history."""
+        history = self._stick_history
+        if at <= history[0][0]:
+            return history[0][1]
+        for (t0, turn0), (t1, turn1) in zip(history, list(history)[1:], strict=False):
+            if t0 <= at <= t1:
+                return turn0 + (turn1 - turn0) * (at - t0) / max(t1 - t0, 1e-6)
+        return history[-1][1]
+
+    def _track_yaw_stick(self, yaw: float, now: float) -> None:
+        if abs(yaw) < CALIBRATE_MIN_STICK:
+            self._yaw_stick = None
+        elif self._yaw_stick != yaw:
+            self._yaw_stick, self._yaw_stick_since = yaw, now
+
+    def _calibrate(self, step: YawStep, stick_turn: float) -> None:
+        """Steady turn measured: nudge yaw_rate_dps toward what the video saw."""
+        steady = (
+            self._yaw_stick is not None and step.start - self._yaw_stick_since >= CALIBRATE_STEADY_S
+        )
+        if not steady or stick_turn * step.yaw_deg <= 0:
+            return
+        ratio = min(CALIBRATE_MAX_RATIO, max(1 / CALIBRATE_MAX_RATIO, step.yaw_deg / stick_turn))
+        rate = self.yaw_rate_dps * (1 + CALIBRATE_GAIN * (ratio - 1))
+        self.yaw_rate_dps = min(MAX_YAW_RATE_DPS, max(MIN_YAW_RATE_DPS, rate))
 
     def _track_steady_command(self, sticks: Axes) -> None:
         if abs(sticks.yaw) > FIX_MAX_YAW_STICK or math.hypot(sticks.pitch, sticks.roll) < (

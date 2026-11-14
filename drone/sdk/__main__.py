@@ -11,7 +11,7 @@ import webbrowser
 
 from drone.hoverctl.__main__ import add_web_arguments, make_web_parts
 
-from .drone import Drone
+from .drone import Drone, make_video_yaw_or_note
 from .estimate import DEFAULT_YAW_RATE_DPS, DeadReckoner
 from .safety import SafetyLimits
 from .server import ApiServer
@@ -76,7 +76,8 @@ def _serve(drone: Drone, args: argparse.Namespace, ble_note: str = "") -> None:
 
 def cmd_serve(args: argparse.Namespace) -> None:
     link, ble_note, sender, receiver = make_web_parts(args)
-    drone = Drone(link, sender, receiver, DeadReckoner(args.yaw_rate))
+    estimator = DeadReckoner(args.yaw_rate)
+    drone = Drone(link, sender, receiver, estimator, video_yaw=make_video_yaw_or_note())
     drone.start()
     _serve(drone, args, ble_note)
 

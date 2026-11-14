@@ -2,7 +2,8 @@
 
 It wraps the Bluetooth link (`DroneLink`), the 30 Hz stick sender (`StickSender`) and the video
 receiver + decoder, and adds: velocity commands with a watchdog, a cancel-everything STOP,
-telemetry and video streams (callbacks and iterators), and the pose estimator.
+telemetry and video streams (callbacks and iterators), and the pose estimator (with the yaw
+measured from the video when numpy is installed: flow.py).
 
     with Drone.connect(max_speed=50) as drone:
         drone.wait_connected()
@@ -32,6 +33,7 @@ from drone.hoverctl.sticks import DEFAULT_MAX_MAGNITUDE, StickSender
 from drone.hoverctl.video import VideoReceiver
 
 from .estimate import DeadReckoner, Estimator
+from .flow import NO_NUMPY_NOTE, VideoYaw, YawStep, make_video_yaw
 from .recording import Mp4Recorder, save_jpeg
 from .safety import Interrupted
 from .telemetry import Broadcaster, Pose, Telemetry, Tilt, telemetry_from_snapshot
@@ -83,14 +85,18 @@ class Drone:
         video: VideoReceiver | Any | None,
         estimator: Estimator | None = None,
         tilt_estimator: TiltEstimator | None = None,
+        video_yaw: VideoYaw | None = None,
     ) -> None:
         """`link` None: no Bluetooth (no telemetry, commands fail). `video` is a VideoReceiver
-        or anything with `.decoder`, `.start()`, `.stop()`, `.restart_decoder()`."""
+        or anything with `.decoder`, `.start()`, `.stop()`, `.restart_decoder()`. `video_yaw`
+        measures the yaw from the video for the estimator (real drone only: the simulator's
+        test pattern does not turn)."""
         self.link = link
         self.sticks = sticks
         self.video = video
         self.estimator: Estimator = estimator or DeadReckoner()
         self.tilt_estimator = tilt_estimator or TiltEstimator()
+        self.video_yaw = video_yaw
         self._lock = threading.Lock()
         self._epoch = 0  # bumped by stop(): every autopilot action started before is cancelled
         self._command: Axes | None = None
@@ -127,7 +133,7 @@ class Drone:
         sticks = StickSender(max_magnitude=max_speed, gate=link.is_manual)
         sticks.set_session_gate(link.in_manual_session)
         video = VideoReceiver(decoder=MjpegDecoder())
-        drone = cls(link, sticks, video, estimator)
+        drone = cls(link, sticks, video, estimator, video_yaw=make_video_yaw_or_note())
         drone.start()
         return drone
 
@@ -141,6 +147,7 @@ class Drone:
         if self.link:
             self.link.start()
         self.sticks.start()
+        self._attach_video_yaw()
         if self.video:
             self.video.start()
         self._publish_telemetry()
@@ -473,6 +480,18 @@ class Drone:
         """Start or stop a recording on the drone's SD card (the app's record button)."""
         return self.link.record_video(on) if self.link else NO_LINK
 
+    def _attach_video_yaw(self) -> None:
+        decoder = getattr(self.video, "decoder", None)
+        if self.video_yaw is None or decoder is None:
+            return
+        if not self.video_yaw.attach(decoder, self._on_yaw_step):
+            print("drone: no second ffmpeg pipe here (Windows): heading from sticks", flush=True)
+
+    def _on_yaw_step(self, step: YawStep) -> None:
+        on_step = getattr(self.estimator, "on_yaw_step", None)  # optional for an Estimator
+        if on_step is not None:
+            on_step(step)
+
     # --- threads ------------------------------------------------------------------------------
 
     def _control_loop(self) -> None:
@@ -508,7 +527,12 @@ class Drone:
         self.estimator.update(telemetry)
         self.tilt_estimator.update(telemetry)
         pose = self.estimator.pose()
-        telemetry = replace(telemetry, pose=pose, tilt=self.tilt_estimator.tilt())
+        telemetry = replace(
+            telemetry,
+            pose=pose,
+            tilt=self.tilt_estimator.tilt(),
+            video_lag_ms=getattr(getattr(self.video, "decoder", None), "lag_ms", None),
+        )
         with self._lock:
             self._telemetry = telemetry
             self._record_path(telemetry.in_flight, pose)
@@ -538,3 +562,11 @@ class Drone:
                 self._frame = jpeg
                 self._frame_at = time.monotonic()
             self._frame_bus.publish(jpeg)
+
+
+def make_video_yaw_or_note() -> VideoYaw | None:
+    """make_video_yaw(), saying so when numpy is missing."""
+    video_yaw = make_video_yaw()
+    if video_yaw is None:
+        print(f"drone: {NO_NUMPY_NOTE}", flush=True)
+    return video_yaw

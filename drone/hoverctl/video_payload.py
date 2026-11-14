@@ -19,11 +19,22 @@ RTP_DYNAMIC_PAYLOAD_TYPES = range(96, 128)
 RTP_LOCK_PACKETS = 3  # this many packets in a row with the same SSRC -> it's RTP
 
 H264_NAL_TYPE_MASK = 0x1F
+H264_SLICE_TYPES = (1, 5)  # non-IDR, IDR
+H264_IDR = 5
 H264_SPS = 7
 H264_STAP_A = 24
 H264_FU_A = 28
 FU_START_BIT = 0x80
+FU_END_BIT = 0x40
+RTP_MARKER_BIT = 0x80  # second header byte: the last packet of a picture
+# An access unit delimiter right after a picture's last packet: ffmpeg's H.264 parser otherwise
+# holds each picture until the next one starts (one frame, ~33 ms, measured 68 -> 35 ms lag)
+H264_ACCESS_UNIT_DELIMITER = LONG_START_CODE + b"\x09\xf0"
 HEVC_VPS_HEADER = b"\x40\x01"
+HEVC_VCL_TYPES = range(32)
+HEVC_IRAP_TYPES = range(16, 24)
+FIRST_SLICE_BIT = 0x80  # H.264 first_mb_in_slice == 0 / HEVC first_slice_segment_in_pic_flag
+NAL_HEADER_BYTES = {"h264": 1, "hevc": 2}
 
 
 class PayloadKind(StrEnum):
@@ -51,6 +62,55 @@ def find_parameter_set(stream: bytes) -> tuple[int, str] | None:
             return start, "h264"
         offset = stream.find(START_CODE, offset + 1)
     return None
+
+
+class PictureCounter:
+    """Counts pictures (first slices) in an Annex-B stream fed in pieces of any size, from the
+    first keyframe on: a decoder drops the pictures before it."""
+
+    def __init__(self, codec: str) -> None:
+        self._header = NAL_HEADER_BYTES[codec]
+        self._is_slice = _h264_slice if codec == "h264" else _hevc_slice
+        self._is_keyframe = _h264_keyframe if codec == "h264" else _hevc_keyframe
+        self._need = len(START_CODE) + self._header + 1  # start code, header, first slice byte
+        self._tail = b""
+        self._started = False
+
+    def wait_for_keyframe(self) -> None:
+        """Count nothing until the next keyframe (after the decoder lost track)."""
+        self._started = False
+
+    def feed(self, data: bytes) -> int:
+        """New pictures that start in `data` (a start code split from the last piece counts)."""
+        stream = self._tail + data
+        count = 0
+        offset = stream.find(START_CODE)
+        while offset >= 0 and offset + self._need <= len(stream):
+            complete_before = offset + self._need <= len(self._tail)  # counted last time
+            nal = offset + len(START_CODE)
+            if not complete_before and self._is_slice(stream[nal]):
+                self._started = self._started or self._is_keyframe(stream[nal])
+                first_slice = stream[nal + self._header] & FIRST_SLICE_BIT != 0
+                count += self._started and first_slice
+            offset = stream.find(START_CODE, offset + 1)
+        self._tail = stream[-self._need :]
+        return count
+
+
+def _h264_slice(header: int) -> bool:
+    return header & H264_NAL_TYPE_MASK in H264_SLICE_TYPES
+
+
+def _hevc_slice(header: int) -> bool:
+    return (header >> 1) & 0x3F in HEVC_VCL_TYPES
+
+
+def _h264_keyframe(header: int) -> bool:
+    return header & H264_NAL_TYPE_MASK == H264_IDR
+
+
+def _hevc_keyframe(header: int) -> bool:
+    return (header >> 1) & 0x3F in HEVC_IRAP_TYPES
 
 
 def detect_codec(stream: bytes) -> str | None:
@@ -114,7 +174,7 @@ class StreamExtractor:
         if self.kind is PayloadKind.ANNEXB:
             return data
         if self.kind is PayloadKind.RTP:
-            return depacketize_h264(_rtp_payload(data))
+            return _rtp_to_annexb(data)
         return self._detect(data)
 
     def _detect(self, data: bytes) -> bytes:
@@ -131,4 +191,28 @@ class StreamExtractor:
             return b""
         self.kind = PayloadKind.RTP
         held, self._held = self._held, []
-        return b"".join(depacketize_h264(_rtp_payload(packet)) for packet in held)
+        return b"".join(_rtp_to_annexb(packet) for packet in held)
+
+
+def _rtp_to_annexb(packet: bytes) -> bytes:
+    """Depacketize, and close the picture with an access unit delimiter on its last packet."""
+    payload = _rtp_payload(packet)
+    stream = depacketize_h264(payload)
+    if packet[1] & RTP_MARKER_BIT and _ends_slice(payload):
+        stream += H264_ACCESS_UNIT_DELIMITER
+    return stream
+
+
+def _ends_slice(payload: bytes) -> bool:
+    """The payload is a whole slice NAL or the last fragment of one (not a parameter set: the
+    drone marks those too, and a delimiter must not split them from their picture)."""
+    if not payload:
+        return False
+    nal_type = payload[0] & H264_NAL_TYPE_MASK
+    if nal_type == H264_FU_A:
+        return (
+            len(payload) > 1
+            and bool(payload[1] & FU_END_BIT)
+            and (payload[1] & H264_NAL_TYPE_MASK in H264_SLICE_TYPES)
+        )
+    return nal_type in H264_SLICE_TYPES

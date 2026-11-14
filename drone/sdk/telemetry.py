@@ -32,6 +32,9 @@ class Pose:
     position_sigma_m: float  # 1-sigma horizontal position uncertainty
     velocity: Vector  # frame velocity used for extrapolation, m/s
     in_flight: bool
+    heading_source: str = "sticks"  # "flow" (measured from the video) or "sticks" (yaw model)
+    flow_yaw_rate_dps: float | None = None  # the video's yaw rate over ~1 s, + = right
+    flow_confidence: float | None = None  # 0..1; None while the video measures nothing
 
     @property
     def alt(self) -> float:
@@ -80,6 +83,7 @@ class Telemetry:
     stick_output: dict[str, float]  # what the stick sender sends now, -100..100, our signs
     video_age_s: float | None  # since the last decoded frame; None before the first
     pose: Pose | None = None  # the estimator's belief, filled in by the Drone
+    video_lag_ms: float | None = None  # picture arrival -> decoded frame, filled in by the Drone
     tilt: Tilt | None = None  # the camera tilt estimate, filled in by the Drone
 
     @property

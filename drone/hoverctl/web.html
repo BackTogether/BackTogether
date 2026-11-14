@@ -308,7 +308,7 @@
 
     <aside class="side">
       <section class="compass" id="estimate" hidden>
-        <div class="head"><span class="label mono">heading</span><span class="est-tag mono" title="Not a real compass: N is the takeoff frame's +x, from the yaw stick and the direction of travel">estimated</span></div>
+        <div class="head"><span class="label mono">heading</span><span class="est-tag mono" id="heading-source" title="Not a real compass: N is the takeoff frame's +x, from the yaw stick and the direction of travel">estimated</span></div>
         <div class="dial">
           <svg viewBox="-110 -110 220 220" aria-label="estimated heading">
             <path class="sigma" id="sigma"></path>
@@ -395,6 +395,7 @@
         <div class="kv">
           <div><label class="mono">decoded size</label><output id="v-size">—</output></div>
           <div><label class="mono">decoder fps · page fps</label><output id="v-fps">—</output></div>
+          <div><label class="mono">decode lag · queued</label><output id="v-lag">—</output></div>
           <div class="wide"><label class="mono">quality · asked / drone</label><output class="wrap" id="v-quality">—</output></div>
           <div><label class="mono">packets</label><output id="v-packets">—</output></div>
           <div><label class="mono">pkt/s · KB/s</label><output id="v-rate">—</output></div>
@@ -432,6 +433,7 @@ const POLL_MS = 250;
 const CLOCK_MS = 100;         // refresh of the freshness readouts
 const STALE_MS = 1000;        // no state update for this long: link lost
 const VIDEO_STALL_MS = 2000;  // decoded frames stopped for this long: video stalled
+const DECODE_LAG_WARN_MS = 150;  // arrival -> decoded frame; normal is ~10-40 ms
 const FPS_WINDOW_MS = 2000;
 const RETRY_VIDEO_MS = 2000;
 const KNOB_TRAVEL = 0.42;     // knob reach from the pad centre, as a fraction of the pad width
@@ -827,6 +829,8 @@ function renderVideo(stats) {
   const size = stats.width ? `${stats.width}×${stats.height}` : "";
   setText("v-size", size || "—");
   setText("v-fps", stats.decoding ? `${stats.fps.toFixed(1)} · ${video.fps.toFixed(1)}` : "—");
+  setText("v-lag", stats.decode_lag_ms == null ? "—" : `${stats.decode_lag_ms} ms · ${stats.decode_queued}`,
+    stats.decode_lag_ms > DECODE_LAG_WARN_MS);
   $("v-port").textContent = `udp ${stats.port}`;
   setText("v-packets", stats.packets.toLocaleString());
   setText("v-rate", `${stats.pps.toFixed(1)} · ${(stats.bytes_per_s / 1024).toFixed(0)}`);
@@ -1214,6 +1218,7 @@ function renderEstimate(estimate) {
   travelMark.setAttribute("transform", `rotate(${travel})`);
   $("heading").innerHTML = `${headingText(pose.heading_deg)}<small>${cardinal(pose.heading_deg)}</small>`;
   setText("heading-sd", `± ${pose.heading_sigma_deg.toFixed(0)}°`, pose.heading_sigma_deg > HEADING_UNSURE_DEG);
+  renderHeadingSource(pose);
   setReadout("r-speed", pose.in_flight ? [speed.toFixed(2), moving ? `→ ${headingText(travel)} ${cardinal(travel)}` : "hovering"]
     : ["—", "on ground"], "m/s");
   setText("e-position", pose.in_flight
@@ -1223,9 +1228,21 @@ function renderEstimate(estimate) {
   setText("e-tilt", `${tilt.source} · ${degrees(tilt.low_deg)} … ${degrees(tilt.high_deg)}${tilt.anchored ? " · anchored" : ""}`);
   renderTask(estimate);
   $("e-source").textContent = estimate.estimator;
-  $("e-note").textContent = `${estimate.estimator}: heading = yaw stick × ${estimate.yaw_rate_dps?.toFixed(0) ?? "?"}°/s` +
-    " + direction of travel; position = 1 Hz odometry, extrapolated. Not a real compass: N (0°) is the takeoff frame's +x.";
+  $("e-note").textContent = `${estimate.estimator}: heading = yaw measured from the video where it is sure, else yaw stick × ` +
+    `${estimate.yaw_rate_dps?.toFixed(1) ?? "?"}°/s (re-calibrated by the video); + direction of travel; ` +
+    "position = 1 Hz odometry, extrapolated. Not a real compass: N (0°) is the takeoff frame's +x.";
   renderMap(estimate);
+}
+
+// Where the heading comes from now: the video's measured yaw, or the yaw-stick model.
+function renderHeadingSource(pose) {
+  const video = pose.heading_source === "flow";
+  const rate = pose.flow_yaw_rate_dps, confidence = pose.flow_confidence;
+  $("heading-source").textContent = `estimated · ${video ? "video" : "sticks"}`;
+  $("heading-source").title = (rate == null
+    ? "Video yaw: no measurement (numpy missing, no video, or not flying)"
+    : `Video yaw ${signed(rate, 1)}°/s, confidence ${(confidence * 100).toFixed(0)} %`) +
+    ". Not a real compass: N is the takeoff frame's +x.";
 }
 
 function renderTask(estimate) {
@@ -1385,6 +1402,7 @@ function renderClock() {
   $("stall").textContent = `video stalled · ${(stalledFor / 1000).toFixed(1)} s`;
   if (!stats.frames) setStat("st-video", "none", "dim");
   else if (stalled) setStat("st-video", "stalled", "warn");
+  else if (stats.decode_lag_ms > DECODE_LAG_WARN_MS) setStat("st-video", `${video.fps.toFixed(0)} fps · lag ${stats.decode_lag_ms} ms`, "warn");
   else setStat("st-video", `${video.fps.toFixed(0)} fps`);
 }
 
