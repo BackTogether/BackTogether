@@ -11,6 +11,7 @@
 <launch>
   <arg name="mode" default="slam" doc="slam: build the map while navigating; nav: saved map + amcl"/>
   <arg name="joy" default="true" doc="joystick teleop (it only publishes while enabled on the pad)"/>
+  <arg name="slam" value="$(eval arg('mode') == 'slam')"/>
 
   <!-- robot model (tf of the base, lidars and cameras) -->
   <include file="$(find bobac3_description)/launch/display.launch">
@@ -24,4 +25,11 @@
   <include file="$(find cspc_lidar)/launch/bobac3_lidar.launch"/>
 
   <include if="$(arg joy)" file="$(find robot_joy)/launch/robot_joy.launch"/>
+
+  <!-- slam: gmapping builds /map from /fuse_scan and publishes map -> odom.
+       Save the map when it looks good (another terminal, keeps this launch running):
+         roslaunch map_manager map_save.launch map_file:=demo -->
+  <group if="$(arg slam)">
+    <include file="$(find bobac3_slam)/launch/bobac3_gmapping.launch"/>
+  </group>
 </launch>
