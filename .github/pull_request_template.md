@@ -16,4 +16,4 @@ Closes #__
 ## Checklist
 - [ ] Rebased on `main` (`git pull --rebase origin main`)
 - [ ] Only files of my task (shared files in a separate PR)
-- [ ] Issue moved to `In Review` (`python3 scripts/board.py move <n> review`)
+- [ ] Issue moved to `In Review` (`uv run python scripts/board.py move <n> review`)

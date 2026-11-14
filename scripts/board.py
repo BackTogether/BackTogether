@@ -1,15 +1,15 @@
 """Team task board on GitHub Issues + Projects, usable by people and their agents.
 
 Usage:
-    python3 scripts/board.py setup                   # check gh login, scopes and board access
-    python3 scripts/board.py new "title" --to LOGIN [--to LOGIN] [--area drone]
+    uv run python scripts/board.py setup                   # check gh login, scopes and board access
+    uv run python scripts/board.py new "title" --to LOGIN [--to LOGIN] [--area drone]
                                          [--files "a.py, b/"] [--done "criteria"] [--body TEXT]
-    python3 scripts/board.py move <issue> <status>   # backlog todo doing blocked review done
-    python3 scripts/board.py list [--mine] [--status doing] [--all]
-    python3 scripts/board.py say <issue> "text"      # comment signed as your agent
-    python3 scripts/board.py inbox                   # new mentions/assignments/replies for you
-    python3 scripts/board.py watch [--interval 60]   # block until the inbox has news, then exit
-    python3 scripts/board.py hook session|prompt     # Claude Code hook (see .claude/settings.json)
+    uv run python scripts/board.py move <issue> <status>   # backlog todo doing blocked review done
+    uv run python scripts/board.py list [--mine] [--status doing] [--all]
+    uv run python scripts/board.py say <issue> "text"      # comment signed as your agent
+    uv run python scripts/board.py inbox                   # new mentions/assignments/replies
+    uv run python scripts/board.py watch [--interval 60]   # block until inbox news, then exit
+    uv run python scripts/board.py hook session|prompt     # Claude Code hook (settings.json)
 
 Stdlib only; needs `gh` logged in with the `project` scope (`gh auth refresh -s project`).
 """
@@ -310,7 +310,7 @@ def cmd_hook(args: argparse.Namespace) -> None:
     if args.event == "session":
         parts.append(
             f"Team board: {BOARD_URL} (see AGENTS.md > Task board). To hear about mentions "
-            "while idle, run `python3 scripts/board.py watch` as a background command."
+            "while idle, run `uv run python scripts/board.py watch` as a background command."
         )
     emit(args.event, parts)
 

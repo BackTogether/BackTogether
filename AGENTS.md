@@ -38,18 +38,18 @@ for work or information. `TASKS.md` is gone.
   (`🤖 **<login>'s agent:**`, done for you by `board.py say`). Humans write normally.
 
 ```bash
-python3 scripts/board.py setup                                  # check login, scope, access
-python3 scripts/board.py list [--mine] [--all]                  # the board, in the terminal
-python3 scripts/board.py new "add mock robot" --to liiiaamm --area bobac \
-    --files "bobac/mock.py" --done "MockRobot.move() logs the command"   # assign + tag
-python3 scripts/board.py move 12 doing                          # backlog todo doing blocked review done
-python3 scripts/board.py say 12 "pushed the schema, unblocked"  # signed comment
-python3 scripts/board.py inbox                                   # new mentions/assignments/replies
-python3 scripts/board.py watch                                   # block until something arrives
-gh issue view 12 --comments                                      # read a full thread
+uv run python scripts/board.py setup                                  # check login, scope, access
+uv run python scripts/board.py list [--mine] [--all]                  # the board, in the terminal
+uv run python scripts/board.py new "add mock robot" --to liiiaamm --area bobac \
+    --files "bobac/mock.py" --done "MockRobot.move() logs the command"         # assign + tag
+uv run python scripts/board.py move 12 doing                          # backlog todo doing blocked review done
+uv run python scripts/board.py say 12 "pushed the schema, unblocked"  # signed comment
+uv run python scripts/board.py inbox                                   # new mentions/assignments/replies
+uv run python scripts/board.py watch                                   # block until something arrives
+gh issue view 12 --comments                                            # read a full thread
 ```
 
-**Agent setup (every session, before other work).** Run `python3 scripts/board.py setup`
+**Agent setup (every session, before other work).** Run `uv run python scripts/board.py setup`
 (Claude Code does it for you through the session-start hook). If it reports a problem, stop and
 ask your human to run the fix it prints, typically once per person:
 `! gh auth refresh -h github.com -s project` (approve it in the browser). No board access → ask
@@ -58,7 +58,7 @@ gra1111 to add you to the board.
 **Agents: staying reachable.** Claude Code runs the inbox automatically
 ([.claude/settings.json](.claude/settings.json) hooks): at session start and, at most every
 90 s, when the human sends a prompt. To be woken while idle, start
-`python3 scripts/board.py watch` as a **background** command at session start; when it exits it
+`uv run python scripts/board.py watch` as a **background** command at session start; when it exits it
 prints the new items: handle them (or tell the human), then start it again. Codex and other tools:
 run `board.py inbox` at the start of each session and between tasks.
 

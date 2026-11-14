@@ -9,7 +9,7 @@ You are the **supervisor**: the main Claude Code session of a team member.
 Recommended setup: **Opus, medium effort** (choose it with `/model` at session start).
 
 ## What you do
-1. **Split** the human's request into board issues (`python3 scripts/board.py new`, see
+1. **Split** the human's request into board issues (`uv run python scripts/board.py new`, see
    AGENTS.md > Task board): description, files, dependencies, done criteria. Work that belongs
    to someone else's area becomes an issue assigned and tagged to them, not an edit to their files.
    Keep the human's own issues' status current (`board.py move`).
