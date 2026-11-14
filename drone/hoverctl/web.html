@@ -173,6 +173,18 @@
   .controls.locked .stick { opacity: .3; }
   .controls.locked .legend .gate { color: var(--ink); }
 
+  /* camera tilt presets (drone.sdk server only) */
+  .tilt { display: grid; grid-template-columns: auto repeat(5, 1fr); align-items: center;
+    padding: 12px 16px 0; }
+  .tilt label { color: var(--muted); font-size: 11px; letter-spacing: .08em; text-transform: uppercase;
+    padding-right: 12px; }
+  .tilt .btn { height: 28px; padding: 0 2px; margin-left: -1px; font: 10.5px var(--mono); letter-spacing: 0;
+    white-space: nowrap; }
+  .tilt .btn.on { background: var(--ink); color: var(--bg); }
+  .tilt form { grid-column: 2 / -1; display: grid; grid-template-columns: 1fr auto; margin-top: 6px; }
+  .tilt input { height: 28px; }
+  .tilt form .btn { margin-left: -1px; padding: 0 14px; }
+
   /* photos and recording (drone.sdk server only) */
   .capture { position: absolute; left: 8px; bottom: 8px; z-index: 1; display: flex; align-items: center; }
   .capture .btn { height: 28px; padding: 0 10px; margin-right: -1px; gap: 6px; background: var(--panel);
@@ -315,6 +327,18 @@
         <div class="actions">
           <button class="btn" id="d-video" type="button">Video start</button>
           <button class="btn" id="d-video-stop" type="button">Video stop</button>
+        </div>
+        <div class="tilt" id="d-tilt" hidden title="Camera tilt, estimated and open loop (drone/sdk/tilt.py): anchors at the top stop first if unknown. STOP or any flight key cancels">
+          <label class="mono">tilt</label>
+          <button class="btn" type="button" data-tilt="15">+15 top</button>
+          <button class="btn" type="button" data-tilt="0">0 level</button>
+          <button class="btn" type="button" data-tilt="-30">−30</button>
+          <button class="btn" type="button" data-tilt="-45">−45</button>
+          <button class="btn" type="button" data-tilt="-90">−90 down</button>
+          <form id="d-tilt-form" autocomplete="off">
+            <input type="text" inputmode="decimal" id="d-tilt-deg" placeholder="any angle, +15 … −90">
+            <button class="btn" type="submit">tilt</button>
+          </form>
         </div>
         <div class="mono" id="d-manual-steps"></div>
         <form class="actions wifi" id="d-wifi" autocomplete="off">
@@ -792,11 +816,23 @@ const DRONE_GROUPS = [
 
 // The SDK server (drone.sdk) estimates the camera tilt from the gimbal stick sent (sdk/tilt.py).
 let tiltEstimate = null;
+let tiltTask = null;  // the SDK's "tilt" action (presets), while it is the latest action
 let serverNow = null;
+const TILT_RESULT_S = 6;  // how long a stopped/failed tilt stays in the row
 const degrees = (value) => `${value < 0 ? "−" : "+"}${Math.abs(value).toFixed(0)}°`;
 function tiltText(d) {
   if (d.camera_tilt.degrees !== null) return `${degrees(d.camera_tilt.degrees)} · reported`;
   if (!tiltEstimate) return "not reported (the X1 never sent it)";
+  if (tiltTask && tiltTask.state === "running") {
+    const target = degrees(tiltTask.detail.target_deg);
+    return tiltEstimate.anchored ? `tilting… → ${target} · now ≈ ${degrees(tiltEstimate.deg)}`
+      : `tilting… → ${target} · anchoring at the top stop first`;
+  }
+  const recent = tiltTask && tiltTask.ended_at && serverNow - tiltTask.ended_at < TILT_RESULT_S;
+  if (recent && tiltTask.state !== "done") {
+    const now = tiltEstimate.anchored ? ` · ≈ ${degrees(tiltEstimate.deg)}` : "";
+    return `tilt ${tiltTask.state}${tiltTask.message ? `: ${tiltTask.message}` : ""}${now}`;
+  }
   if (!tiltEstimate.anchored) {
     return `unknown — hold U or O to a stop (${degrees(tiltEstimate.low_deg)} … ${degrees(tiltEstimate.high_deg)})`;
   }
@@ -841,7 +877,9 @@ function linkText(connection, note) {
 function renderDrone(state) {
   const drone = state.drone, sticks = state.sticks;
   tiltEstimate = state.estimate ? state.estimate.tilt : null;
+  tiltTask = state.estimate && state.estimate.task.name === "tilt" ? state.estimate.task : null;
   serverNow = state.now;
+  renderTiltPresets(Boolean(state.drone && state.estimate));
   const present = Boolean(drone);
   for (const element of [$("d-groups"), ...document.querySelectorAll("#drone .actions")]) {
     element.hidden = !present;
@@ -1000,8 +1038,35 @@ $("d-wifi").addEventListener("submit", (event) => {
   }
   droneAction("wifi", "/api/drone/wifi", { password });
 });
-// Typing a password must not fly the drone, and Space must not stop on a text field.
-const typing = () => document.activeElement === $("d-wifi-pw");
+// Camera tilt presets: the SDK runs them (POST /api/drone/tilt); STOP or any flight key cancels.
+const TILT_TOP = 15, TILT_BOTTOM = -90;
+function setTilt(deg) {
+  droneAction(`tilt ${degrees(deg)}`, "/api/drone/tilt", { deg });
+}
+for (const button of $("d-tilt").querySelectorAll("button[data-tilt]")) {
+  button.addEventListener("click", () => setTilt(Number(button.dataset.tilt)));
+}
+$("d-tilt-form").addEventListener("submit", (event) => {
+  event.preventDefault();
+  const deg = Number($("d-tilt-deg").value.replace("−", "-"));
+  if ($("d-tilt-deg").value.trim() === "" || !Number.isFinite(deg) || deg > TILT_TOP || deg < TILT_BOTTOM) {
+    showStatus(`tilt · give an angle from +${TILT_TOP} to ${TILT_BOTTOM}`, true);
+    return;
+  }
+  $("d-tilt-deg").blur();
+  setTilt(deg);
+});
+$("d-tilt-deg").addEventListener("focus", releaseKeys);
+function renderTiltPresets(available) {
+  $("d-tilt").hidden = !available;
+  const running = tiltTask && tiltTask.state === "running" ? tiltTask.detail.target_deg : null;
+  for (const button of $("d-tilt").querySelectorAll("button[data-tilt]")) {
+    button.classList.toggle("on", running !== null && Number(button.dataset.tilt) === running);
+  }
+}
+
+// Typing a password or an angle must not fly the drone, and Space must not stop on a text field.
+const typing = () => [$("d-wifi-pw"), $("d-tilt-deg")].includes(document.activeElement);
 
 // ---- estimated pose: compass + path map (drone.sdk server only, from its Estimator) ----
 // Frame: the odometry's takeoff frame. Heading 0 = its +x, drawn up; + = clockwise (turn right).

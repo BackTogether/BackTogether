@@ -112,7 +112,7 @@ class TaskRunner:
             state, message = "stopped", str(stop)
         except SafetyLanding as reason:
             state, message = "landed", f"safety landing: {reason}"
-        except (NotReady, ValueError, TimeoutError) as error:
+        except (NotReady, ValueError, TimeoutError, RuntimeError) as error:
             state, message = "failed", str(error)
         except Exception as error:
             print(f"task failed:\n{traceback.format_exc()}", flush=True)
