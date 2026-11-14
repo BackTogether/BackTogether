@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # Live patrol tests against the running app (drone/fly = drone.sdk serve), offline-safe.
-# Usage: drone/patrol/live tilt <deg> | distance | dry | bounce     [extra args for the module]
+# Usage: drone/patrol/live spin [sticks] | tilt <deg> | distance | dry | bounce     [extra args for the module]
+#   spin      yaw calibration: one exact turn per stick value (default 100 80 60), then LANDS
 #   tilt      set the camera tilt through the SDK (needs Manual control)
 #   distance  perception only: prints the front distance, sends nothing
 #   dry       bounce patrol decisions (FORWARD/HOVER/TURN), sends nothing
@@ -15,6 +16,7 @@ DEPS=(--offline --no-project --python 3.11 --with numpy --with pillow --with tor
 export HF_HUB_OFFLINE="${HF_HUB_OFFLINE:-1}"  # model is cached; the drone Wi-Fi has no internet
 mode="${1:-}"; shift || true
 case "$mode" in
+  spin)     exec uv run --offline --no-project --python 3.11 --with numpy --with pillow python -m drone.calibration.spin "$@" ;;
   tilt)     curl -s -X POST -H 'Content-Type: application/json' -d "{\"deg\": ${1:?degrees}}" "$SDK/tilt"; echo ;;
   distance) exec uv run "${DEPS[@]}" python -m drone.patrol.front_distance --sdk "$SDK" --takeoff-height "$TAKEOFF_HEIGHT" "$@" ;;
   dry)      exec uv run "${DEPS[@]}" python -m drone.patrol.bounce --sdk "$SDK" --dry-run --takeoff-height "$TAKEOFF_HEIGHT" --geofence 4 --tilt -30 --stop-at "$STOP_AT" --clear-at "$CLEAR_AT" "$@" ;;
