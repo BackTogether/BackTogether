@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """When the robot reaches a navigation goal, turn on the spot until the expected person is
-recognised by the head camera, then stop facing them.
+recognised by the head camera, then follow them: face left/right of the image = turn towards it,
+face bigger = back up, face smaller = move forward, so it stays centred and at the same size.
 
 Arrival = move_base reports its goal SUCCEEDED (/move_base/result). While searching, the robot
 turns slowly; once the face is seen it turns towards it until the face is in the middle of the
@@ -12,6 +13,8 @@ Params (set in bringup.launch):
   ~turn_speed       rad/s while searching (default 0.3, slow so the recogniser keeps up)
   ~timeout          seconds before giving up (default: two full turns)
   ~search_on_start  true: search right away, without waiting for a goal (to test it alone)
+  ~max_linear       m/s forward / back while following (default 0.15)
+  ~target_area      face box to keep while following, px^2 (default 0: its size when found)
 """
 
 import math
@@ -34,6 +37,10 @@ CENTRED_PX = 60  # face this close to the image centre = the robot is facing the
 CENTRE_GAIN = 0.002  # rad/s per pixel off-centre while turning towards the face
 FACE_FRESH_S = 0.7  # a sighting older than this means the face left the image
 FACE_LOST_S = 3.0  # following: stop following after this long without the face
+DEFAULT_MAX_LINEAR = 0.15  # m/s forward or back while following: slow, a person is close
+AREA_GAIN = 0.3  # m/s per unit of relative area error
+AREA_DEADBAND = 0.15  # within 15 % of the target size: hold the distance, do not jitter
+AREA_SMOOTHING = 0.3  # weight of the newest box size in the running average
 
 
 class FaceCheck:
@@ -42,6 +49,9 @@ class FaceCheck:
         self.turn_speed = float(rospy.get_param("~turn_speed", DEFAULT_TURN_SPEED))
         default_timeout = FULL_TURNS * 2 * math.pi / self.turn_speed
         self.timeout = float(rospy.get_param("~timeout", default_timeout))
+        self.max_linear = float(rospy.get_param("~max_linear", DEFAULT_MAX_LINEAR))
+        # face box size to keep while following, px^2 (0 = the size when the face was found)
+        self.target_area = float(rospy.get_param("~target_area", 0.0))
         self.lock = threading.Lock()
         self.seen_at = 0.0
         self.face_x = 0.0
@@ -125,11 +135,24 @@ class FaceCheck:
         finally:
             self.turn(0.0)
 
+    def distance_speed(self, area, target_area):
+        """m/s that keeps the face box at target_area: bigger face (closer) = back up, smaller
+        face (farther) = move forward."""
+        error = (target_area - area) / target_area  # + = face too small = person too far
+        if abs(error) <= AREA_DEADBAND:
+            return 0.0
+        speed = AREA_GAIN * error
+        return max(-self.max_linear, min(self.max_linear, speed))
+
     def follow(self):
-        """Keep the person's face in the middle of the image until it is lost for FACE_LOST_S or
-        a new goal arrives. The robot is always left stopped."""
+        """Keep the person's face in the middle of the image and at the same size (so the robot
+        stays at the same distance), until it is lost for FACE_LOST_S or a new goal arrives.
+        The size to keep is ~target_area, or the face's size when it was found. The robot is
+        always left stopped."""
         rate = rospy.Rate(RATE_HZ)
         last_seen = time.monotonic()
+        target_area = self.target_area
+        smooth_area = None
         try:
             while not rospy.is_shutdown() and not self.new_goal.is_set():
                 face = self.face()
@@ -140,7 +163,19 @@ class FaceCheck:
                         return
                 else:
                     last_seen = time.monotonic()
-                    self.drive(0.0, self.centring_speed(face[0]))
+                    offset, area = face
+                    # the box size jumps from frame to frame: follow its running average
+                    smooth_area = (
+                        area
+                        if smooth_area is None
+                        else AREA_SMOOTHING * area + (1 - AREA_SMOOTHING) * smooth_area
+                    )
+                    if target_area <= 0:
+                        target_area = smooth_area
+                        rospy.loginfo("face_check: keeping the face at %.0f px^2", target_area)
+                    self.drive(
+                        self.distance_speed(smooth_area, target_area), self.centring_speed(offset)
+                    )
                 rate.sleep()
         finally:
             self.drive(0.0, 0.0)
