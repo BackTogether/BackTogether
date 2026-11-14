@@ -5,6 +5,7 @@ quality loss and almost no CPU). It starts at the next parameter set (the drone 
 every keyframe, about once a second) so the file opens on a decodable frame.
 """
 
+import os
 import shutil
 import subprocess
 import threading
@@ -13,13 +14,14 @@ from pathlib import Path
 
 from drone.hoverctl.video_payload import find_parameter_set
 
-RECORDINGS_DIR = Path("recordings")  # gitignored
+# Photos and MP4s; DRONE_MEDIA_DIR overrides it (drone/fly points it at ~/Downloads)
+RECORDINGS_DIR = Path(os.environ.get("DRONE_MEDIA_DIR", "recordings")).expanduser()
 RECORD_FPS = 30  # the drone's live stream; raw H.264 carries no timestamps
 FINALIZE_TIMEOUT_S = 5.0
 
 
 def timestamped_path(prefix: str, suffix: str) -> Path:
-    """recordings/<prefix>_<date>-<time>_<ms><suffix>, folder created."""
+    """RECORDINGS_DIR/<prefix>_<date>-<time>_<ms><suffix>, folder created."""
     now = time.time()
     millis = int(now * 1000) % 1000
     name = f"{prefix}_{time.strftime('%Y%m%d-%H%M%S', time.localtime(now))}_{millis:03d}{suffix}"

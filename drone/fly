@@ -9,6 +9,7 @@
 set -euo pipefail
 cd "$(dirname "$0")/.."
 mkdir -p recordings
+export DRONE_MEDIA_DIR="${DRONE_MEDIA_DIR:-$HOME/Downloads}"  # PHOTO / REC from the page land here
 exec uv run --offline --with bleak --with numpy python -m drone.sdk serve \
     --http-port 8077 --no-browser --max "${1:-60}" --video-quality "${2:-sd}" \
     --stick-log "recordings/sticks-$(date +%H%M).jsonl" \
