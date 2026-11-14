@@ -24,9 +24,16 @@ class Face:
 
 
 class FaceEmbedder:
-    def __init__(self, detect_width: int = DETECT_WIDTH, max_faces: int = MAX_EMBEDDED) -> None:
+    def __init__(
+        self,
+        detect_width: int = DETECT_WIDTH,
+        max_faces: int = MAX_EMBEDDED,
+        min_face_px: int = MIN_FACE_PX,
+    ) -> None:
         """`detect_width`: faces are searched on a copy this wide (0 = full size, slower, finds
-        smaller faces). `max_faces`: only the largest ones are embedded, to bound the time."""
+        smaller faces). `max_faces`: only the largest ones are embedded, to bound the time.
+        `min_face_px`: smaller faces are skipped (their vectors are unreliable)."""
+        self._min_face_px = min_face_px
         detector_path = str(models.download(models.DETECTOR))
         recognizer_path = str(models.download(models.RECOGNIZER))
         self._detector = cv2.FaceDetectorYN.create(
@@ -42,7 +49,7 @@ class FaceEmbedder:
         found = []
         for detection in detections[: self._max_faces]:
             left, top, width, height = (int(value) for value in detection[:4])
-            if min(width, height) < MIN_FACE_PX:
+            if min(width, height) < self._min_face_px:
                 continue
             # Align and embed from the full-size image: the vector needs every pixel of the face.
             aligned = self._recognizer.alignCrop(image, detection)
