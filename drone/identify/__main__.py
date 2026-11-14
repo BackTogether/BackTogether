@@ -1,7 +1,12 @@
-"""Find one person of the database in the drone frames. Run it from the repo root.
+"""Recognise the people of the face database in the drone frames. Run it from the repo root.
 
-Live (default): starts watching recordings/frames/ right away and classifies every new frame
-the drone saves, until the person is confirmed or the timeout passes:
+While the drone flies, check every face it sees against the whole database; each person is
+announced (beep, evidence image) the first time they are confirmed. Stop it with Ctrl+C:
+
+    uv run --with opencv-python-headless python -m drone.identify
+
+Looking for one person only (live by default): stops at the first confirmed match, or fails
+after the timeout:
 
     uv run --with opencv-python-headless python -m drone.identify leo
 
@@ -20,20 +25,52 @@ from pathlib import Path
 
 from . import announce
 from .faces import MAX_DETECTED, FaceEmbedder
-from .live import SEARCH_TIMEOUT_S, watch
+from .live import SEARCH_TIMEOUT_S, recognise_all, watch
 from .people import PEOPLE_DIR, People
 from .search import ATTEMPTS, search
 
 DEFAULT_FRAMES = Path("recordings/frames")  # where drone.hoverctl saves the drone frames
 FULL_SIZE = 0
+NO_LIMIT_S = float("inf")
 EXIT_FOUND = 0
 EXIT_FAILED = 1
 EXIT_BAD_INPUT = 2
 
 
-def run_live(args: argparse.Namespace):
+def load_people(folder: Path) -> People:
     # Reference photos are read once at full size; live frames use the fast settings.
-    people = People(FaceEmbedder(detect_width=FULL_SIZE, max_faces=MAX_DETECTED), args.people)
+    people = People(FaceEmbedder(detect_width=FULL_SIZE, max_faces=MAX_DETECTED), folder)
+    if not people.names:
+        raise ValueError(f"no usable photo in {folder}: add <name>/<photo>.jpg")
+    return people
+
+
+def run_database(args: argparse.Namespace) -> None:
+    """Recognise everyone in the database until the timeout or Ctrl+C."""
+    people = load_people(args.people)
+    args.frames.mkdir(parents=True, exist_ok=True)
+    logging.getLogger("identify").info("recognising %s in %s", ", ".join(people.names), args.frames)
+
+    def announce_person(name, sighting) -> None:
+        evidence = args.evidence.with_name(f"{args.evidence.stem}_{name}{args.evidence.suffix}")
+        announce.save_evidence(sighting, name, evidence)
+        print(
+            f"POSITIVE: {name} in {sighting.frame.parent.name}/{sighting.frame.name}, "
+            f"similarity {sighting.similarity:.2f}, evidence in {evidence}",
+            flush=True,
+        )
+        if not args.quiet:
+            announce.play(True)
+
+    try:
+        found = recognise_all(args.frames, FaceEmbedder(), people, announce_person, args.timeout)
+    except KeyboardInterrupt:
+        found = None
+    print("stopped" if found is None else f"done, recognised: {', '.join(found) or 'nobody'}")
+
+
+def run_live(args: argparse.Namespace):
+    people = load_people(args.people)
     if args.target not in people.names:
         raise ValueError(f"{args.target} has no usable photo in {args.people} ({people.names})")
     args.frames.mkdir(parents=True, exist_ok=True)
@@ -45,11 +82,16 @@ def run_live(args: argparse.Namespace):
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="find a person in the drone frames")
-    parser.add_argument("target", help="folder name of the person in the people database")
+    parser.add_argument("target", nargs="?", help="look for this person only (folder name)")
     parser.add_argument("--frames", type=Path, default=DEFAULT_FRAMES, help="frames folder")
     parser.add_argument("--people", type=Path, default=PEOPLE_DIR, help="people database")
     parser.add_argument("--once", action="store_true", help="search existing frames, not live")
-    parser.add_argument("--timeout", type=float, default=SEARCH_TIMEOUT_S, help="live, seconds")
+    parser.add_argument(
+        "--timeout",
+        type=float,
+        help="live, seconds (default: no limit "
+        f"for the whole database, {SEARCH_TIMEOUT_S:.0f} for one person)",
+    )
     parser.add_argument("--attempts", type=int, default=ATTEMPTS, help="--once retries")
     parser.add_argument("--evidence", type=Path, default=Path("found.jpg"))
     parser.add_argument("--quiet", action="store_true", help="no sound")
@@ -57,6 +99,17 @@ def main() -> None:
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(name)s: %(message)s")
     if args.once and not args.frames.is_dir():
         parser.error(f"{args.frames} is not a folder")
+    if args.target is None:
+        if args.once:
+            parser.error("--once needs a target")
+        args.timeout = args.timeout or NO_LIMIT_S
+        try:
+            run_database(args)
+        except ValueError as error:
+            print(f"ERROR: {error}")
+            sys.exit(EXIT_BAD_INPUT)
+        return
+    args.timeout = args.timeout or SEARCH_TIMEOUT_S
 
     try:
         if args.once:
