@@ -1,11 +1,14 @@
-"""hoverctl CLI: `python -m drone.hoverctl {sticks,video,web} --help`."""
+"""hoverctl CLI: `python -m drone.hoverctl {sticks,video,web,status} --help`."""
 
 import argparse
 import contextlib
 import signal
+import sys
 import time
 import webbrowser
+from collections.abc import Callable
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 from .decoder import MjpegDecoder
 from .sticks import DEFAULT_MAX_MAGNITUDE, DRONE_HOST, STICK_PORT, StickSender
@@ -13,9 +16,14 @@ from .teleop import run_teleop
 from .video import VIDEO_PORT, VideoReceiver, default_dump_path
 from .web import WebServer
 
+if TYPE_CHECKING:
+    from .ble import DroneLink
+
 STATS_PERIOD_S = 1.0
 WEB_PORT = 8000
 WEB_BIND = "127.0.0.1"
+NO_BLE_NOTE = "bluetooth off (--no-ble)"
+NO_BLEAK_NOTE = "bluetooth unavailable: run with uv run --with bleak"
 
 
 def _raise_interrupt(signum: int, frame: object) -> None:
@@ -46,8 +54,8 @@ def _add_video_options(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--no-decode", action="store_true", help="don't start ffmpeg")
 
 
-def _make_sender(args: argparse.Namespace) -> StickSender:
-    return StickSender(args.host, args.port, args.local_port, args.max, args.dry_run)
+def _make_sender(args: argparse.Namespace, gate: Callable[[], bool] | None = None) -> StickSender:
+    return StickSender(args.host, args.port, args.local_port, args.max, args.dry_run, gate)
 
 
 def _make_receiver(args: argparse.Namespace) -> VideoReceiver:
@@ -85,10 +93,43 @@ def cmd_video(args: argparse.Namespace) -> None:
             print(f"dump: {receiver.dump_path}")
 
 
+def _always_locked() -> bool:
+    return False
+
+
+def _start_link(args: argparse.Namespace) -> tuple["DroneLink | None", str]:
+    """The Bluetooth link and a note for the UI when there is none. Imports ble lazily."""
+    if args.no_ble:
+        return None, NO_BLE_NOTE
+    try:
+        from .ble import DroneLink
+    except ImportError:  # bleak is not installed
+        return None, NO_BLEAK_NOTE
+    link = DroneLink()
+    link.start()
+    return link, ""
+
+
 def cmd_web(args: argparse.Namespace) -> None:
+    link, ble_note = _start_link(args)
+    if link:
+        gate = link.is_manual
+    elif args.no_ble:
+        gate = None
+        print(
+            "WARNING: --no-ble, the stick interlock is OFF: sticks are sent whatever the "
+            "drone's flight mode is.",
+            file=sys.stderr,
+        )
+    else:
+        gate = _always_locked  # fail closed: no Bluetooth, no sticks
+        print(
+            f"WARNING: {NO_BLEAK_NOTE}. Sticks stay locked (use --no-ble to send anyway).",
+            file=sys.stderr,
+        )
     receiver = _make_receiver(args)
-    sender = _make_sender(args)
-    server = WebServer(args.bind, args.http_port, sender, receiver)
+    sender = _make_sender(args, gate)
+    server = WebServer(args.bind, args.http_port, sender, receiver, link, ble_note)
     url = f"http://{args.bind}:{args.http_port}/"
     receiver.start()
     sender.start()
@@ -101,7 +142,52 @@ def cmd_web(args: argparse.Namespace) -> None:
         sender.stop()
         server.server_close()
         receiver.stop()
+        if link:
+            link.stop()
         print(f"sent {sender.sent} stick packets, ended neutral")
+
+
+def _format_status(snap: dict) -> str:
+    conn, bat, odo = snap["connection"], snap["battery"], snap["odometry"]
+    if not conn["connected"]:
+        return f"connecting...  {conn['error'] or ''}".rstrip()
+    pos, vel = odo["position"], odo["velocity"]
+    parts = [
+        f"mode {snap['mode']['name']}",
+        f"state {snap['flight_state']['value']}",
+        f"bat {bat['soc']}% v{bat['voltage']} i{bat['current']} t{bat['temp']}"
+        f" chg {'yes' if bat['charging'] else 'no'}",
+    ]
+    if pos:
+        parts.append("pos " + " ".join(f"{pos[a]:+.2f}" for a in "xyz"))
+        parts.append("vel " + " ".join(f"{vel[a]:+.2f}" for a in "xyz"))
+        parts.append("rpm " + " ".join(str(r) for r in odo["motors_rpm"]))
+    parts.append(f"rssi {conn['rssi']}  age {conn['last_message_age_s']}s")
+    return "  ".join(parts)
+
+
+def cmd_status(args: argparse.Namespace) -> None:
+    from .ble import DroneLink  # needs bleak: only load it for this command
+
+    link = DroneLink(args.name)
+    link.start()
+    commands = [
+        ("land", args.land, link.land),
+        ("manual", args.manual, link.set_manual),
+        ("wifi", args.wifi is not None, lambda: link.start_wifi(args.wifi)),
+    ]
+    pending = [(name, send) for name, wanted, send in commands if wanted]
+    print("connecting to the drone, Ctrl-C to quit")
+    try:
+        while True:
+            if pending and link.snapshot()["connection"]["connected"]:
+                for name, send in pending:
+                    print(f"{name}: {send()}", flush=True)
+                pending = []
+            print(_format_status(link.snapshot()), flush=True)
+            time.sleep(STATS_PERIOD_S)
+    finally:
+        link.stop()
 
 
 def main() -> None:
@@ -121,8 +207,20 @@ def main() -> None:
     _add_video_options(web)
     web.add_argument("--http-port", type=int, default=WEB_PORT)
     web.add_argument("--bind", default=WEB_BIND, help="HTTP address (default %(default)s)")
+    web.add_argument(
+        "--no-ble",
+        action="store_true",
+        help="no Bluetooth link: sticks are sent without the MANUAL-mode interlock",
+    )
     web.add_argument("--no-browser", action="store_true", help="don't open a browser tab")
     web.set_defaults(run=cmd_web)
+
+    status = commands.add_parser("status", help="live drone state over Bluetooth (needs bleak)")
+    status.add_argument("--name", default="HoverX1", help="drone name prefix (default %(default)s)")
+    status.add_argument("--land", action="store_true", help="send land once connected")
+    status.add_argument("--manual", action="store_true", help="switch to MANUAL once connected")
+    status.add_argument("--wifi", metavar="PASSWORD", help="start the drone's Wi-Fi once connected")
+    status.set_defaults(run=cmd_status)
 
     args = parser.parse_args()
     signal.signal(signal.SIGTERM, _raise_interrupt)

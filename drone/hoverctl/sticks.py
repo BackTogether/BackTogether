@@ -42,6 +42,8 @@ class StickSender:
 
     Inputs are -1..1 per axis and are scaled to `max_magnitude`. If no input arrives for
     INPUT_TIMEOUT_S the target becomes neutral. `stop()` sends EXIT_NEUTRAL_S of neutral.
+    `gate` is the stick interlock: while it returns False (or raises) nothing is sent at all, not
+    even neutral. In dry-run packets are still printed, and `locked` shows what would happen.
     """
 
     def __init__(
@@ -51,10 +53,14 @@ class StickSender:
         local_port: int = STICK_PORT,
         max_magnitude: float = DEFAULT_MAX_MAGNITUDE,
         dry_run: bool = False,
+        gate: Callable[[], bool] | None = None,
     ) -> None:
         self.address = (host, port)
         self.max_magnitude = min(abs(max_magnitude), AXIS_LIMIT)
         self.dry_run = dry_run
+        self.locked = False
+        self.interlocked = gate is not None
+        self._gate = gate
         self.output = NEUTRAL
         self.sent = 0
         self.errors = 0
@@ -114,14 +120,27 @@ class StickSender:
                 next_tick = time.monotonic()
 
     def _tick(self) -> None:
-        self.output = ramp(self.output, self._target())
+        self.locked = not self._gate_open()
+        self.output = NEUTRAL if self.locked else ramp(self.output, self._target())
         self._send(self.output)
 
     def _send_neutral(self) -> None:
+        self.locked = not self._gate_open()
         self.output = NEUTRAL
         self._send(NEUTRAL)
 
+    def _gate_open(self) -> bool:
+        if self._gate is None:
+            return True
+        try:
+            return self._gate()
+        except Exception as error:  # an interlock that fails stays closed
+            self._note_error(error)
+            return False
+
     def _send(self, axes: Axes) -> None:
+        if self.locked and not self.dry_run:
+            return
         packet = encode_rocker_command(self.sent, int(time.time() * 1000), axes)
         self.sent += 1
         if self.dry_run:
