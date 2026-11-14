@@ -1,0 +1,4 @@
+# robot_fakes.py is imported by the bridge ON THE ROBOT (system Python 3.8), so lint it as 3.8
+# and `ruff check --fix` never rewrites it into 3.10+ syntax.
+extend = "../pyproject.toml"
+target-version = "py38"
