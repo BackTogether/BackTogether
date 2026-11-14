@@ -10,8 +10,9 @@
   <arg name="person" default="jorge"/>
   <!-- true: start turning right away, without waiting for a navigation goal (to test it) -->
   <arg name="search_on_start" default="false"/>
-  <!-- following: face box to keep in px^2 (0 = its size when found) and top speed in m/s -->
-  <arg name="target_area" default="0"/>
+  <!-- following: face box to keep in px^2 (20736 = 144 x 144 px, measured with the person at
+       the right distance; 0 = its size when found) and top speed in m/s -->
+  <arg name="target_area" default="20736"/>
   <arg name="max_linear" default="0.15"/>
 
   <!-- Block: SLAM + navigation (base, lidars, gmapping, move_base) -->

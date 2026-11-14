@@ -14,7 +14,8 @@ Params (set in bringup.launch):
   ~timeout          seconds before giving up (default: two full turns)
   ~search_on_start  true: search right away, without waiting for a goal (to test it alone)
   ~max_linear       m/s forward / back while following (default 0.15)
-  ~target_area      face box to keep while following, px^2 (default 0: its size when found)
+  ~target_area      face box to keep while following, px^2 (default 20736 = 144 x 144, the
+                    measured box; 0 = its size when found)
 """
 
 
@@ -38,6 +39,7 @@ RATE_HZ = 10
 #   far right x 452..596  y 248..392  -> centre x 524
 #   far left  x   4..148  y 248..392  -> centre x 76
 IMAGE_CENTRE_X_PX = 332.0  # where a face straight ahead really lands (not 640 / 2)
+TARGET_AREA_PX2 = 144.0 * 144.0  # the measured box: keep the person at that distance
 FACE_REACH_PX = 224.0  # farthest a face centre gets from it (524 - 332 = 192, 332 - 76 = 256)
 CENTRED_PX = 60  # face this close to the image centre = the robot is facing the person
 FACE_FRESH_S = 0.7  # a sighting older than this means the face left the image
@@ -56,7 +58,7 @@ class FaceCheck:
         self.timeout = float(rospy.get_param("~timeout", default_timeout))
         self.max_linear = float(rospy.get_param("~max_linear", DEFAULT_MAX_LINEAR))
         # face box size to keep while following, px^2 (0 = the size when the face was found)
-        self.target_area = float(rospy.get_param("~target_area", 0.0))
+        self.target_area = float(rospy.get_param("~target_area", TARGET_AREA_PX2))
         self.lock = threading.Lock()
         self.seen_at = 0.0
         self.face_x = 0.0
