@@ -38,8 +38,8 @@ RATE_HZ = 10
 #   far right x 452..596  y 248..392  -> centre x 524
 #   far left  x   4..148  y 248..392  -> centre x 76
 IMAGE_CENTRE_X_PX = 332.0  # where a face straight ahead really lands (not 640 / 2)
+FACE_REACH_PX = 224.0  # farthest a face centre gets from it (524 - 332 = 192, 332 - 76 = 256)
 CENTRED_PX = 60  # face this close to the image centre = the robot is facing the person
-CENTRE_GAIN = 0.002  # rad/s per pixel off-centre while turning towards the face
 FACE_FRESH_S = 0.7  # a sighting older than this means the face left the image
 FACE_LOST_S = 3.0  # following: stop following after this long without the face
 DEFAULT_MAX_LINEAR = 0.15  # m/s forward or back while following: slow, a person is close
@@ -116,7 +116,8 @@ class FaceCheck:
         """rad/s that turns the robot towards a face `offset` px from the centre (+ = right)."""
         if abs(offset) <= CENTRED_PX / 2.0:
             return 0.0  # close enough: do not jitter
-        speed = min(self.turn_speed, CENTRE_GAIN * abs(offset))
+        # proportional: full turn speed only when the face is at the edge of the image
+        speed = min(self.turn_speed, self.turn_speed * abs(offset) / FACE_REACH_PX)
         return -speed if offset > 0 else speed  # image x to the right = turn right (negative z)
 
     def search(self):
