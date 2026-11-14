@@ -4,159 +4,314 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, user-scalable=no">
 <title>hoverctl</title>
+<!-- Loaded without blocking: offline on the drone's Wi-Fi it fails and the system fonts stay. -->
+<link rel="stylesheet" media="print" onload="this.media='all'"
+  href="https://fonts.googleapis.com/css2?family=Geist:wght@400;500;600&family=Geist+Mono:wght@400;500&display=swap">
 <style>
   :root {
-    --bg: #0d0f12; --panel: #16191e; --line: #262a31; --text: #e8eaed; --muted: #8b919a;
-    --accent: #5aa9ff; --ok: #3ecf8e; --warn: #f2b84b; --stop: #e5484d;
+    --bg: #07080b; --panel: #0c0e13; --ink: #e9ecf1; --muted: #9199a6; --faint: #5a616d;
+    --line: #e9ecf1; --rule: #252932; --red: #b4443e;
+    --sans: "Geist", ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
+    --mono: "Geist Mono", ui-monospace, "SFMono-Regular", Menlo, monospace;
+    --gap: 16px; --side: 380px; --pip-w: 320px; --pip-clear: calc(var(--pip-w) * 9 / 16 + var(--gap));
+    --controls-h: clamp(270px, 36vh, 360px); --legend-h: 126px;
     color-scheme: dark;
   }
   * { box-sizing: border-box; }
-  html, body { margin: 0; height: 100%; background: var(--bg); color: var(--text);
-    font: 14px/1.4 system-ui, -apple-system, "Segoe UI", sans-serif; }
-  body { display: grid; grid-template-rows: auto minmax(0, 1fr) auto;
-    grid-template-columns: minmax(0, 1fr); height: 100dvh;
-    gap: 12px; padding: 12px 16px; overflow: hidden; user-select: none; -webkit-user-select: none; }
-  header { display: flex; align-items: center; gap: 16px; flex-wrap: wrap; }
-  h1 { font-size: 16px; font-weight: 600; margin: 0; letter-spacing: .02em; }
-  .chips { display: flex; gap: 8px; flex-wrap: wrap; margin-left: auto; }
-  .chip { background: var(--panel); border: 1px solid var(--line); border-radius: 999px;
-    padding: 3px 10px; color: var(--muted); font-variant-numeric: tabular-nums; white-space: nowrap; }
-  .chip b { color: var(--text); font-weight: 500; }
-  .chip.bad { border-color: var(--stop); color: var(--stop); }
-  .chip.warn { border-color: var(--warn); color: var(--warn); }
-  #video { position: relative; background: #000; border: 1px solid var(--line);
-    border-radius: 12px; overflow: hidden; min-height: 0; }
-  #video img { width: 100%; height: 100%; object-fit: contain; display: block; }
-  #overlay { position: absolute; inset: 0; display: flex; flex-direction: column; gap: 8px;
-    align-items: center; justify-content: center; text-align: center; padding: 24px;
-    background: var(--panel); }
-  #overlay.hidden { display: none; }
-  #overlay .big { font-size: 20px; font-weight: 500; }
-  #overlay .small { color: var(--muted); }
-  #overlay pre { margin: 8px 0 0; max-width: 100%; overflow: hidden; color: var(--muted);
-    font: 11px/1.5 ui-monospace, Menlo, monospace; text-align: left; white-space: pre; }
-  .controls { display: grid; grid-template-columns: auto 1fr auto; align-items: center; gap: 16px; }
-  .pad { --size: clamp(120px, 22vh, 190px); width: var(--size); height: var(--size);
-    border-radius: 50%; background: var(--panel); border: 1px solid var(--line);
-    position: relative; touch-action: none; cursor: grab; }
-  .pad::before, .pad::after { content: ""; position: absolute; background: var(--line); }
-  .pad::before { left: 50%; top: 12%; bottom: 12%; width: 1px; }
-  .pad::after { top: 50%; left: 12%; right: 12%; height: 1px; }
-  .knob { position: absolute; left: 50%; top: 50%; width: 38%; height: 38%; margin: -19% 0 0 -19%;
-    border-radius: 50%; background: #2b3038; border: 1px solid #3a404a; z-index: 1;
-    transition: transform .12s ease-out; }
-  .pad.active .knob { background: var(--accent); border-color: var(--accent); transition: none; }
-  .pad-label { text-align: center; color: var(--muted); font-size: 12px; margin-top: 6px; }
-  .middle { display: flex; flex-direction: column; align-items: center; gap: 10px; min-width: 0; }
-  #stop { width: min(100%, 320px); padding: 18px; font: 700 22px/1 system-ui, sans-serif;
-    letter-spacing: .08em; color: #fff; background: var(--stop);
-    border: 0; border-radius: 14px; cursor: pointer; box-shadow: 0 6px 24px #e5484d40; }
-  #stop:active, #stop.flash { filter: brightness(1.25); transform: scale(.98); }
-  .bars { display: grid; grid-template-columns: auto 1fr 3.5em; gap: 4px 10px;
-    width: min(100%, 360px); align-items: center; font-variant-numeric: tabular-nums; }
-  .bars span { color: var(--muted); font-size: 12px; }
-  .bars output { text-align: right; font-size: 12px; }
-  .bar { height: 6px; background: var(--panel); border-radius: 3px; position: relative; overflow: hidden; }
-  .bar i { position: absolute; top: 0; bottom: 0; left: 50%; background: var(--accent); }
-  .help { color: var(--muted); font-size: 12px; text-align: center; }
-  kbd { font: 11px ui-monospace, Menlo, monospace; border: 1px solid var(--line);
-    border-radius: 4px; padding: 0 4px; color: var(--text); }
-  @media (max-width: 640px) {
-    .controls { grid-template-columns: 1fr 1fr; justify-items: center; }
-    .pad { --size: min(40vw, 22vh); }
-    .middle { grid-column: 1 / -1; grid-row: 1; justify-self: stretch; }
-    .bars, .help { display: none; }
+  html, body { margin: 0; height: 100%; background: var(--bg); color: var(--ink); }
+  body { font: 14px/1.5 var(--sans); -webkit-font-smoothing: antialiased; padding: var(--gap);
+    height: 100dvh; overflow: hidden; user-select: none; -webkit-user-select: none; }
+  .mono { font-family: var(--mono); font-size: 11px; letter-spacing: .08em; text-transform: uppercase; }
+  button { all: unset; cursor: pointer; }
+
+  .frame { height: 100%; display: grid; grid-template-rows: auto minmax(0, 1fr);
+    border: 1px solid var(--line); background: var(--panel); }
+  .top { display: flex; justify-content: space-between; border-bottom: 1px solid var(--line); }
+  .brand { display: flex; align-items: baseline; gap: 12px; padding: 13px 18px; }
+  .brand b { font-weight: 600; font-size: 13px; letter-spacing: .14em; text-transform: uppercase; }
+  .brand span { color: var(--muted); }
+  .status { display: flex; }
+  .cell { display: flex; align-items: center; gap: 8px; padding: 0 16px; border-left: 1px solid var(--line);
+    color: var(--muted); white-space: nowrap; font-variant-numeric: tabular-nums; }
+  .cell b { color: var(--ink); font-weight: 500; }
+  .cell.tag { background: var(--ink); color: var(--bg); }
+  .cell.warn, .cell.warn b { color: var(--red); }
+  .cell.tag b { color: var(--bg); }
+  .cell.stale, .cell.stale b { color: var(--faint); }
+  button.cell:hover { color: var(--ink); }
+
+  .main { display: grid; grid-template-columns: minmax(0, 1fr) var(--side); min-height: 0; }
+  .stage { position: relative; display: grid; grid-template-rows: minmax(0, 1fr) var(--controls-h);
+    min-height: 0; }
+  body.mini .stage { grid-template-rows: minmax(0, 1fr); }
+
+  .video { position: relative; min-height: 0; background: var(--bg); overflow: hidden; }
+  .video img { width: 100%; height: 100%; object-fit: contain; display: block; }
+  body.mini .video { position: absolute; z-index: 2; top: var(--gap); left: var(--gap);
+    width: var(--pip-w); height: auto; aspect-ratio: 16 / 9; border: 1px solid var(--line); cursor: pointer; }
+  .corner { position: absolute; padding: 2px 6px; background: var(--panel); color: var(--faint);
+    pointer-events: none; z-index: 1; }
+  .tl { left: 8px; top: 8px; } .tr { right: 8px; top: 8px; }
+  .no-video { position: absolute; inset: 0; display: grid; place-content: center; gap: 8px;
+    text-align: center; padding: 24px; background: var(--panel); }
+  .no-video .big { font-size: 30px; font-weight: 500; letter-spacing: -.02em; line-height: 1.1; }
+  .no-video .mono { color: var(--muted); }
+  body.mini .no-video .big { font-size: 15px; }
+  body.mini .no-video .mono, body.mini .video .tr { display: none; }
+  .stall { position: absolute; left: 50%; top: 8px; transform: translateX(-50%); padding: 4px 10px;
+    border: 1px solid var(--red); background: var(--panel); color: var(--red); }
+  [hidden] { display: none !important; }
+
+  .controls { container-type: size; display: grid; grid-template-columns: 1fr minmax(200px, 260px) 1fr;
+    align-items: center; justify-items: center; gap: var(--gap); padding: 14px 24px;
+    border-top: 1px solid var(--line); min-height: 0; }
+  body.mini .controls { border-top: 0; padding-top: var(--pip-clear); }
+  .stick { --pad: min(26cqw, calc(100cqh - var(--legend-h)));
+    display: grid; gap: 10px; justify-items: center; }
+  body.mini .stick { --pad: min(34cqw, calc(100cqh - var(--legend-h)), 460px); }
+  .caption { width: var(--pad); display: flex; justify-content: space-between; color: var(--faint);
+    font-variant-numeric: tabular-nums; }
+  .caption b { font-weight: 500; color: var(--muted); }
+  .stick.live .caption b { color: var(--ink); }
+  .pad { position: relative; width: var(--pad); height: var(--pad); border: 1px solid var(--line);
+    touch-action: none; cursor: crosshair; }
+  .pad::before, .pad::after { content: ""; position: absolute; background: var(--rule); }
+  .pad::before { left: 50%; top: 0; bottom: 0; width: 1px; }
+  .pad::after { top: 50%; left: 0; right: 0; height: 1px; }
+  .knob { position: absolute; left: 50%; top: 50%; width: 14%; aspect-ratio: 1; z-index: 1;
+    transform: translate(-50%, -50%); border: 1px solid var(--line); background: var(--panel); }
+  .stick.live .knob { background: var(--ink); }
+
+  .keys { display: grid; grid-template-columns: repeat(3, 26px); grid-auto-rows: 24px; gap: 4px; }
+  kbd { display: grid; place-items: center; min-width: 26px; padding: 0 6px; border: 1px solid var(--faint);
+    color: var(--muted); font: 500 11px var(--mono); text-transform: uppercase; }
+  kbd.held { background: var(--ink); border-color: var(--ink); color: var(--bg); }
+  .keys .up { grid-column: 2; } .keys .left { grid-column: 1; grid-row: 2; }
+  .keys .down { grid-column: 2; grid-row: 2; } .keys .right { grid-column: 3; grid-row: 2; }
+  .hint { color: var(--faint); }
+
+  .center { display: grid; gap: 14px; width: 100%; }
+  #stop { display: grid; place-items: center; height: 76px; background: var(--red); border: 1px solid var(--red);
+    color: #fff; font: 600 20px var(--mono); letter-spacing: .24em; touch-action: none; }
+  #stop.flash { background: var(--ink); border-color: var(--ink); color: var(--bg); }
+  .legend { display: grid; grid-template-columns: auto 1fr; gap: 6px 10px; align-items: center; }
+  .legend > span:first-of-type, .legend .caps { display: flex; gap: 4px; }
+
+  .side { border-left: 1px solid var(--line); overflow-y: auto; min-height: 0; }
+  .side section + section { border-top: 1px solid var(--line); }
+  .side h2 { margin: 0; padding: 12px 16px; border-bottom: 1px solid var(--rule); color: var(--muted);
+    font-weight: 500; display: flex; justify-content: space-between; }
+  .meters { display: grid; grid-template-columns: 56px 1fr 40px; align-items: center; gap: 12px 12px;
+    padding: 14px 16px; border-bottom: 1px solid var(--rule); }
+  .meters span { color: var(--muted); }
+  .meters output { font: 500 13px var(--mono); text-align: right; font-variant-numeric: tabular-nums; }
+  .meter { position: relative; height: 10px; border: 1px solid var(--faint); }
+  .meter::before { content: ""; position: absolute; left: 50%; top: -4px; bottom: -4px; width: 1px;
+    background: var(--muted); }
+  .meter i { position: absolute; top: 0; bottom: 0; left: 50%; width: 0; background: var(--ink); }
+  .meter .cap { position: absolute; top: -4px; bottom: -4px; width: 1px; background: var(--faint); }
+  .kv { display: grid; grid-template-columns: 1fr 1fr; }
+  .kv > div { padding: 9px 16px 10px; border-bottom: 1px solid var(--rule); min-width: 0; }
+  .kv > div:nth-child(odd):not(.wide) { border-right: 1px solid var(--rule); }
+  .kv > div:last-child:nth-child(odd) { border-right: 0; }
+  .kv .wide { grid-column: 1 / -1; }
+  .kv label { display: block; color: var(--faint); font-size: 10.5px; }
+  .kv output { display: block; font: 13px/1.5 var(--mono); overflow: hidden; text-overflow: ellipsis;
+    white-space: nowrap; font-variant-numeric: tabular-nums; }
+  .kv output.warn { color: var(--red); }
+  .kv output.wrap { white-space: normal; word-break: break-all; }
+  #hex { margin: 4px 0 0; color: var(--muted); font: 10.5px/1.6 var(--mono); white-space: pre-wrap;
+    word-break: break-all; }
+
+  .dronemode { padding: 14px 16px 12px; border-bottom: 1px solid var(--rule); display: grid; gap: 2px; }
+  .dronemode .big { font-size: 34px; font-weight: 500; letter-spacing: -.02em; line-height: 1.1; }
+  .dronemode .mono { color: var(--muted); }
+  .side h3 { margin: 0; padding: 7px 16px; border-bottom: 1px solid var(--rule); color: var(--faint);
+    font-weight: 500; display: flex; justify-content: space-between; background: var(--bg); }
+  .group.stale output, .stale { color: var(--faint); }
+  .bar { height: 4px; border: 1px solid var(--faint); margin: 6px 0 2px; }
+  .bar i { display: block; height: 100%; width: 0; background: var(--ink); }
+  .group.stale .bar i { background: var(--faint); }
+  .actions { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; padding: 12px 16px 0; }
+  .actions.wifi { grid-template-columns: 1fr auto; padding-bottom: 0; }
+  .btn { display: grid; place-items: center; height: 34px; padding: 0 12px; border: 1px solid var(--line);
+    font: 500 11px var(--mono); letter-spacing: .1em; text-transform: uppercase; }
+  .btn:hover { background: var(--rule); }
+  .btn.armed { background: var(--red); border-color: var(--red); color: #fff; }
+  .btn:disabled, .btn.off { opacity: .35; cursor: default; pointer-events: none; }
+  input[type=password], input[type=text] { all: unset; box-sizing: border-box; height: 34px; padding: 0 10px;
+    border: 1px solid var(--faint); font: 13px var(--mono); user-select: text; -webkit-user-select: text; min-width: 0; }
+  input:focus { border-color: var(--line); }
+  #d-action-status { padding: 8px 16px 12px; min-height: 36px; color: var(--muted); }
+  #d-action-status.warn { color: var(--red); }
+  .lock { padding: 6px 10px; border: 1px solid var(--line); text-align: center; color: var(--ink); }
+  .controls.locked .stick { opacity: .3; }
+  .controls.locked .legend .gate { color: var(--ink); }
+
+  @media (max-width: 900px) {
+    body { height: auto; overflow: auto; padding: 0; }
+    .frame { height: auto; border: 0; }
+    .main { grid-template-columns: 1fr; }
+    .stage { height: 100svh; }
+    .side { border-left: 0; border-top: 1px solid var(--line); }
+    .status .cell:not(.tag):not(#link):not(#drone-mode) { display: none; }
+    .controls { grid-template-columns: 1fr 1fr; padding: 12px var(--gap); --controls-h: 360px; }
+    .center { grid-column: 1 / -1; grid-row: 1; }
+    .stick { --pad: min(40cqw, calc(100cqh - var(--legend-h) - 110px)); }
+    .legend { display: none; }
   }
 </style>
 </head>
 <body>
-<header>
-  <h1>HoverAir X1</h1>
-  <div class="chips">
-    <span class="chip" id="chip-link">connecting…</span>
-    <span class="chip" id="chip-sticks"></span>
-    <span class="chip" id="chip-video"></span>
-  </div>
-</header>
-
-<section id="video">
-  <img id="stream" alt="">
-  <div id="overlay">
-    <div class="big" id="overlay-title">No video yet</div>
-    <div class="small" id="overlay-detail"></div>
-    <pre id="overlay-hex"></pre>
-  </div>
-</section>
-
-<section class="controls">
-  <div>
-    <div class="pad" id="pad-left"><div class="knob"></div></div>
-    <div class="pad-label">thrust / yaw</div>
-  </div>
-  <div class="middle">
-    <button id="stop" type="button">STOP</button>
-    <div class="bars" id="bars"></div>
-    <div class="help">
-      <kbd>W</kbd><kbd>S</kbd> pitch · <kbd>A</kbd><kbd>D</kbd> roll · <kbd>I</kbd><kbd>K</kbd> thrust ·
-      <kbd>J</kbd><kbd>L</kbd> yaw · <kbd>U</kbd><kbd>O</kbd> gimbal · <kbd>Space</kbd> stop
+<div class="frame">
+  <header class="top">
+    <div class="brand"><b>hoverctl</b><span>HoverAir X1</span></div>
+    <div class="status">
+      <span class="cell mono" id="drone-mode">mode <b>—</b></span>
+      <span class="cell mono" id="battery">bat <b>—</b></span>
+      <span class="cell mono" id="mode">—</span>
+      <span class="cell mono" id="link">link <b>—</b></span>
+      <span class="cell mono" id="video-status">video <b>—</b></span>
+      <button class="cell mono" id="toggle-video" type="button"><kbd>V</kbd><span id="toggle-label">minimize video</span></button>
     </div>
-  </div>
-  <div>
-    <div class="pad" id="pad-right"><div class="knob"></div></div>
-    <div class="pad-label">pitch / roll</div>
-  </div>
-</section>
+  </header>
+
+  <main class="main">
+    <section class="stage">
+      <div class="video" id="video" title="">
+        <img id="stream" alt="">
+        <span class="corner tl mono" id="cam-port">cam</span>
+        <span class="corner tr mono" id="cam-format"></span>
+        <div class="no-video" id="no-video">
+          <div class="big">No video</div>
+          <div class="mono" id="no-video-detail">waiting for the server</div>
+        </div>
+        <span class="stall mono" id="stall" hidden></span>
+      </div>
+
+      <div class="controls">
+        <div class="stick">
+          <div class="pad" id="pad-left" data-x="yaw" data-y="thrust"><div class="knob"></div></div>
+          <div class="keys" id="keys-left"></div>
+        </div>
+        <div class="center">
+          <div class="lock mono" id="lock" hidden></div>
+          <button id="stop" type="button">STOP</button>
+          <div class="legend mono" id="legend"></div>
+        </div>
+        <div class="stick">
+          <div class="pad" id="pad-right" data-x="roll" data-y="pitch"><div class="knob"></div></div>
+          <div class="keys" id="keys-right"></div>
+        </div>
+      </div>
+    </section>
+
+    <aside class="side">
+      <section id="drone">
+        <h2 class="mono"><span>Drone · bluetooth</span><span id="d-link-age"></span></h2>
+        <div class="dronemode"><div class="big" id="d-mode">—</div><div class="mono" id="d-note"></div></div>
+        <div id="d-groups"></div>
+        <div class="actions">
+          <button class="btn" id="d-manual" type="button">Manual</button>
+          <button class="btn" id="d-land" type="button">Land</button>
+        </div>
+        <form class="actions wifi" id="d-wifi" autocomplete="off">
+          <input type="password" id="d-wifi-pw" placeholder="wi-fi password (8+)" autocomplete="off">
+          <button class="btn" id="d-wifi-set" type="submit">Set</button>
+        </form>
+        <div class="mono" id="d-action-status"></div>
+      </section>
+      <section>
+        <h2 class="mono"><span>Sticks · output</span><span id="max-label"></span></h2>
+        <div class="meters" id="meters"></div>
+        <div class="kv">
+          <div><label class="mono">max cap</label><output id="s-max">—</output></div>
+          <div><label class="mono">packets sent</label><output id="s-sent">—</output></div>
+          <div><label class="mono">errors</label><output id="s-errors">—</output></div>
+          <div><label class="mono">target</label><output id="s-target">—</output></div>
+          <div class="wide"><label class="mono">last error</label><output class="wrap" id="s-last-error">—</output></div>
+        </div>
+      </section>
+      <section>
+        <h2 class="mono"><span>Video</span><span id="v-port"></span></h2>
+        <div class="kv">
+          <div><label class="mono">packets</label><output id="v-packets">—</output></div>
+          <div><label class="mono">pkt/s</label><output id="v-pps">—</output></div>
+          <div><label class="mono">KB/s</label><output id="v-kbps">—</output></div>
+          <div><label class="mono">frames</label><output id="v-frames">—</output></div>
+          <div><label class="mono">kind</label><output id="v-kind">—</output></div>
+          <div><label class="mono">codec</label><output id="v-codec">—</output></div>
+          <div class="wide"><label class="mono">senders</label><output class="wrap" id="v-senders">—</output></div>
+          <div class="wide"><label class="mono">dump</label><output class="wrap" id="v-dump">—</output></div>
+          <div class="wide" id="hex-cell" hidden><label class="mono">first datagrams (hex)</label><pre id="hex"></pre></div>
+        </div>
+      </section>
+    </aside>
+  </main>
+</div>
 
 <script>
 const BINDINGS = /*KEY_BINDINGS*/{};
 const AXES = ["roll", "pitch", "thrust", "yaw", "gimbal"];
-const SEND_MS = 50;      // the server turns sticks neutral after 300 ms without a post
+const AXIS_LIMIT = 100;       // wire range of every axis, -100..100
+const SEND_MS = 50;           // the server turns sticks neutral 300 ms after the last post
 const POLL_MS = 250;
+const CLOCK_MS = 100;         // refresh of the freshness readouts
+const STALE_MS = 1000;        // no state update for this long: link lost
+const VIDEO_STALL_MS = 2000;  // decoded frames stopped for this long: video stalled
+const FPS_WINDOW_MS = 2000;
 const RETRY_VIDEO_MS = 2000;
+const KNOB_TRAVEL = 0.42;     // knob reach from the pad centre, as a fraction of the pad width
+const HEX_LINES = 6;
+const FLASH_MS = 150;
+const DATA_STALE_S = 5;       // drone data older than this is greyed out
+const LAND_ARM_MS = 3000;     // LAND needs a second click within this time
+const STATUS_MS = 6000;       // how long an action result stays on screen
+const MIN_WIFI_PASSWORD = 8;
+const KIB_PER_GIB = 1024 ** 2;  // the drone's storage fields are named bytes but read as KiB (32 GB card = 33554432)
+const STOP_KEY = " ";
+const VIDEO_KEY = "v";
 
 const $ = (id) => document.getElementById(id);
 const clamp = (v) => Math.max(-1, Math.min(1, v));
+const signed = (v, digits) => (v < 0 ? "-" : "+") + Math.abs(v).toFixed(digits);
 const keys = new Set();
 
+// ---- input: pointer pads + keyboard, merged into one set of axes ----
+
 function makePad(element) {
-  const pad = { x: 0, y: 0, pointer: null };
-  const knob = element.querySelector(".knob");
-  const draw = () => {
-    const travel = element.clientWidth * 0.31;
-    knob.style.transform = `translate(${pad.x * travel}px, ${-pad.y * travel}px)`;
-  };
+  const pad = { element, xAxis: element.dataset.x, yAxis: element.dataset.y, x: 0, y: 0, pointer: null };
+  pad.knob = element.querySelector(".knob");
+  element.insertAdjacentHTML("beforebegin",
+    `<div class="caption mono"><span>${pad.yAxis} <b></b></span><span>${pad.xAxis} <b></b></span></div>`);
+  [pad.yValue, pad.xValue] = element.previousElementSibling.querySelectorAll("b");
   const move = (event) => {
     const rect = element.getBoundingClientRect();
-    const radius = rect.width / 2;
-    let x = (event.clientX - rect.left - radius) / radius;
-    let y = (rect.top + radius - event.clientY) / radius;
-    const length = Math.hypot(x, y);
-    if (length > 1) { x /= length; y /= length; }
-    pad.x = x; pad.y = y; draw();
+    const reach = rect.width * KNOB_TRAVEL;
+    pad.x = clamp((event.clientX - rect.left - rect.width / 2) / reach);
+    pad.y = clamp((rect.top + rect.height / 2 - event.clientY) / reach);
+    drawInput();
   };
-  pad.release = () => {
-    pad.pointer = null; pad.x = 0; pad.y = 0;
-    element.classList.remove("active"); draw();
-  };
+  pad.release = () => { pad.pointer = null; pad.x = 0; pad.y = 0; };
   element.addEventListener("pointerdown", (event) => {
     pad.pointer = event.pointerId;
     element.setPointerCapture(event.pointerId);
-    element.classList.add("active"); move(event);
+    move(event);
   });
-  element.addEventListener("pointermove", (event) => {
-    if (event.pointerId === pad.pointer) move(event);
-  });
+  element.addEventListener("pointermove", (event) => { if (event.pointerId === pad.pointer) move(event); });
   for (const type of ["pointerup", "pointercancel", "lostpointercapture"]) {
-    element.addEventListener(type, (event) => { if (event.pointerId === pad.pointer) pad.release(); });
+    element.addEventListener(type, (event) => {
+      if (event.pointerId === pad.pointer) { pad.release(); drawInput(); }
+    });
   }
   return pad;
 }
 
-const left = makePad($("pad-left"));
-const right = makePad($("pad-right"));
+const pads = [makePad($("pad-left")), makePad($("pad-right"))];
 
 function inputAxes() {
-  const axes = { roll: right.x, pitch: right.y, thrust: left.y, yaw: left.x, gimbal: 0 };
+  const axes = Object.fromEntries(AXES.map((axis) => [axis, 0]));
+  for (const pad of pads) { axes[pad.xAxis] += pad.x; axes[pad.yAxis] += pad.y; }
   for (const key of keys) {
     const [axis, direction] = BINDINGS[key];
     axes[axis] += direction;
@@ -165,92 +320,366 @@ function inputAxes() {
   return axes;
 }
 
+// The knobs show the merged input, so held keys move them too.
+function drawInput() {
+  const axes = inputAxes();
+  for (const pad of pads) {
+    const x = axes[pad.xAxis], y = axes[pad.yAxis];
+    pad.knob.style.left = `${50 + x * KNOB_TRAVEL * 100}%`;
+    pad.knob.style.top = `${50 - y * KNOB_TRAVEL * 100}%`;
+    pad.element.parentElement.classList.toggle("live", x !== 0 || y !== 0);
+    pad.xValue.textContent = signed(x, 2);
+    pad.yValue.textContent = signed(y, 2);
+  }
+  for (const cap of document.querySelectorAll("kbd[data-key]")) {
+    cap.classList.toggle("held", keys.has(cap.dataset.key));
+  }
+}
+
+// ---- key legend, built from the server's bindings ----
+
+const keyFor = (axis, direction) =>
+  Object.keys(BINDINGS).find((key) => BINDINGS[key][0] === axis && BINDINGS[key][1] === direction);
+const keyCap = (key, extra = "") => `<kbd class="${extra}" data-key="${key}">${key}</kbd>`;
+
+for (const [pad, id] of [[pads[0], "keys-left"], [pads[1], "keys-right"]]) {
+  $(id).innerHTML = keyCap(keyFor(pad.yAxis, 1), "up") + keyCap(keyFor(pad.xAxis, -1), "left") +
+    keyCap(keyFor(pad.yAxis, -1), "down") + keyCap(keyFor(pad.xAxis, 1), "right");
+}
+$("legend").innerHTML =
+  `<span class="caps">${keyCap(keyFor("gimbal", 1))}${keyCap(keyFor("gimbal", -1))}</span>` +
+  `<span class="hint">gimbal up / down</span>` +
+  `<span class="caps"><kbd>space</kbd></span><span class="hint">stop, all neutral</span>` +
+  `<span class="caps gate"></span><span class="hint gate" id="gate-hint">keys fly the drone</span>` +
+  `<span class="caps"><kbd>${VIDEO_KEY}</kbd></span><span class="hint">minimize / restore video</span>`;
+
+// ---- sending ----
+
 function post(path, body) {
   return fetch(path, { method: "POST", body: body ? JSON.stringify(body) : "", keepalive: true })
     .catch(() => {});
 }
 
+function releaseKeys() {
+  keys.clear();
+  drawInput();
+}
+
 function stop() {
-  keys.clear(); left.release(); right.release();
+  keys.clear();
+  for (const pad of pads) pad.release();
+  drawInput();
   post("/api/stop");
   $("stop").classList.add("flash");
-  setTimeout(() => $("stop").classList.remove("flash"), 150);
+  setTimeout(() => $("stop").classList.remove("flash"), FLASH_MS);
 }
 
-$("stop").addEventListener("pointerdown", (event) => { event.preventDefault(); stop(); });
+function toggleVideo() {
+  const mini = document.body.classList.toggle("mini");
+  $("toggle-label").textContent = mini ? "show video" : "minimize video";
+  $("video").title = mini ? "click to restore" : "";
+}
+
+// Physical key positions, so Shift or a keyboard layout never changes what a key does.
+function keyName(event) {
+  if (event.code === "Space") return STOP_KEY;
+  return event.code.startsWith("Key") ? event.code.slice(3).toLowerCase() : "";
+}
+
 window.addEventListener("keydown", (event) => {
-  if (event.metaKey || event.ctrlKey || event.altKey) return;
-  const key = event.key.toLowerCase();
-  if (key === " ") { event.preventDefault(); stop(); return; }
-  if (key in BINDINGS) { event.preventDefault(); keys.add(key); }
+  if (typing()) return;
+  // macOS drops key-ups while Cmd is held, so any shortcut releases everything.
+  if (event.metaKey || event.ctrlKey || event.altKey) { releaseKeys(); return; }
+  const key = keyName(event);
+  if (key === STOP_KEY) { event.preventDefault(); if (!event.repeat) stop(); return; }
+  if (key === VIDEO_KEY) { if (!event.repeat) toggleVideo(); return; }
+  if (!(key in BINDINGS)) return;
+  event.preventDefault();
+  if (event.repeat) return;
+  keys.add(key);
+  drawInput();
 });
-window.addEventListener("keyup", (event) => keys.delete(event.key.toLowerCase()));
+window.addEventListener("keyup", (event) => {
+  keys.delete(keyName(event));
+  drawInput();
+});
+$("d-wifi-pw").addEventListener("focus", releaseKeys);
 window.addEventListener("blur", stop);
 document.addEventListener("visibilitychange", () => { if (document.hidden) stop(); });
-setInterval(() => post("/api/sticks", inputAxes()), SEND_MS);
 
-// Axis bars show what is really sent (after max magnitude and ramp), not the raw input.
-const bars = {};
-for (const axis of AXES) {
-  $("bars").insertAdjacentHTML("beforeend",
-    `<span>${axis}</span><div class="bar"><i id="bar-${axis}"></i></div><output id="val-${axis}">0</output>`);
-  bars[axis] = { fill: $(`bar-${axis}`), value: $(`val-${axis}`) };
+$("stop").addEventListener("pointerdown", (event) => { event.preventDefault(); stop(); });
+$("toggle-video").addEventListener("click", toggleVideo);
+$("video").addEventListener("click", () => { if (document.body.classList.contains("mini")) toggleVideo(); });
+// Keep focus off buttons, so Space never "clicks" one.
+for (const button of document.querySelectorAll("button")) {
+  button.addEventListener("mousedown", (event) => event.preventDefault());
 }
 
-function renderBars(output) {
+setInterval(() => post("/api/sticks", inputAxes()), SEND_MS);
+drawInput();
+
+// ---- telemetry ----
+
+const meters = {};
+for (const axis of AXES) {
+  $("meters").insertAdjacentHTML("beforeend",
+    `<span class="mono">${axis}</span><div class="meter"><b class="cap"></b><b class="cap"></b><i></i></div>` +
+    `<output>+0</output>`);
+  const row = $("meters").lastElementChild;
+  meters[axis] = { meter: row.previousElementSibling, value: row };
+}
+
+function setText(id, text, warn = false) {
+  const element = $(id);
+  element.textContent = text;
+  element.classList.toggle("warn", warn);
+}
+
+function setCell(id, label, value, level = "") {
+  $(id).innerHTML = `${label} <b>${value}</b>`;
+  $(id).className = `cell mono ${level}`;
+}
+
+function renderSticks(sticks) {
+  const capPercent = (sticks.max / AXIS_LIMIT) * 50;
   for (const axis of AXES) {
-    const value = output[axis];
-    const width = Math.min(Math.abs(value), 100) / 2;
-    bars[axis].fill.style.left = value < 0 ? `${50 - width}%` : "50%";
-    bars[axis].fill.style.width = `${width}%`;
-    bars[axis].value.textContent = value.toFixed(0);
+    const value = sticks.output[axis];
+    const width = (Math.min(Math.abs(value), AXIS_LIMIT) / AXIS_LIMIT) * 50;
+    const { meter, value: output } = meters[axis];
+    const [low, high] = meter.querySelectorAll(".cap");
+    low.style.left = `${50 - capPercent}%`;
+    high.style.left = `${50 + capPercent}%`;
+    meter.lastElementChild.style.left = `${value < 0 ? 50 - width : 50}%`;
+    meter.lastElementChild.style.width = `${width}%`;
+    output.textContent = signed(value, 0);
+  }
+  $("max-label").textContent = `±${AXIS_LIMIT} · cap ${sticks.max}`;
+  $("mode").textContent = sticks.dry_run ? "dry run" : "live";
+  $("mode").className = `cell mono ${sticks.dry_run ? "tag" : ""}`;
+  setText("s-max", `${sticks.max} / ${AXIS_LIMIT}`);
+  setText("s-sent", sticks.sent.toLocaleString());
+  setText("s-errors", String(sticks.errors), sticks.errors > 0);
+  setText("s-target", sticks.target);
+  setText("s-last-error", sticks.last_error || "—", Boolean(sticks.last_error));
+}
+
+const video = { last: null, samples: [], frameChangedAt: 0, fps: 0 };
+
+function noVideoReason(stats) {
+  if (!stats.decoding) return "decoding is off (--no-decode)";
+  if (!stats.packets) return `waiting for packets on UDP ${stats.port}`;
+  return `${stats.packets} packets · ${stats.kind || "payload not recognised"} · nothing decoded yet`;
+}
+
+function renderVideo(stats) {
+  const now = performance.now();
+  if (!video.last || stats.frames !== video.last.frames) video.frameChangedAt = now;
+  video.last = stats;
+  video.samples.push([now, stats.frames]);
+  while (now - video.samples[0][0] > FPS_WINDOW_MS) video.samples.shift();
+  const [firstTime, firstFrames] = video.samples[0];
+  video.fps = now > firstTime ? ((stats.frames - firstFrames) * 1000) / (now - firstTime) : 0;
+
+  const decoding = stats.frames > 0;
+  $("no-video").hidden = decoding;
+  $("no-video-detail").textContent = noVideoReason(stats);
+  $("cam-port").textContent = `cam · udp ${stats.port}`;
+  $("cam-format").textContent = decoding ? `${stats.codec} · ${video.fps.toFixed(0)} fps` : "";
+  $("v-port").textContent = `udp ${stats.port}`;
+  setText("v-packets", stats.packets.toLocaleString());
+  setText("v-pps", stats.pps.toFixed(1));
+  setText("v-kbps", (stats.bytes_per_s / 1024).toFixed(0));
+  setText("v-frames", `${stats.frames.toLocaleString()} · ${video.fps.toFixed(1)} fps`);
+  setText("v-kind", stats.kind || "—");
+  setText("v-codec", stats.codec || (stats.decoding ? "detecting" : "off"));
+  setText("v-senders", stats.senders.join(", ") || "—");
+  setText("v-dump", stats.dump || "off");
+  $("hex-cell").hidden = decoding || !stats.previews.length;
+  $("hex").textContent = stats.previews.slice(0, HEX_LINES).join("\n");
+}
+
+// ---- drone (Bluetooth) ----
+
+const num = (value, digits = 0) => (value === null || value === undefined ? "—" : Number(value).toFixed(digits));
+const xyz = (v) => (v ? `${signed(v.x, 2)} ${signed(v.y, 2)} ${signed(v.z, 2)}` : "—");
+const gigabytes = (kib) => (kib === null ? "—" : (kib / KIB_PER_GIB).toFixed(1));
+
+// One block per message group: its age (from the server clock) and its rows.
+const DRONE_GROUPS = [
+  { id: "state", title: "Flight state", ts: (d) => d.flight_state.ts,
+    rows: [["state", "wide", (d) => d.flight_state.value ?? "—"]] },
+  { id: "battery", title: "Battery", ts: (d) => d.battery.ts, bar: true, rows: [
+    ["charge", "", (d) => (d.battery.soc === null ? "—" : `${d.battery.soc} %`)],
+    ["charging", "", (d) => (d.battery.charging === null ? "—" : d.battery.charging ? "yes" : "no")],
+    ["voltage", "", (d) => num(d.battery.voltage)], ["current", "", (d) => num(d.battery.current)],
+    ["temp", "", (d) => num(d.battery.temp)]] },
+  { id: "odometry", title: "Odometry", ts: (d) => d.odometry.ts, rows: [
+    ["position x y z", "wide", (d) => xyz(d.odometry.position)],
+    ["velocity x y z", "wide", (d) => xyz(d.odometry.velocity)],
+    ["motor rpm", "wide", (d) => (d.odometry.motors_rpm || []).join("  ") || "—"],
+    ["total current", "", (d) => num(d.odometry.total_current)]] },
+  { id: "storage", title: "Storage", ts: (d) => d.storage.ts, rows: [
+    ["free", "", (d) => `${gigabytes(d.storage.available_bytes)} GB`],
+    ["total", "", (d) => `${gigabytes(d.storage.total_bytes)} GB`]] },
+  { id: "exception", title: "Last exception", ts: (d) => d.exception.ts, rows: [
+    ["codes", "wide", (d) => (d.exception.errors ? d.exception.errors.join(", ") || "none" : "—")],
+    ["event", "", (d) => num(d.exception.event)]] },
+];
+
+for (const group of DRONE_GROUPS) {
+  const rows = group.rows.map(([label, cls, , ], i) =>
+    `<div class="${cls}"><label class="mono">${label}</label><output id="d-${group.id}-${i}">—</output>` +
+    `${group.bar && i === 0 ? '<div class="bar"><i></i></div>' : ""}</div>`).join("");
+  $("d-groups").insertAdjacentHTML("beforeend",
+    `<div class="group" id="d-${group.id}"><h3 class="mono"><span>${group.title}</span><span></span></h3>` +
+    `<div class="kv">${rows}</div></div>`);
+}
+
+const age = (now, ts) => (ts === null ? null : Math.max(0, now - ts));
+const ageText = (seconds) => (seconds === null ? "no data" : `${seconds.toFixed(1)} s`);
+const isStale = (seconds) => seconds === null || seconds > DATA_STALE_S;
+
+function renderGroups(drone, now) {
+  for (const group of DRONE_GROUPS) {
+    const seconds = age(now, group.ts(drone));
+    const element = $(`d-${group.id}`);
+    element.classList.toggle("stale", isStale(seconds));
+    element.querySelector("h3 span:last-child").textContent = ageText(seconds);
+    group.rows.forEach((row, i) => { $(`d-${group.id}-${i}`).textContent = row[2](drone); });
+  }
+  const soc = drone.battery.soc ?? 0;
+  $("d-battery").querySelector(".bar i").style.width = `${Math.max(0, Math.min(100, soc))}%`;
+}
+
+function linkText(connection, note) {
+  if (note) return note;
+  if (connection.connected) return "connected";
+  return connection.error ? `error · ${connection.error}` : "searching";
+}
+
+function renderDrone(state) {
+  const drone = state.drone, sticks = state.sticks;
+  const present = Boolean(drone);
+  for (const element of [$("d-groups"), ...document.querySelectorAll("#drone .actions")]) {
+    element.hidden = !present;
+  }
+  $("d-manual").classList.toggle("off", !present);
+  const connected = present && drone.connection.connected;
+  const mode = present && drone.mode.name && !isStale(age(state.now, drone.mode.ts)) ? drone.mode.name : null;
+  $("d-mode").textContent = mode ?? "—";
+  $("d-mode").classList.toggle("stale", !mode);
+  $("d-note").textContent = linkText(present ? drone.connection : { connected: false }, state.ble_note) +
+    (present && connected ? ` · last message ${ageText(drone.connection.last_message_age_s)}` : "");
+  $("d-link-age").textContent = present ? (connected ? "connected" : "no link") : "off";
+  setCell("drone-mode", "mode", mode ?? "—", mode === "MANUAL" ? "tag" : "");
+  if (present) {
+    renderGroups(drone, state.now);
+    const soc = drone.battery.soc;
+    const old = isStale(age(state.now, drone.battery.ts));
+    setCell("battery", "bat", soc === null ? "—" : `${soc}%`, old ? "stale" : "");
+  } else {
+    setCell("battery", "bat", "—");
+  }
+  renderLock(sticks, present);
+}
+
+function renderLock(sticks, present) {
+  const locked = sticks.interlock && sticks.locked;
+  const reason = present ? "not MANUAL" : "no bluetooth link";
+  $("lock").hidden = !locked;
+  $("lock").textContent = `LOCKED · ${reason}`;
+  document.querySelector(".controls").classList.toggle("locked", locked);
+  $("gate-hint").textContent = !sticks.interlock ? "keys fly the drone (interlock off)"
+    : locked ? `keys locked: ${reason}${sticks.dry_run ? " (dry run: still printed)" : ", nothing is sent"}` : "keys fly the drone (MANUAL)";
+}
+
+// ---- drone buttons ----
+
+let statusTimer = 0;
+function showStatus(text, warn = false) {
+  $("d-action-status").textContent = text;
+  $("d-action-status").classList.toggle("warn", warn);
+  clearTimeout(statusTimer);
+  statusTimer = setTimeout(() => { $("d-action-status").textContent = ""; }, STATUS_MS);
+}
+
+async function droneAction(name, path, body) {
+  showStatus(`${name} · sending...`);
+  try {
+    const response = await fetch(path, { method: "POST", body: body ? JSON.stringify(body) : "" });
+    const result = await response.json();
+    showStatus(result.ok ? `${name} · ok` : `${name} · ${result.error || "failed"}`, !result.ok);
+  } catch (error) {
+    showStatus(`${name} · ${error.message}`, true);
   }
 }
 
-function setChip(id, html, level) {
-  const chip = $(id);
-  chip.innerHTML = html;
-  chip.className = "chip" + (level ? ` ${level}` : "");
+let landArmedAt = 0;
+function disarmLand() {
+  landArmedAt = 0;
+  $("d-land").classList.remove("armed");
+  $("d-land").textContent = "Land";
 }
+$("d-manual").addEventListener("click", () => droneAction("manual", "/api/drone/manual"));
+$("d-land").addEventListener("click", () => {
+  if (landArmedAt && performance.now() - landArmedAt < LAND_ARM_MS) {
+    disarmLand();
+    droneAction("land", "/api/drone/land");
+    return;
+  }
+  landArmedAt = performance.now();
+  $("d-land").classList.add("armed");
+  $("d-land").textContent = "Confirm land";
+  setTimeout(disarmLand, LAND_ARM_MS);
+});
+$("d-wifi").addEventListener("submit", (event) => {
+  event.preventDefault();
+  const password = $("d-wifi-pw").value;
+  if (password.length < MIN_WIFI_PASSWORD) {
+    showStatus(`wifi · password needs ${MIN_WIFI_PASSWORD}+ characters`, true);
+    return;
+  }
+  droneAction("wifi", "/api/drone/wifi", { password });
+});
+// Typing a password must not fly the drone, and Space must not stop on a text field.
+const typing = () => document.activeElement === $("d-wifi-pw");
 
-function renderVideo(video) {
-  const hasFrames = video.frames > 0;
-  $("overlay").classList.toggle("hidden", hasFrames);
-  setChip("chip-video",
-    `video <b>${video.pps}</b> pkt/s · <b>${(video.bytes_per_s / 1024).toFixed(0)}</b> KB/s · ` +
-    `<b>${video.frames}</b> frames`, video.packets && !hasFrames ? "warn" : "");
-  if (hasFrames) return;
-  $("overlay-title").textContent = video.packets
-    ? `No video yet — ${video.packets} packets received`
-    : `No video yet — waiting for packets on UDP ${video.port}`;
-  const details = [];
-  if (video.packets) details.push(`payload: ${video.kind || "not recognised"}`);
-  if (video.codec) details.push(`codec: ${video.codec}`);
-  if (video.senders.length) details.push(`from ${video.senders.join(", ")}`);
-  if (video.dump) details.push(`dump: ${video.dump}`);
-  $("overlay-detail").textContent = details.join(" · ");
-  $("overlay-hex").textContent = video.previews.slice(0, 6).join("\n");
-}
+let stateAt = 0;
 
 async function poll() {
   try {
-    const state = await (await fetch("/api/state", { cache: "no-store" })).json();
-    const sticks = state.sticks;
-    setChip("chip-link", sticks.dry_run ? "dry run" : `→ <b>${sticks.target}</b>`,
-      sticks.dry_run ? "warn" : "");
-    setChip("chip-sticks",
-      `sticks <b>${sticks.sent}</b> sent · max <b>${sticks.max}</b>` +
-      (sticks.errors ? ` · <b>${sticks.errors}</b> errors` : ""),
-      sticks.errors ? "bad" : "");
-    if (sticks.last_error) $("chip-sticks").title = sticks.last_error;
-    renderBars(sticks.output);
+    const response = await fetch("/api/state", { cache: "no-store", signal: AbortSignal.timeout(STALE_MS) });
+    const state = await response.json();
+    stateAt = performance.now();
+    renderSticks(state.sticks);
     renderVideo(state.video);
+    renderDrone(state);
   } catch {
-    setChip("chip-link", "server offline", "bad");
+    // the freshness clock shows the link as lost
   }
+  setTimeout(poll, POLL_MS);
 }
-setInterval(poll, POLL_MS);
+
+function renderClock() {
+  const now = performance.now();
+  if (stateAt) {
+    const age = (now - stateAt) / 1000;
+    const lost = now - stateAt > STALE_MS;
+    setCell("link", lost ? "link lost" : "link", `${age.toFixed(1)} s`, lost ? "warn" : "");
+  }
+  const stats = video.last;
+  if (!stats) return;
+  const stalledFor = now - video.frameChangedAt;
+  const stalled = stats.frames > 0 && stalledFor > VIDEO_STALL_MS;
+  $("stall").hidden = !stalled;
+  $("stall").textContent = `video stalled · ${(stalledFor / 1000).toFixed(1)} s`;
+  if (!stats.frames) setCell("video-status", "video", "none");
+  else if (stalled) setCell("video-status", "video", "stalled", "warn");
+  else setCell("video-status", "video", `${video.fps.toFixed(0)} fps`);
+}
+
 poll();
+setInterval(renderClock, CLOCK_MS);
 
 const stream = $("stream");
 stream.onerror = () => setTimeout(() => { stream.src = `/video.mjpg?${Date.now()}`; }, RETRY_VIDEO_MS);

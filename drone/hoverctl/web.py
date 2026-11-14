@@ -1,4 +1,4 @@
-"""Local web UI: MJPEG video, virtual joysticks and a STOP button.
+"""Local web UI: MJPEG video, virtual joysticks, a STOP button and the drone's Bluetooth state.
 
 Uses only the stdlib HTTP server: no dependency to install on the drone's Wi-Fi (no internet),
 and plain HTTP POSTs at 20 Hz from one local browser tab are plenty. The sender's watchdog
@@ -7,21 +7,30 @@ turns the sticks neutral if the tab stops posting (closed, crashed, network hicc
 
 import json
 import math
+import time
+from collections.abc import Callable
 from dataclasses import asdict
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
+from typing import TYPE_CHECKING, Any
 
 from .protocol import AXIS_NAMES, NEUTRAL, Axes
 from .sticks import StickSender
 from .teleop import KEY_BINDINGS
 from .video import VideoReceiver
 
+if TYPE_CHECKING:
+    from .ble import DroneLink
+
 PAGE_TEMPLATE = Path(__file__).with_name("web.html")
 BINDINGS_PLACEHOLDER = "/*KEY_BINDINGS*/{}"
 MJPEG_BOUNDARY = "frame"
 FRAME_WAIT_S = 1.0
 MAX_BODY_BYTES = 1024
+DRONE_PATHS = ("/api/drone/manual", "/api/drone/land", "/api/drone/wifi")
+MIN_WIFI_PASSWORD = 8
+NO_LINK = {"ok": False, "error": "bluetooth is off or unavailable"}
 
 
 def _unit(value: object) -> float:
@@ -45,6 +54,10 @@ class _Handler(BaseHTTPRequestHandler):
             self.send_error(HTTPStatus.NOT_FOUND)
 
     def do_POST(self) -> None:
+        command = self._drone_commands().get(self.path)
+        if command:
+            self._drone_command(command)
+            return
         if self.path == "/api/sticks":
             self.server.sender.set_input(self._read_axes())
         elif self.path == "/api/stop":
@@ -54,10 +67,37 @@ class _Handler(BaseHTTPRequestHandler):
             return
         self._send(HTTPStatus.NO_CONTENT, "text/plain", b"")
 
-    def _read_axes(self) -> Axes:
-        length = min(int(self.headers.get("Content-Length", 0)), MAX_BODY_BYTES)
+    def _drone_commands(self) -> dict[str, Callable[[], dict[str, Any]]]:
+        link = self.server.link
+        if link is None:
+            return {path: lambda: NO_LINK for path in DRONE_PATHS}
+        return {
+            "/api/drone/manual": link.set_manual,
+            "/api/drone/land": link.land,
+            "/api/drone/wifi": lambda: self._start_wifi(link),
+        }
+
+    def _start_wifi(self, link: "DroneLink") -> dict[str, Any]:
         try:
-            body = json.loads(self.rfile.read(length) or b"{}")
+            password = str(json.loads(self._read_body() or b"{}").get("password", ""))
+        except (ValueError, AttributeError):
+            password = ""
+        if len(password) < MIN_WIFI_PASSWORD:
+            return {"ok": False, "error": f"password needs {MIN_WIFI_PASSWORD}+ characters"}
+        return link.start_wifi(password)
+
+    def _drone_command(self, command: Callable[[], dict[str, Any]]) -> None:
+        result = command()
+        reply = {"ok": bool(result.get("ok")), "error": result.get("error")}
+        self._send(HTTPStatus.OK, "application/json", json.dumps(reply).encode())
+
+    def _read_body(self) -> bytes:
+        length = min(int(self.headers.get("Content-Length", 0)), MAX_BODY_BYTES)
+        return self.rfile.read(length)
+
+    def _read_axes(self) -> Axes:
+        try:
+            body = json.loads(self._read_body() or b"{}")
             return Axes(**{axis: _unit(body.get(axis, 0.0)) for axis in AXIS_NAMES})
         except (ValueError, TypeError, AttributeError):
             return NEUTRAL
@@ -75,6 +115,7 @@ class _Handler(BaseHTTPRequestHandler):
 
     def _state(self) -> None:
         sender = self.server.sender
+        receiver = self.server.receiver
         state = {
             "sticks": {
                 "output": asdict(sender.output),
@@ -84,8 +125,13 @@ class _Handler(BaseHTTPRequestHandler):
                 "last_error": sender.last_error,
                 "target": f"{sender.address[0]}:{sender.address[1]}",
                 "dry_run": sender.dry_run,
+                "locked": sender.locked,
+                "interlock": sender.interlocked,
             },
-            "video": self.server.receiver.stats(),
+            "now": time.time(),
+            "drone": self.server.link.snapshot() if self.server.link else None,
+            "ble_note": self.server.ble_note,
+            "video": {**receiver.stats(), "decoding": receiver.decoder is not None},
         }
         self._send(HTTPStatus.OK, "application/json", json.dumps(state).encode())
 
@@ -115,10 +161,20 @@ class _Handler(BaseHTTPRequestHandler):
 class WebServer(ThreadingHTTPServer):
     daemon_threads = True
 
-    def __init__(self, bind: str, port: int, sender: StickSender, receiver: VideoReceiver):
+    def __init__(
+        self,
+        bind: str,
+        port: int,
+        sender: StickSender,
+        receiver: VideoReceiver,
+        link: "DroneLink | None" = None,
+        ble_note: str = "",
+    ):
         super().__init__((bind, port), _Handler)
         self.sender = sender
         self.receiver = receiver
+        self.link = link  # None: Bluetooth off or unavailable (`ble_note` says which)
+        self.ble_note = ble_note
         bindings = {key: list(value) for key, value in KEY_BINDINGS.items()}
         page = PAGE_TEMPLATE.read_text().replace(BINDINGS_PLACEHOLDER, json.dumps(bindings))
         self.page = page.encode()

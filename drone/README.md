@@ -47,14 +47,18 @@ Raw captures and the decompiled app live outside git, in `../drone-re/` on roros
 Stdlib only, plus the `ffmpeg` CLI for video (`brew install ffmpeg`). Nothing to download on the drone's Wi-Fi. Run from the repo root:
 
 ```bash
-uv run python -m drone.hoverctl web            # browser UI on http://127.0.0.1:8000: video, two sticks, STOP
+uv run --with bleak python -m drone.hoverctl web   # browser UI on http://127.0.0.1:8000: video, sticks, STOP, drone state over Bluetooth
+uv run python -m drone.hoverctl web --no-ble   # same without Bluetooth: no state, no interlock
 uv run python -m drone.hoverctl sticks         # keyboard teleop in the terminal
 uv run python -m drone.hoverctl video          # receive UDP 7078: stats + dump to recordings/ (gitignored)
 uv run python -m drone.hoverctl sticks --dry-run   # print packets, send nothing
 ```
 
 - **Keys:** W/S pitch, A/D roll, I/K thrust, J/L yaw, U/O gimbal, Space = neutral (web: STOP), Q quits the terminal teleop. Web UI: left stick is thrust/yaw, right stick is pitch/roll.
+- **Web UI:** video on the left, telemetry on the right (stick output per axis against the `--max` cap, packets, errors, video stats, the hex of the first datagrams while nothing decodes). The top bar shows DRY RUN, the time since the last state update (red after 1 s), and the video state (red when frames stop for 2 s). **V** (or the top-right button, or a click on the small window) shrinks the video to a picture-in-picture so the sticks get bigger. Keys work together (diagonals), the on-screen sticks follow them, and every key is released when the tab loses focus. Mouse or touch dragging works too.
 - **Safety:** `--max` (default 50 of 100) caps every axis. Ramp like the app: start at 28, then +3 per tick, and release is instant. Sticks go neutral 0.3 s after the last input: browser tab closed, key released (terminal: 0.15 s after the last auto-repeat). Exit, Ctrl-C, SIGTERM or an error send 0.5 s of neutral.
+- **Bluetooth in the web UI:** `web` starts the `DroneLink` (ble.py, needs `bleak`; close the Hover app first, the drone takes one Bluetooth client). The DRONE section on top of the right panel shows link, mode (large), flight state, battery, odometry, storage and the last exception, each with its age (grey after 5 s), plus the mode and battery in the top bar. Buttons: MANUAL, LAND (click twice within 3 s) and WIFI (password of 8+ characters, SET). They are POST endpoints `/api/drone/{manual,land,wifi}` returning `{ok, error}`; `/api/state` has the `drone` snapshot (`null` with `--no-ble`). Without `bleak` the page says so and the sticks stay locked.
+- **Stick interlock:** with Bluetooth active (and not `--dry-run`) the sender sends **no UDP packet at all**, not even neutral, unless the drone reports MANUAL (reading under 5 s old, link up). It stops within one tick when the mode leaves MANUAL, and the UI shows the sticks as LOCKED. `--dry-run` still prints packets and shows what would happen. `--no-ble` turns the interlock off (warning at startup).
 - **Terminal limits:** it only sees auto-repeat, so a single tap moves for about 0.5 s, and only one key works at a time. Use the web UI for diagonals.
 - **Video:** the payload format is still a guess (`video_payload.py`). We handle bare Annex-B (H.264/H.265) and RTP/H.264. The first 10 datagrams print in hex, and the UI shows them while nothing decodes. If a fixed header shows up, try `--skip N`. Force the codec with `--codec h264|hevc`.
 - **Testing without the drone:** `uv run python -m drone.hoverctl.devsend [--mode rtp | --codec hevc]` sends an ffmpeg test pattern to 127.0.0.1:7078. `--replay recordings/<dump>.udp` replays a real capture with its original timing.
