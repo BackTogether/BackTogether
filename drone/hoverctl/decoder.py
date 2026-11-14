@@ -9,7 +9,7 @@ import threading
 import time
 from collections import deque
 
-from .video_payload import detect_codec
+from .video_payload import detect_codec, find_parameter_set
 
 JPEG_SOI = b"\xff\xd8"
 JPEG_EOI = b"\xff\xd9"
@@ -72,10 +72,15 @@ class MjpegDecoder:
         self._last_start = 0.0
         self._frame = b""
         self._frame_ready = threading.Condition()
+        self._restart_wanted = False  # set by restart(), done in feed()
 
     def feed(self, data: bytes) -> None:
         if not data:
             return
+        if self._restart_wanted:
+            data = self._restart_at_parameter_set(data)
+            if not data:
+                return
         if self.codec is None:
             self._buffer_until_codec(data)
             return
@@ -98,12 +103,27 @@ class MjpegDecoder:
             return len(self._frame_times) / FPS_WINDOW_S
 
     def restart(self) -> None:
-        """Start over at the next parameter set, e.g. after the drone changed resolution: one
-        ffmpeg process keeps the frame size it started with."""
+        """Start a fresh ffmpeg at the next parameter set, e.g. after asking the drone for another
+        resolution: one ffmpeg process keeps the frame size it started with.
+
+        Safe from any thread: it only sets a flag. The thread that calls `feed` does the restart,
+        so ffmpeg is never closed while it is being written to, and the new one starts on an
+        SPS/VPS (the drone sends one with every keyframe, about once a second).
+        """
+        self._restart_wanted = True
+
+    def _restart_at_parameter_set(self, data: bytes) -> bytes:
+        """Keep the old decoder until a parameter set arrives, then swap. Returns what to feed."""
+        found = find_parameter_set(data)
+        if found is None:
+            return data  # the old decoder keeps showing frames until the swap
+        offset, codec = found
+        self._restart_wanted = False
         self.close()
-        self.codec = self._configured_codec
+        self.codec = self._configured_codec or codec
         self._pending = bytearray()
         self._last_start = 0.0
+        return data[offset:]
 
     def wait_frame(self, after: int, timeout: float) -> tuple[int, bytes]:
         """Block until a frame newer than number `after` exists (or timeout)."""

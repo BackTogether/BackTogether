@@ -39,17 +39,24 @@ def start_code_offset(data: bytes) -> int | None:
     return offset - 1 if offset and data[offset - 1] == 0 else offset
 
 
-def detect_codec(stream: bytes) -> str | None:
-    """'h264' or 'hevc' from the first parameter set (H.264 SPS or HEVC VPS) in the stream."""
+def find_parameter_set(stream: bytes) -> tuple[int, str] | None:
+    """(offset of its start code, codec) of the first H.264 SPS or HEVC VPS in the stream."""
     offset = stream.find(START_CODE)
     while 0 <= offset < len(stream) - len(START_CODE) - 1:
         nal = stream[offset + len(START_CODE) :]
+        start = offset - 1 if offset and stream[offset - 1] == 0 else offset  # 4-byte code
         if nal.startswith(HEVC_VPS_HEADER):
-            return "hevc"
+            return start, "hevc"
         if nal[0] & H264_NAL_TYPE_MASK == H264_SPS:
-            return "h264"
+            return start, "h264"
         offset = stream.find(START_CODE, offset + 1)
     return None
+
+
+def detect_codec(stream: bytes) -> str | None:
+    """'h264' or 'hevc' from the first parameter set (H.264 SPS or HEVC VPS) in the stream."""
+    found = find_parameter_set(stream)
+    return found[1] if found else None
 
 
 def _rtp_ssrc(packet: bytes) -> bytes | None:
