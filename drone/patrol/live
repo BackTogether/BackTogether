@@ -1,0 +1,23 @@
+#!/usr/bin/env bash
+# Live patrol tests against the running app (drone/fly = drone.sdk serve), offline-safe.
+# Usage: drone/patrol/live tilt <deg> | distance | dry | bounce     [extra args for the module]
+#   tilt      set the camera tilt through the SDK (needs Manual control)
+#   distance  perception only: prints the front distance, sends nothing
+#   dry       bounce patrol decisions (FORWARD/HOVER/TURN), sends nothing
+#   bounce    REAL autonomous bounce. Stop: Ctrl+C here, or STOP / Space in the page.
+set -euo pipefail
+cd "$(dirname "$0")/../.."
+SDK=http://127.0.0.1:8077
+TAKEOFF_HEIGHT="${TAKEOFF_HEIGHT:-1.0}"   # metres above the floor where the drone took off
+# The depth model read ~2.2-2.5 m at ~1 m from a wall (2026-11-14): stop/clear thresholds in model metres
+STOP_AT="${STOP_AT:-2.5}"; CLEAR_AT="${CLEAR_AT:-3.3}"
+DEPS=(--offline --no-project --python 3.11 --with numpy --with pillow --with torch --with transformers)
+export HF_HUB_OFFLINE="${HF_HUB_OFFLINE:-1}"  # model is cached; the drone Wi-Fi has no internet
+mode="${1:-}"; shift || true
+case "$mode" in
+  tilt)     curl -s -X POST -H 'Content-Type: application/json' -d "{\"deg\": ${1:?degrees}}" "$SDK/tilt"; echo ;;
+  distance) exec uv run "${DEPS[@]}" python -m drone.patrol.front_distance --sdk "$SDK" --takeoff-height "$TAKEOFF_HEIGHT" "$@" ;;
+  dry)      exec uv run "${DEPS[@]}" python -m drone.patrol.bounce --sdk "$SDK" --dry-run --takeoff-height "$TAKEOFF_HEIGHT" --geofence 4 --tilt -30 --stop-at "$STOP_AT" --clear-at "$CLEAR_AT" "$@" ;;
+  bounce)   exec uv run "${DEPS[@]}" python -m drone.patrol.bounce --sdk "$SDK" --takeoff-height "$TAKEOFF_HEIGHT" --speed 0.3 --geofence 4 --tilt -30 --stop-at "$STOP_AT" --clear-at "$CLEAR_AT" "$@" ;;
+  *) sed -n '2,7p' "$0"; exit 1 ;;
+esac
