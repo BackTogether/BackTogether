@@ -8,14 +8,18 @@ import argparse
 import contextlib
 import signal
 import webbrowser
+from pathlib import Path
 
 from drone.hoverctl.__main__ import add_web_arguments, make_web_parts
 
 from .drone import Drone, make_video_yaw_or_note
 from .estimate import DEFAULT_YAW_RATE_DPS, DeadReckoner
+from .map_image import load_map_yaml
+from .map_view import MapView
 from .safety import SafetyLimits
 from .server import ApiServer
 from .sim import DEFAULT_FRAME_YAW_OFFSET_DEG, DEFAULT_ROOM_HALF_M, connect_sim
+from .splat import NO_NUMPY_NOTE, UP_AXES, Registration, numpy_missing, render_splat
 
 SIM_PORT = 8090
 SIM_BIND = "127.0.0.1"
@@ -46,6 +50,30 @@ def _add_sdk_arguments(parser: argparse.ArgumentParser) -> None:
         action="store_true",
         help="the autopilot keeps flying when the video stops",
     )
+    _add_map_arguments(parser)
+
+
+def _add_map_arguments(parser: argparse.ArgumentParser) -> None:
+    """The page's map view (API.md "Map view"): optional background layers."""
+    group = parser.add_argument_group("map view")
+    group.add_argument("--map-yaml", type=Path, help="the robot's map_server map (.yaml + .pgm)")
+    group.add_argument("--splat", type=Path, help="Gaussian splat of the hall (3DGS .ply)")
+    group.add_argument(
+        "--splat-up",
+        choices=tuple(UP_AXES),
+        default="z",
+        help="the splat's up axis (%(default)s; write --splat-up=-y for a minus)",
+    )
+    group.add_argument(
+        "--splat-z-max",
+        type=float,
+        help="drop Gaussians above this height, splat units (default: halfway to the ceiling)",
+    )
+    group.add_argument("--splat-scale", type=float, help="map metres per splat unit")
+    group.add_argument("--splat-rotation", type=float, help="splat -> map rotation, degrees")
+    group.add_argument(
+        "--splat-offset", type=float, nargs=2, metavar=("X", "Y"), help="splat origin in map"
+    )
 
 
 def _limits(args: argparse.Namespace) -> SafetyLimits:
@@ -60,8 +88,39 @@ def _limits(args: argparse.Namespace) -> SafetyLimits:
     )
 
 
+def _map_view(args: argparse.Namespace) -> MapView:
+    """The map layers given on the command line; a layer that fails to load is left off."""
+    grid = None
+    if args.map_yaml:
+        try:
+            grid = load_map_yaml(args.map_yaml)
+            print(f"map: {grid.width} x {grid.height} cells at {grid.resolution} m", flush=True)
+        except (OSError, ValueError, KeyError) as error:
+            print(f"map: cannot load {args.map_yaml}: {error}", flush=True)
+    if not args.splat:
+        return MapView(grid)
+    registration = Registration.load(Registration.path_for(args.splat))
+    if args.splat_scale is not None:
+        registration.scale = args.splat_scale
+    if args.splat_rotation is not None:
+        registration.rotation_deg = args.splat_rotation
+    if args.splat_offset is not None:
+        registration.x, registration.y = args.splat_offset
+    splat, note = None, NO_NUMPY_NOTE if numpy_missing() else None
+    if note is None:
+        try:
+            splat = render_splat(args.splat, args.splat_up, args.splat_z_max)
+            print(f"splat: {splat.gaussians} Gaussians drawn, cut at {splat.z_max:.2f}", flush=True)
+        except (OSError, ValueError, KeyError) as error:
+            note = f"cannot read {args.splat.name}: {error}"
+    if note:
+        print(f"splat: {note}", flush=True)
+    return MapView(grid, splat, note, args.splat, registration)
+
+
 def _serve(drone: Drone, args: argparse.Namespace, ble_note: str = "") -> None:
-    server = ApiServer(args.bind, args.http_port, drone, _limits(args), ble_note)
+    map_view = _map_view(args)
+    server = ApiServer(args.bind, args.http_port, drone, _limits(args), ble_note, map_view)
     url = f"http://{args.bind}:{args.http_port}/"
     print(f"web UI + API on {url}  (API: drone/sdk/API.md)", flush=True)
     if not args.no_browser:

@@ -31,6 +31,8 @@ from drone.hoverctl.sticks import GATE_LIVE
 from drone.hoverctl.web import MJPEG_BOUNDARY, WebHandler, WebServer
 
 from .drone import Drone
+from .map_image import decode_cells, grid_from_cells
+from .map_view import MapView
 from .mission import (
     FRAME_LAUNCH,
     FRAMES,
@@ -45,6 +47,7 @@ from .navigate import Navigator
 from .patrol import Patrol, PatrolOptions, Waypoint
 from .safety import Interrupted, NotReady, SafetyLanding, SafetyLimits
 from .sim import FAULTS, SimDetector, SimLink
+from .splat import Registration
 from .telemetry import Pose, Tilt
 from .tilt import GIMBAL_BOTTOM_DEG, GIMBAL_DEADZONE_PCT, GIMBAL_TOP_DEG, gimbal_rate
 
@@ -64,6 +67,8 @@ FRAME_TIME_HEADER = "X-Frame-Time"
 DRONE_POSE_HEADER = "X-Drone-Pose"
 MAX_LABEL_CHARS = 64
 MS_PER_S = 1000.0
+MAP_MAX_JSON_BYTES = 32 * 1024 * 1024  # POST /map/grid: a large compressed grid
+PNG_TYPE = "image/png"
 
 Reply = tuple[HTTPStatus, dict[str, Any]]
 
@@ -160,6 +165,7 @@ class ApiServer(WebServer):
         drone: Drone,
         limits: SafetyLimits | None = None,
         ble_note: str = "",
+        map_view: MapView | None = None,
     ) -> None:
         super().__init__(
             bind, port, drone.sticks, drone.video, drone.link, ble_note, handler=ApiHandler
@@ -175,6 +181,7 @@ class ApiServer(WebServer):
         self.sim_detector = SimDetector(drone, self._sim_detection) if self.sim else None
         if self.sim_detector:
             self.sim_detector.start()
+        self.map_view = map_view or MapView()
 
     def autopilot_active(self) -> bool:
         return self.tasks.busy() or self.drone.command_active()
@@ -266,6 +273,19 @@ class ApiServer(WebServer):
             "simulated": self.sim is not None,
         }
 
+    def map_state(self) -> dict[str, Any]:
+        """GET /map/state: the page's map view (map_view.py)."""
+        patrol = self.mission.patrol or self.tasks.patrol
+        limits = self.navigator.limits
+        return self.map_view.state(
+            mission=self.mission.status(),
+            pose=self.drone.pose(),
+            path=self.drone.path(),
+            waypoints=[(w.x, w.y) for w in patrol.waypoints] if patrol else [],
+            fence=(limits.x_min, limits.x_max, limits.y_min, limits.y_max),
+            target=self.navigator.target,
+        )
+
 
 class ApiHandler(WebHandler):
     server: ApiServer
@@ -290,6 +310,7 @@ class ApiHandler(WebHandler):
         }
         if self.server.sim:
             routes["/sim/truth"] = self._sim_truth
+        routes.update(self._map_get_routes())
         route = routes.get(urlsplit(self.path).path)
         if route:
             route()
@@ -306,6 +327,10 @@ class ApiHandler(WebHandler):
         }
         if path in page_routes:
             page_routes[path]()
+            return
+        map_route = self._map_post_routes().get(path)
+        if map_route:
+            self._map_post(map_route)
             return
         route = self._api_routes().get(path)
         if route is None:
@@ -655,6 +680,83 @@ class ApiHandler(WebHandler):
         self.server.sim.push(_number(body, "dx", 0.0), _number(body, "dy", 0.0))
         return HTTPStatus.OK, {"ok": True}
 
+    # --- map view (map_view.py, API.md "Map view") -----------------------------------------------
+
+    def _map_get_routes(self) -> dict[str, Callable[[], None]]:
+        return {
+            "/map/state": self._map_state,
+            "/map/grid.png": lambda: self._map_png(self.server.map_view.grid_png()),
+            "/map/splat.png": lambda: self._map_png(self._splat_png()),
+        }
+
+    def _map_post_routes(self) -> dict[str, Callable[[dict[str, Any]], Reply]]:
+        return {
+            "/map/robot_pose": self._map_robot_pose,
+            "/map/grid": self._map_grid,
+            "/map/splat/registration": self._map_registration,
+        }
+
+    def _map_post(self, route: Callable[[dict[str, Any]], Reply]) -> None:
+        try:
+            status, payload = route(self._json_body(MAP_MAX_JSON_BYTES))
+        except BadRequest as error:
+            status, payload = HTTPStatus.BAD_REQUEST, {"error": str(error)}
+        self._reply(status, payload)
+
+    def _map_state(self) -> None:
+        self._reply(HTTPStatus.OK, self.server.map_state())
+
+    def _splat_png(self) -> bytes | None:
+        splat = self.server.map_view.splat
+        return splat.png if splat else None
+
+    def _map_png(self, png: bytes | None) -> None:
+        if png is None:
+            self._reply(HTTPStatus.NOT_FOUND, {"error": "no such map layer"})
+            return
+        self._send(HTTPStatus.OK, PNG_TYPE, png)
+
+    def _map_robot_pose(self, body: dict[str, Any]) -> Reply:
+        view = self.server.map_view
+        view.set_robot_pose(_number(body, "x"), _number(body, "y"), _number(body, "yaw", 0.0))
+        return HTTPStatus.OK, {"ok": True, "has_grid": view.has_grid()}
+
+    def _map_grid(self, body: dict[str, Any]) -> Reply:
+        origin = body.get("origin") or {}
+        if not isinstance(origin, dict) or not isinstance(body.get("data"), str):
+            raise BadRequest('give "origin" {"x", "y", "yaw"} and "data" (base64 string)')
+        try:
+            cells = decode_cells(body["data"], body.get("encoding", "zlib+base64"))
+            grid = grid_from_cells(
+                cells,
+                int(_number(body, "width", None, 1)),
+                int(_number(body, "height", None, 1)),
+                _number(body, "resolution", None, 0.0),
+                (_number(origin, "x", 0.0), _number(origin, "y", 0.0), _number(origin, "yaw", 0.0)),
+                str(body.get("source") or "POST /map/grid")[:MAX_LABEL_CHARS],
+            )
+        except (ValueError, TypeError) as error:
+            raise BadRequest(f"bad grid: {error}") from error
+        self.server.map_view.set_grid(grid)
+        return HTTPStatus.OK, {"ok": True, "width": grid.width, "height": grid.height}
+
+    def _map_registration(self, body: dict[str, Any]) -> Reply:
+        view = self.server.map_view
+        if view.splat is None:
+            return HTTPStatus.CONFLICT, {"error": "no splat layer (start with --splat)"}
+        current = view.registration
+        registration = Registration(
+            scale=_number(body, "scale", current.scale, 1e-6),
+            rotation_deg=_number(body, "rotation_deg", current.rotation_deg, -360.0, 360.0),
+            x=_number(body, "x", current.x),
+            y=_number(body, "y", current.y),
+        )
+        try:
+            saved = view.set_registration(registration, bool(_flag(body, "save", False)))
+        except OSError as error:
+            return HTTPStatus.CONFLICT, {"error": f"cannot save: {error}"}
+        return HTTPStatus.OK, {"ok": True, "saved": str(saved) if saved else None}
+
     # --- helpers ------------------------------------------------------------------------------
 
     def _free(self) -> Reply | None:
@@ -686,10 +788,10 @@ class ApiHandler(WebHandler):
             return _busy()
         return HTTPStatus.ACCEPTED, {"accepted": True}
 
-    def _json_body(self) -> dict[str, Any]:
+    def _json_body(self, limit: int = MAX_JSON_BYTES) -> dict[str, Any]:
         length = int(self.headers.get("Content-Length", 0))
-        if length > MAX_JSON_BYTES:
-            raise BadRequest(f"body over {MAX_JSON_BYTES} bytes")
+        if length > limit:
+            raise BadRequest(f"body over {limit} bytes")
         raw = self.rfile.read(length) if length else b""
         try:
             body = json.loads(raw or b"{}")

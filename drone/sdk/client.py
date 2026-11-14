@@ -15,10 +15,12 @@ robot and import it from rospy code (see ros_node.py).
 
 from __future__ import annotations
 
+import base64
 import json
 import math
 import urllib.error
 import urllib.request
+import zlib
 from collections.abc import Iterator
 from typing import Any
 
@@ -170,6 +172,39 @@ class DroneClient:
     def mission_abort(self) -> dict[str, Any]:
         """End the mission: back to the takeoff point and land."""
         return self._request("POST", "/mission/abort")
+
+    # --- map view (API.md "Map view") ---------------------------------------------------------
+
+    def map_state(self) -> dict[str, Any]:
+        """What the page's map view shows: drone, robot, child, path, layers, in one frame."""
+        return self._request("GET", "/map/state")
+
+    def map_robot_pose(self, x: float, y: float, yaw: float) -> dict[str, Any]:
+        """The robot's pose in `map` now (metres, radians). The reply's "has_grid" says
+        whether the Mac has an occupancy grid yet."""
+        return self._request("POST", "/map/robot_pose", {"x": x, "y": y, "yaw": yaw})
+
+    def map_grid(
+        self,
+        width: int,
+        height: int,
+        resolution: float,
+        origin: tuple[float, float, float],
+        cells: bytes,
+        source: str = "",
+    ) -> dict[str, Any]:
+        """The robot's occupancy grid: `cells` = nav_msgs/OccupancyGrid data as int8 bytes
+        (row 0 at the origin, -1 unknown, 0..100), origin = (x, y, yaw) of cell (0, 0)."""
+        body = {
+            "width": width,
+            "height": height,
+            "resolution": resolution,
+            "origin": {"x": origin[0], "y": origin[1], "yaw": origin[2]},
+            "encoding": "zlib+base64",
+            "data": base64.b64encode(zlib.compress(cells)).decode("ascii"),
+            "source": source,
+        }
+        return self._request("POST", "/map/grid", body)
 
     # --- streams ------------------------------------------------------------------------------
 

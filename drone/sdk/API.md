@@ -152,6 +152,50 @@ point above the floor), `min_confidence` (0.5), `takeoff_timeout_s` (120), `patr
   ros_node's `/drone/odom`) in `map`. `pose_map`: the drone in `map` now.
 - `safety`: why the safety rules hold the drone (returning home, riding out a loss), or null.
 
+## Map view
+What the web page's map shows (README "Map view"), in one frame: the robot's `map` (metres,
+yaw in radians counter-clockwise, ROS) once the mission is aligned (`map_from_drone`), else the
+drone's takeoff frame with ROS axes (x, -y of the takeoff frame above; the map-only layers are
+then left out). With the drone on the ground the view stays in `map`, without the drone.
+
+| Method | Body | Reply |
+|---|---|---|
+| `GET /map/state` | - | the state below |
+| `GET /map/grid.png` | - | the occupancy grid (`grid` below): unknown transparent, free dark, occupied light; north-up (row 0 = y max); `404` without one |
+| `GET /map/splat.png` | - | the splat's top-down image (`splat.bounds`, splat units); `404` without one |
+| `POST /map/robot_pose` | `{"x", "y", "yaw"?}`: the robot in `map` now (ros_node sends tf `map → base_footprint` at 2 Hz) | `200 {"ok": true, "has_grid"}` |
+| `POST /map/grid` | `{"width", "height", "resolution", "origin": {"x", "y", "yaw"}, "data", "encoding"?, "source"?}`: a `nav_msgs/OccupancyGrid`; `data` = base64 of its int8 cells (row 0 at the origin), zlib-compressed (`"encoding": "zlib+base64"`, default) or not (`"base64"`); up to 32 MB | `200 {"ok": true, "width", "height"}`; `400` bad grid |
+| `POST /map/splat/registration` | `{"scale"?, "rotation_deg"?, "x"?, "y"?, "save"?}`: map = (x, y) + scale · R(rotation) · (u, v) of the splat | `200 {"ok": true, "saved"}` (`saved`: the JSON next to the splat, with `"save": true`); `409` no splat layer |
+
+The CLI loads backgrounds at start: `--map-yaml hall.yaml` (map_server .yaml + binary .pgm),
+`--splat hall.ply` (3DGS binary PLY; `--splat-up z|-z|y|-y|x|-x`, `--splat-z-max`,
+`--splat-scale`, `--splat-rotation`, `--splat-offset X Y`; needs numpy).
+
+`GET /map/state`:
+```json
+{"frame": "map", "aligned": true, "note": null,
+ "drone": {"x": 3.1, "y": 4.2, "yaw": 0.84, "alt": 1.9, "sigma_m": 0.15, "in_flight": true},
+ "path": [[2.0, 3.0], [2.4, 3.3]], "waypoints": [[3.2, 1.9]], "planned": [[3.2, 1.9]],
+ "fence": [[-6.3, 0.4], [7.6, -6.3], [14.3, 7.6], [0.4, 14.3]], "target": [3.0, 4.0], "takeoff": [2.0, 3.0],
+ "child": {"x": 4.5, "y": 6.0, "id": 1, "time": 1794699425.2}, "goal": {"x": 3.98, "y": 5.37, "yaw": 0.87},
+ "robot": {"x": 2.6, "y": 3.9, "yaw": 0.87, "age_s": 0.3, "stale": false},
+ "robot_launch": {"x": 2.0, "y": 3.0, "yaw": 0.5},
+ "grid": {"width": 440, "height": 640, "resolution": 0.05, "origin": {"x": -6.0, "y": -4.0, "yaw": 0.0},
+          "size_m": [22.0, 32.0], "source": "ros map", "updated_at": 1794699044.9, "version": 1},
+ "splat": {"available": true, "note": null, "bounds": [-2.2, -3.3, 12.7, 13.4], "gaussians": 378168,
+           "floor": 0.0, "ceiling": 4.0, "z_max": 2.0, "up": "-y", "source": "hall.ply",
+           "registration": {"scale": 2.0, "rotation_deg": 30.0, "x": 1.0, "y": -2.0},
+           "registration_file": "/.../hall.registration.json"},
+ "updated_at": 1794699430.0}
+```
+- `frame`: `map` or `takeoff`; `note` says why the view is not fully in `map` yet. `drone`, `path`,
+  `waypoints` (the running patrol), `fence`, `target` are null/empty when the drone cannot be
+  drawn in that frame; `planned` = the mission's waypoints in `map` (config frame `map`, or
+  `launch` with the launch pose) before a patrol flies them.
+- `robot`: the last `POST /map/robot_pose`, `stale` after 3 s; `robot_launch`: the mission's
+  launch pose. Both only in `map`. `grid`/`splat`: null when not loaded (`splat.note` says why
+  it is off). `grid.version` changes with every new grid.
+
 ## Safety (all commands)
 - **STOP always wins**: `/stop`, `/land`, the web page's STOP, LAND or any flight key cancel the
   running action within one tick (0.1 s) and lock `/move` until a client resumes.

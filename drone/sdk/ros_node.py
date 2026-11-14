@@ -32,17 +32,23 @@ Subscribes
                         "stamp" also works
   /drone/launch_pose    geometry_msgs/PoseStamped  the robot's pose in "map" at takeoff, if tf
                         cannot give it (the node posts it by itself from tf otherwise)
+  /map (~map_topic)     nav_msgs/OccupancyGrid (latched)  sent once to the Mac's map view
+                        (POST /map/grid), again whenever it changes or the Mac lost it
+Map view (the web page's map, API.md "Map view"): the robot's tf pose map -> base_footprint is
+posted at ~map_pose_rate Hz (POST /map/robot_pose).
 
 Axes: ROS REP 103 (x forward, y left, z up, yaw counter-clockwise); the drone's takeoff frame
 is x forward-ish, y right, z down, heading clockwise, so y, z and yaw change sign here.
 Params: ~url, ~max_linear (m/s sent as full stick, default 1.0), ~max_angular (rad/s, 1.0),
 ~map_frame ("map"), ~robot_frame ("base_footprint"), ~send_goal (true), ~goal_topic
 ("/move_base_simple/goal"), ~standoff (m; default: the mission's standoff_m), ~auto_launch_pose
-(true: post the robot's tf pose as the launch pose while the mission launches).
+(true: post the robot's tf pose as the launch pose while the mission launches), ~map_pose_rate
+(Hz, default 2; 0 = off), ~send_map (true), ~map_topic ("/map").
 """
 
 from __future__ import annotations
 
+import array
 import json
 import math
 import threading
@@ -52,7 +58,7 @@ import rospy
 import tf2_ros
 from client import DroneApiError, DroneClient, standoff_goal
 from geometry_msgs.msg import PoseStamped, Quaternion, TransformStamped, Twist
-from nav_msgs.msg import Odometry
+from nav_msgs.msg import OccupancyGrid, Odometry
 from sensor_msgs.msg import BatteryState, CompressedImage
 from std_msgs.msg import Empty, String
 
@@ -69,6 +75,7 @@ CLOCK_SAMPLES = 100  # the Mac -> robot clock offset is the smallest of these (l
 STAMP_HISTORY = 300  # image stamps remembered, to give detections the Mac's frame time back
 STAMP_MATCH_S = 0.002
 TF_TIMEOUT_S = 0.5
+MAP_POSE_HZ = 2.0  # the robot's pose for the Mac's map view
 
 
 def _unit(value: float) -> float:
@@ -115,6 +122,13 @@ class DroneNode:
         rospy.Subscriber("/drone/mission/abort", Empty, self.on_mission_abort, queue_size=1)
         rospy.Subscriber("/drone/detection", String, self.on_detection, queue_size=10)
         rospy.Subscriber("/drone/launch_pose", PoseStamped, self.on_launch_pose, queue_size=1)
+        self.grid = None  # the last /map, as the arguments of DroneClient.map_grid
+        if rospy.get_param("~send_map", True):
+            map_topic = rospy.get_param("~map_topic", "/map")
+            rospy.Subscriber(map_topic, OccupancyGrid, self.on_map, queue_size=1)
+        map_pose_hz = float(rospy.get_param("~map_pose_rate", MAP_POSE_HZ))
+        if map_pose_hz > 0:
+            rospy.Timer(rospy.Duration(1.0 / map_pose_hz), self.post_robot_pose)
         for target in (self.stream_status, self.stream_frames):
             threading.Thread(target=self.keep_running, args=(target,), daemon=True).start()
 
@@ -181,6 +195,39 @@ class DroneNode:
     def on_launch_pose(self, message: PoseStamped) -> None:
         position, q = message.pose.position, message.pose.orientation
         self.post_launch_pose(position.x, position.y, _yaw_of(q))
+
+    # --- map view ---------------------------------------------------------------------------
+
+    def on_map(self, grid: OccupancyGrid) -> None:
+        info, origin = grid.info, grid.info.origin
+        self.grid = (
+            info.width,
+            info.height,
+            info.resolution,
+            (origin.position.x, origin.position.y, _yaw_of(origin.orientation)),
+            array.array("b", grid.data).tobytes(),
+            f"ros {grid.header.frame_id or 'map'}",
+        )
+        self.post_grid()
+
+    def post_grid(self) -> None:
+        try:
+            self.client.map_grid(*self.grid)
+            rospy.loginfo(f"map sent to the drone's map view ({self.grid[0]} x {self.grid[1]})")
+        except DroneApiError as error:
+            rospy.logwarn_throttle(WARN_PERIOD_S, f"map not sent: {error}")
+
+    def post_robot_pose(self, _event) -> None:
+        pose = self.robot_pose()
+        if pose is None:
+            return
+        try:
+            reply = self.client.map_robot_pose(*pose)
+        except DroneApiError as error:
+            rospy.logwarn_throttle(WARN_PERIOD_S, f"robot pose not sent: {error}")
+            return
+        if self.grid is not None and not reply.get("has_grid"):
+            self.post_grid()  # the Mac restarted: /map is latched, so it would never come again
 
     # --- streams ------------------------------------------------------------------------------
 
