@@ -1,0 +1,8 @@
+#!/usr/bin/env bash
+# Start the drone web app with Bluetooth and open it in the browser.
+# Usage: drone/fly [max stick speed 0-100, default 60]
+set -euo pipefail
+cd "$(dirname "$0")/.."
+mkdir -p recordings
+exec uv run --with bleak python -m drone.hoverctl web \
+    --http-port 8077 --max "${1:-60}" --stick-log "recordings/sticks-$(date +%H%M).jsonl"

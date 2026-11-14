@@ -80,6 +80,8 @@ Raw captures and the decompiled app live outside git, in `../drone-re/` on roros
 Stdlib only, plus the `ffmpeg` CLI for video (`brew install ffmpeg`). Nothing to download on the drone's Wi-Fi. Run from the repo root:
 
 ```bash
+drone/fly                                          # the usual way: web UI on http://127.0.0.1:8077, Bluetooth on, cap 60, stick log in recordings/
+drone/fly 100                                      # same with the full stick range
 uv run --with bleak python -m drone.hoverctl web   # browser UI on http://127.0.0.1:8000: video, sticks, STOP, drone state over Bluetooth
 uv run python -m drone.hoverctl web --no-ble   # same without Bluetooth: no state, no interlock
 uv run python -m drone.hoverctl sticks         # keyboard teleop in the terminal
