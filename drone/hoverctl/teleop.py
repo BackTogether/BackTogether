@@ -9,9 +9,7 @@ repeats, so the terminal can't do diagonal moves. The web UI can.
 import os
 import select
 import sys
-import termios
 import time
-import tty
 from dataclasses import asdict, dataclass
 
 from .protocol import AXIS_DIRECTIONS, AXIS_NAMES, Axes
@@ -90,6 +88,10 @@ def _read_keys(fd: int) -> str:
 
 def run_teleop(sender: StickSender) -> None:
     """Read keys until Q. The caller owns `sender` and must stop it (which sends neutral)."""
+    # Unix-only modules, imported here so the web app (which imports this file) runs on Windows.
+    import termios
+    import tty
+
     if not sys.stdin.isatty():
         raise SystemExit("sticks needs an interactive terminal")
     fd = sys.stdin.fileno()
