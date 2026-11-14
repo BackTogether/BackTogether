@@ -12,7 +12,7 @@ import threading
 import time
 from pathlib import Path
 
-from drone.hoverctl.video_payload import find_parameter_set
+from drone.hoverctl.video_payload import H264_ACCESS_UNIT_DELIMITER, find_parameter_set
 
 # Photos and MP4s; DRONE_MEDIA_DIR overrides it (drone/fly points it at ~/Downloads)
 RECORDINGS_DIR = Path(os.environ.get("DRONE_MEDIA_DIR", "recordings")).expanduser()
@@ -60,6 +60,9 @@ class Mp4Recorder:
         return self._process is not None
 
     def feed(self, data: bytes) -> None:
+        # The live stream carries an end-of-picture delimiter for the decoder's latency
+        # (video_payload); muxed as-is each one counts as a frame and breaks the MP4's timing.
+        data = data.replace(H264_ACCESS_UNIT_DELIMITER, b"")
         with self._lock:
             if self._closed or self.error:
                 return
