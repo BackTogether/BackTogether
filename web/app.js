@@ -7,6 +7,9 @@ import { createStage, LAUNCH_STEPS } from "./scene.js";
 
 const CONFIG = window.FINDMYCHILD_CONFIG || {};
 const SEARCH_PHASES = ["launch", "search", "recall"];
+const FOUND_STEP_LABEL = "Bobac3 going to the child";
+// Demo mode has no robot to report a sighting, so the child is "found" at this much coverage.
+const DEMO_FOUND_COVERAGE = 20;
 
 const $ = (selector) => document.querySelector(selector);
 const reducedMotion = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
@@ -186,7 +189,7 @@ function showFormError(message) {
 
 function buildStepList() {
   el.missionSteps.innerHTML = "";
-  const steps = [...LAUNCH_STEPS.map((step) => step.label), "Scanning the event zone"];
+  const steps = [...LAUNCH_STEPS.map((step) => step.label), "Scanning the event zone", FOUND_STEP_LABEL];
   steps.forEach((label, index) => {
     const item = document.createElement("li");
     item.className = "step";
@@ -228,6 +231,9 @@ function startTelemetryLoop() {
     el.battery.textContent = `${Math.round(telemetry.battery)} %`;
     el.coverage.textContent = `${Math.round(telemetry.coverage)} %`;
     el.coverageBar.style.setProperty("--value", `${telemetry.coverage}%`);
+    if (mission.mode === "demo" && telemetry.phase === "search" && telemetry.coverage >= DEMO_FOUND_COVERAGE) {
+      stage.setPhase("found");
+    }
   }, 250);
 }
 
@@ -304,6 +310,10 @@ function onPhase(phase) {
     markStep(LAUNCH_STEPS.length);
     el.liveStatus.textContent = `The drone is scanning the event zone for ${mission?.child || "your child"}.`;
   }
+  if (phase === "found") {
+    markStep(LAUNCH_STEPS.length + 1);
+    el.liveStatus.textContent = `${mission?.child || "Your child"} was spotted. The Bobac3 robot is driving there.`;
+  }
   if (phase === "idle" && mission) {
     // The recall sequence finished: back to the form, ready for another request.
     mission = null;
@@ -311,7 +321,7 @@ function onPhase(phase) {
     el.cancel.disabled = false;
     setView("form");
     el.mission.hidden = true;
-    el.liveStatus.textContent = "The drone is folded back on the base. You can start a new search.";
+    el.liveStatus.textContent = "The drone is back over the base. You can start a new search.";
   }
   void SEARCH_PHASES;
 }
@@ -366,7 +376,8 @@ function init() {
   stage = createStage($("#stage-canvas"), {
     reducedMotion,
     onStep: (step) => {
-      markStep(step.index);
+      // Only the launch and search steps are in the list; later phases just update the status.
+      if (step.phase === "launch" || step.phase === "search") markStep(step.index);
       if (step.label) el.liveStatus.textContent = step.label;
     },
     onPhase,
