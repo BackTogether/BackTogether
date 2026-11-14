@@ -76,6 +76,8 @@ class _Handler(BaseHTTPRequestHandler):
             tab = parse_qs(url.query).get("tab", [""])[0]
             if self.server.pilot.accept(tab, axes):
                 self.server.sender.set_input(axes)
+        elif self.path == "/api/max":
+            self.server.sender.set_max(self._read_max())
         elif self.path == "/api/stop":
             self.server.sender.set_input(NEUTRAL)
         else:
@@ -112,6 +114,14 @@ class _Handler(BaseHTTPRequestHandler):
     def _read_body(self) -> bytes:
         length = min(int(self.headers.get("Content-Length", 0)), MAX_BODY_BYTES)
         return self.rfile.read(length)
+
+    def _read_max(self) -> float:
+        """The new speed cap; a bad body keeps the current one."""
+        try:
+            value = float(json.loads(self._read_body() or b"{}")["max"])
+        except (ValueError, TypeError, KeyError):
+            return self.server.sender.max_magnitude
+        return value if math.isfinite(value) else self.server.sender.max_magnitude
 
     def _read_axes(self) -> Axes:
         try:

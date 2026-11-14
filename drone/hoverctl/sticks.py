@@ -119,6 +119,11 @@ class StickSender:
         """While `session()` is True a locked sender still sends neutral packets."""
         self._session = session
 
+    def set_max(self, max_magnitude: float) -> None:
+        """Change the speed cap while flying; values are clamped to 0..AXIS_LIMIT."""
+        with self._lock:
+            self.max_magnitude = min(max(max_magnitude, 0.0), AXIS_LIMIT)
+
     def set_input(self, axes: Axes) -> None:
         with self._lock:
             self._input = axes

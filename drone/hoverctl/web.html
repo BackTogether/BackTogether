@@ -141,6 +141,12 @@
   .btn:hover { background: var(--rule); }
   .btn.armed { background: var(--red); border-color: var(--red); color: #fff; }
   .btn:disabled, .btn.off { opacity: .35; cursor: default; pointer-events: none; }
+  .speed { display: grid; grid-template-columns: auto repeat(5, 1fr); align-items: center;
+    padding: 10px 16px; border-bottom: 1px solid var(--rule); }
+  .speed label { color: var(--muted); font-size: 11px; letter-spacing: .08em; text-transform: uppercase;
+    padding-right: 12px; }
+  .speed .btn { height: 28px; padding: 0; margin-left: -1px; font: 12px var(--mono); }
+  .speed .btn.on { background: var(--ink); color: var(--bg); }
   input[type=password], input[type=text] { all: unset; box-sizing: border-box; height: 34px; padding: 0 10px;
     border: 1px solid var(--faint); font: 13px var(--mono); user-select: text; -webkit-user-select: text; min-width: 0; }
   input:focus { border-color: var(--line); }
@@ -233,6 +239,9 @@
       </section>
       <section>
         <h2 class="mono"><span>Sticks · output</span><span id="max-label"></span></h2>
+        <div class="speed" id="speed" title="Speed cap: how far the sticks go, in % of full stick. Keys - and =">
+          <label class="mono">speed</label>
+        </div>
         <div class="meters" id="meters"></div>
         <div class="kv">
           <div><label class="mono">max cap</label><output id="s-max">—</output></div>
@@ -378,6 +387,7 @@ $("legend").innerHTML =
   `<span class="hint">camera up / down</span>` +
   `<span class="caps"><kbd>space</kbd></span><span class="hint">stop, all neutral</span>` +
   `<span class="caps gate"></span><span class="hint gate" id="gate-hint">keys fly the drone</span>` +
+  `<span class="caps"><kbd>-</kbd><kbd>=</kbd></span><span class="hint">speed down / up</span>` +
   `<span class="caps"><kbd>${VIDEO_KEY}</kbd></span><span class="hint">minimize / restore video</span>`;
 
 // ---- sending ----
@@ -442,6 +452,48 @@ for (const button of document.querySelectorAll("button")) {
   button.addEventListener("mousedown", (event) => event.preventDefault());
 }
 
+// ---- speed cap ----
+// Presets in % of full stick; - and = step through them. The server holds the value.
+const SPEED_PRESETS = [20, 40, 60, 80, 100];
+let speed = 0;
+
+function setSpeed(value) {
+  speed = value;
+  renderSpeed(value);
+  post("/api/max", { max: value });
+}
+
+function stepSpeed(direction) {
+  const index = SPEED_PRESETS.findIndex((preset) => preset >= speed);
+  const current = index === -1 ? SPEED_PRESETS.length - 1 : index;
+  const next = Math.min(Math.max(current + direction, 0), SPEED_PRESETS.length - 1);
+  setSpeed(SPEED_PRESETS[next]);
+}
+
+function renderSpeed(value) {
+  speed = value;
+  for (const button of $("speed").querySelectorAll("button")) {
+    button.classList.toggle("on", Number(button.dataset.value) === value);
+  }
+}
+
+for (const preset of SPEED_PRESETS) {
+  const button = document.createElement("button");
+  button.className = "btn";
+  button.type = "button";
+  button.dataset.value = String(preset);
+  button.textContent = String(preset);
+  button.addEventListener("mousedown", (event) => event.preventDefault());
+  button.addEventListener("click", () => setSpeed(preset));
+  $("speed").append(button);
+}
+
+window.addEventListener("keydown", (event) => {
+  if (typing() || event.repeat || event.metaKey || event.ctrlKey || event.altKey) return;
+  if (event.code === "Minus") stepSpeed(-1);
+  if (event.code === "Equal") stepSpeed(1);
+});
+
 // Each tab tags its posts, so the server can ignore an idle tab's neutral posts while another flies.
 const TAB_ID = Math.random().toString(36).slice(2);
 setInterval(() => post(`/api/sticks?tab=${TAB_ID}`, inputAxes()), SEND_MS);
@@ -486,6 +538,7 @@ function renderSticks(sticks) {
   $("mode").textContent = sticks.dry_run ? "dry run" : "live";
   $("mode").className = `cell mono ${sticks.dry_run ? "tag" : ""}`;
   setText("s-max", `${sticks.max} / ${AXIS_LIMIT}`);
+  renderSpeed(sticks.max);
   setText("s-sent", sticks.sent.toLocaleString());
   setText("s-non-neutral", sticks.non_neutral_sent.toLocaleString());
   // Red when a key is held but the gate holds the sticks: the drone is not the problem then.
