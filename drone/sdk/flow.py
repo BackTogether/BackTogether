@@ -32,12 +32,12 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Any
 
-from .camera import CAMERA_FOCAL_PX, CAMERA_WIDTH_PX
+from .camera import CAMERA_WIDTH_PX, FLOW_FOCAL_PX
 from .tilt import GIMBAL_BOTTOM_DEG, GIMBAL_TOP_DEG
 
 FLOW_WIDTH = 320
 FLOW_HEIGHT = 180
-FOCAL_PX = CAMERA_FOCAL_PX * FLOW_WIDTH / CAMERA_WIDTH_PX
+FOCAL_PX = FLOW_FOCAL_PX * FLOW_WIDTH / CAMERA_WIDTH_PX
 FRAME_GAP = 6  # adjacent frames move < 1 px in a slow turn: compare frames 0.2 s apart
 MAX_STEP_S = 0.6  # a longer gap (video dropout) starts over instead of measuring across it
 STRIPS = 6
