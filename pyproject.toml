@@ -4,7 +4,9 @@ version = "0.1.0"
 description = "Leukerbad Robotics Hackathon 2026 - Elderly Care & Rehabilitation"
 readme = "README.md"
 requires-python = ">=3.11"
-dependencies = []
+dependencies = [
+    "mujoco>=4.0.1",
+]
 
 [dependency-groups]
 dev = [
