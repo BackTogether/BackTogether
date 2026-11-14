@@ -11,5 +11,9 @@
   <exec_depend>bobac3_navigation</exec_depend>
   <exec_depend>face_rec</exec_depend>
   <exec_depend>rospy</exec_depend>
+  <exec_depend>geometry_msgs</exec_depend>
+  <exec_depend>move_base_msgs</exec_depend>
+  <exec_depend>actionlib_msgs</exec_depend>
+  <exec_depend>std_msgs</exec_depend>
 
 </package>

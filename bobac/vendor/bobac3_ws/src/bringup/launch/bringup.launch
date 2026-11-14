@@ -6,6 +6,10 @@
        first (rosnode kill /rei_base). -->
 
   <arg name="open_rviz" default="true"/>
+  <!-- person to find on arrival: folder name of their photos in $FACE_DIRECTORY -->
+  <arg name="person" default="jorge"/>
+  <!-- true: start turning right away, without waiting for a navigation goal (to test it) -->
+  <arg name="search_on_start" default="false"/>
 
   <!-- Block: SLAM + navigation (base, lidars, gmapping, move_base) -->
   <include file="$(find bringup)/launch/slam_nav.launch">
@@ -15,6 +19,11 @@
   <!-- Block: head camera + face recognition -> /face_results -->
   <include file="$(find face_rec)/launch/face_rec_topic.launch"/>
 
-  <!-- Block: react to the recognised person -->
-  <node name="face_check" pkg="bringup" type="face_check.py" output="screen"/>
+  <!-- Block: on arrival at a goal, turn on the spot until the person is recognised, then
+       stop facing them (publishes the name on /face_check/found) -->
+  <node name="face_check" pkg="bringup" type="face_check.py" output="screen">
+    <param name="person" value="$(arg person)"/>
+    <param name="turn_speed" value="0.3"/>
+    <param name="search_on_start" value="$(arg search_on_start)"/>
+  </node>
 </launch>
