@@ -6,6 +6,11 @@ brings up move_base, which plans around obstacles and drives /cmd_vel).
 Try it from a terminal on the robot, with someone at the e-stop:
 
     python3 navigator.py --x 1.0 --y 0.0 --yaw 0.0     # metres and radians, frame `map`
+    python3 navigator.py --save sofa                   # name the spot where the robot is now
+    python3 navigator.py --place sofa                  # go back to it
+
+Places are kept in bobac/config/places.yaml and belong to one map: save them again after
+making a new map.
 
 As a module (the bridge imports it) it never calls rospy.init_node and creates its ROS clients
 on first use.
@@ -13,15 +18,18 @@ on first use.
 
 import argparse
 import math
+from pathlib import Path
 
 import actionlib
 import rospy
 import tf
+import yaml
 from actionlib_msgs.msg import GoalStatus
 from geometry_msgs.msg import Quaternion
 from move_base_msgs.msg import MoveBaseAction, MoveBaseGoal
 from std_srvs.srv import Empty
 
+PLACES_FILE = Path(__file__).resolve().parents[1] / "config" / "places.yaml"
 MAP_FRAME = "map"
 BASE_FRAME = "base_footprint"
 TF_WAIT_S = 2.0
@@ -91,6 +99,32 @@ def go_to_pose(x: float, y: float, yaw: float = 0.0, timeout_s: float = GOAL_TIM
     return _result(False, FAILURES.get(state, f"move_base ended with state {state}"))
 
 
+def go_to(place: str, timeout_s: float = GOAL_TIMEOUT_S) -> dict:
+    """Drive to a place saved in config/places.yaml (see save_place)."""
+    pose = _load_places().get(place)
+    if pose is None:
+        return _result(False, "unknown place")
+    result = go_to_pose(pose["x"], pose["y"], pose["yaw"], timeout_s)
+    if result["success"]:
+        result["message"] = "arrived at " + place
+    return result
+
+
+def save_place(place: str) -> dict:
+    """Store the current pose under a name: drive the robot there, then call this."""
+    places = _load_places()
+    places[place] = {key: round(value, 3) for key, value in current_pose().items()}
+    PLACES_FILE.parent.mkdir(parents=True, exist_ok=True)
+    PLACES_FILE.write_text(yaml.safe_dump(places))
+    return places[place]
+
+
+def _load_places() -> dict:
+    if not PLACES_FILE.is_file():
+        return {}
+    return yaml.safe_load(PLACES_FILE.read_text()) or {}
+
+
 def stop() -> None:
     """Cancel the goal in progress, if any: move_base then brakes the robot itself."""
     if _client is not None:
@@ -117,15 +151,23 @@ def _clear_costmaps() -> None:
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="send the robot to a point of the map")
-    parser.add_argument("--x", type=float, required=True, help="metres, frame map")
-    parser.add_argument("--y", type=float, required=True, help="metres, frame map")
+    parser = argparse.ArgumentParser(description="send the robot to a point or place of the map")
+    parser.add_argument("--x", type=float, help="metres, frame map (with --y)")
+    parser.add_argument("--y", type=float, help="metres, frame map (with --x)")
     parser.add_argument("--yaw", type=float, default=0.0, help="radians, 0 = map x axis")
+    parser.add_argument("--place", help="go to a saved place, e.g. sofa")
+    parser.add_argument("--save", metavar="PLACE", help="save where the robot is now as PLACE")
     parser.add_argument("--timeout", type=float, default=GOAL_TIMEOUT_S, help="seconds")
     args = parser.parse_args()
     rospy.init_node("navigator_cli", anonymous=True)
-    print("from", current_pose())
-    print(go_to_pose(args.x, args.y, args.yaw, args.timeout))
+    if args.save:
+        print("saved", args.save, save_place(args.save))
+    elif args.place:
+        print(go_to(args.place, args.timeout))
+    elif args.x is not None and args.y is not None:
+        print(go_to_pose(args.x, args.y, args.yaw, args.timeout))
+    else:
+        parser.error("give --x and --y, --place or --save")
     print("now at", current_pose())
 
 
