@@ -15,6 +15,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
+from .pbwire import drone_network_ip
 from .protocol import AXIS_NAMES, NEUTRAL, Axes
 from .sticks import StickSender
 from .teleop import KEY_BINDINGS
@@ -28,7 +29,13 @@ BINDINGS_PLACEHOLDER = "/*KEY_BINDINGS*/{}"
 MJPEG_BOUNDARY = "frame"
 FRAME_WAIT_S = 1.0
 MAX_BODY_BYTES = 1024
-DRONE_PATHS = ("/api/drone/manual", "/api/drone/land", "/api/drone/wifi")
+DRONE_PATHS = (
+    "/api/drone/manual",
+    "/api/drone/land",
+    "/api/drone/wifi",
+    "/api/drone/video",
+    "/api/drone/video-stop",
+)
 MIN_WIFI_PASSWORD = 8
 NO_LINK = {"ok": False, "error": "bluetooth is off or unavailable"}
 
@@ -75,6 +82,8 @@ class _Handler(BaseHTTPRequestHandler):
             "/api/drone/manual": link.set_manual,
             "/api/drone/land": link.land,
             "/api/drone/wifi": lambda: self._start_wifi(link),
+            "/api/drone/video": link.start_video,
+            "/api/drone/video-stop": link.stop_video,
         }
 
     def _start_wifi(self, link: "DroneLink") -> dict[str, Any]:
@@ -131,7 +140,11 @@ class _Handler(BaseHTTPRequestHandler):
             "now": time.time(),
             "drone": self.server.link.snapshot() if self.server.link else None,
             "ble_note": self.server.ble_note,
-            "video": {**receiver.stats(), "decoding": receiver.decoder is not None},
+            "video": {
+                **receiver.stats(),
+                "decoding": receiver.decoder is not None,
+                "local_ip": drone_network_ip(),
+            },
         }
         self._send(HTTPStatus.OK, "application/json", json.dumps(state).encode())
 

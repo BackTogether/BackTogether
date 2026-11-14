@@ -26,6 +26,7 @@ NAME_PREFIX = "HoverX1"
 PHONE_ID = "2121602680692977664"
 WIFI_SSID = "HoverX1_060039"
 WIFI_COUNTRY = "CH"
+DEFAULT_WIFI_PASSWORD = "<DRONE_WIFI_PASSWORD>"  # the team's test password, to be rotated; set on every connect
 
 SCAN_TIMEOUT_S = 15.0
 RPC_TIMEOUT_S = 2.0
@@ -36,6 +37,7 @@ RECONNECT_MIN_S = 1.0
 RECONNECT_MAX_S = 10.0
 MANUAL_MAX_AGE_S = 5.0  # a mode reading older than this no longer unlocks the sticks
 THREAD_START_TIMEOUT_S = 5.0
+HEARTBEAT_PERIOD_S = 1.0  # the app keeps sending this over Wi-Fi while the preview runs
 
 _POLL_REQUESTS = (
     pbwire.REQ_BATTERY_STATUS,
@@ -53,11 +55,15 @@ class DroneLink:
         phone_id: str = PHONE_ID,
         ssid: str = WIFI_SSID,
         country: str = WIFI_COUNTRY,
+        wifi_password: str | None = DEFAULT_WIFI_PASSWORD,
     ) -> None:
         self._name_prefix = name_prefix
         self._phone_id = phone_id
         self._ssid = ssid
         self._country = country
+        self._wifi_password = wifi_password  # None: leave the drone's Wi-Fi alone on connect
+        self._wifi: dict[str, Any] = {"state": "off" if wifi_password is None else "pending"}
+        self._heartbeat_stop: threading.Event | None = None
         self._thread = threading.Thread(target=self._run_thread, name="drone-ble", daemon=True)
         self._ready = threading.Event()
         self._loop: asyncio.AbstractEventLoop | None = None
@@ -112,6 +118,7 @@ class DroneLink:
         now = time.time()
         with self._lock:
             values = dict(self._values)
+            wifi = dict(self._wifi)
             since, rssi, last, error = (
                 self._connected_since,
                 self._rssi,
@@ -136,6 +143,7 @@ class DroneLink:
                 "last_message_age_s": None if last is None else round(now - last, 2),
                 "error": error,
             },
+            "wifi": wifi,
             "mode": {
                 "value": mode,
                 "name": None if mode is None else pbwire.mode_name(mode),
@@ -194,10 +202,60 @@ class DroneLink:
 
     def start_wifi(self, password: str) -> dict[str, Any]:
         """Start the drone's Wi-Fi access point, which carries video and sticks."""
-        return self._command(
-            lambda rid: pbwire.encode_wifi_start_request(rid, self._ssid, password, self._country),
-            WIFI_TIMEOUT_S,
+        result = self._command(self._wifi_request(password), WIFI_TIMEOUT_S)
+        self._set_wifi(result)
+        return result
+
+    def start_video(self) -> dict[str, Any]:
+        """Ask the drone to push live video to this laptop's address on its Wi-Fi (UDP 7078).
+
+        enter_preview_mode_request over the Wi-Fi RPC: that is where the app sends it. Needs the
+        laptop joined to the drone's Wi-Fi.
+        """
+        address = pbwire.drone_network_ip()
+        if address is None:
+            return {"ok": False, "error": "laptop is not on the drone's Wi-Fi"}
+        result = _wifi_rpc(
+            lambda rid: pbwire.encode_enter_preview_request(rid, address, pbwire.VIDEO_CODEC_AVC)
         )
+        if result["ok"]:
+            self._start_heartbeat()
+        return result
+
+    def stop_video(self) -> dict[str, Any]:
+        self._stop_heartbeat()
+        stopped = _wifi_rpc(
+            lambda rid: pbwire.encode_stop_preview_request(rid, pbwire.VIDEO_CODEC_AVC)
+        )
+        if not stopped["ok"]:
+            return stopped
+        return _wifi_rpc(lambda rid: pbwire.encode_rpc_request(rid, pbwire.REQ_EXIT_PREVIEW_MODE))
+
+    def _wifi_request(self, password: str) -> Callable[[int], bytes]:
+        return lambda rid: pbwire.encode_wifi_start_request(
+            rid, self._ssid, password, self._country
+        )
+
+    def _set_wifi(self, result: dict[str, Any]) -> None:
+        with self._lock:
+            if result["ok"]:
+                self._wifi = {"state": "on", "ssid": self._ssid}
+            else:
+                self._wifi = {"state": "error", "error": result["error"]}
+
+    def _start_heartbeat(self) -> None:
+        if self._heartbeat_stop is not None:
+            return
+        stop = threading.Event()
+        self._heartbeat_stop = stop
+        threading.Thread(
+            target=_heartbeat, args=(stop,), name="drone-heartbeat", daemon=True
+        ).start()
+
+    def _stop_heartbeat(self) -> None:
+        if self._heartbeat_stop is not None:
+            self._heartbeat_stop.set()
+            self._heartbeat_stop = None
 
     # --- command plumbing -------------------------------------------------------------------
 
@@ -252,8 +310,20 @@ class DroneLink:
             with self._lock:
                 self._connected_since = time.time()
                 self._last_error = None
+            await self._autostart_wifi()
             await self._poll_until(dropped)
         self._client = None
+
+    async def _autostart_wifi(self) -> None:
+        """The drone's Wi-Fi is off after a restart, so switch it on after every handshake."""
+        if self._wifi_password is None:
+            return
+        try:
+            response = await self._call(self._wifi_request(self._wifi_password), WIFI_TIMEOUT_S)
+            result = {"ok": response.error is None, "error": response.error}
+        except TimeoutError:
+            result = {"ok": False, "error": "no answer to wifi_start_request"}
+        self._set_wifi(result)
 
     async def _find_device(self) -> Any:
         rssi: list[int] = []
@@ -350,6 +420,19 @@ class DroneLink:
     def _set_error(self, text: str) -> None:
         with self._lock:
             self._last_error = text
+
+
+def _wifi_rpc(build: Callable[[int], bytes]) -> dict[str, Any]:
+    try:
+        response = pbwire.post_wifi_rpc(build(pbwire.WIFI_REQUEST_ID))
+    except OSError as exc:
+        return {"ok": False, "error": f"{type(exc).__name__}: {exc}"}
+    return {"ok": response.error is None, "response": response.kind, "error": response.error}
+
+
+def _heartbeat(stop: threading.Event) -> None:
+    while not stop.wait(HEARTBEAT_PERIOD_S):
+        _wifi_rpc(lambda rid: pbwire.encode_rpc_request(rid, pbwire.REQ_HEARTBEAT_INFO))
 
 
 def _xyz(values: tuple[float, float, float]) -> dict[str, float]:

@@ -97,6 +97,25 @@ def _always_locked() -> bool:
     return False
 
 
+def _wifi_options(args: argparse.Namespace) -> dict[str, str | None]:
+    """DroneLink keyword arguments: its own default password unless one is given."""
+    if args.no_wifi_autostart:
+        return {"wifi_password": None}
+    return {"wifi_password": args.wifi_password} if args.wifi_password else {}
+
+
+def _add_wifi_options(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument(
+        "--wifi-password",
+        metavar="PW",
+        help="drone Wi-Fi password set on every Bluetooth connect (default: DEFAULT_WIFI_PASSWORD "
+        "in ble.py)",
+    )
+    parser.add_argument(
+        "--no-wifi-autostart", action="store_true", help="don't start the drone's Wi-Fi on connect"
+    )
+
+
 def _start_link(args: argparse.Namespace) -> tuple["DroneLink | None", str]:
     """The Bluetooth link and a note for the UI when there is none. Imports ble lazily."""
     if args.no_ble:
@@ -105,7 +124,7 @@ def _start_link(args: argparse.Namespace) -> tuple["DroneLink | None", str]:
         from .ble import DroneLink
     except ImportError:  # bleak is not installed
         return None, NO_BLEAK_NOTE
-    link = DroneLink()
+    link = DroneLink(**_wifi_options(args))
     link.start()
     return link, ""
 
@@ -169,7 +188,7 @@ def _format_status(snap: dict) -> str:
 def cmd_status(args: argparse.Namespace) -> None:
     from .ble import DroneLink  # needs bleak: only load it for this command
 
-    link = DroneLink(args.name)
+    link = DroneLink(args.name, **_wifi_options(args))
     link.start()
     commands = [
         ("land", args.land, link.land),
@@ -212,6 +231,7 @@ def main() -> None:
         action="store_true",
         help="no Bluetooth link: sticks are sent without the MANUAL-mode interlock",
     )
+    _add_wifi_options(web)
     web.add_argument("--no-browser", action="store_true", help="don't open a browser tab")
     web.set_defaults(run=cmd_web)
 
@@ -220,6 +240,7 @@ def main() -> None:
     status.add_argument("--land", action="store_true", help="send land once connected")
     status.add_argument("--manual", action="store_true", help="switch to MANUAL once connected")
     status.add_argument("--wifi", metavar="PASSWORD", help="start the drone's Wi-Fi once connected")
+    _add_wifi_options(status)
     status.set_defaults(run=cmd_status)
 
     args = parser.parse_args()

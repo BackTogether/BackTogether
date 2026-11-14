@@ -4,9 +4,13 @@ Like protocol.py this avoids the protobuf runtime. Field numbers come from drone
 Decoders ignore unknown fields. Fields that are absent are proto3 defaults (0, empty).
 """
 
+import socket
 import struct
+import urllib.request
 from dataclasses import dataclass, field
 from enum import IntEnum
+
+from .sticks import DRONE_HOST
 
 _WIRE_VARINT = 0
 _WIRE_FIXED64 = 1
@@ -26,7 +30,11 @@ REQ_GET_FLIGHT_STATUS = 39
 REQ_ABORT_FLIGHT = 40  # land
 REQ_GET_STORAGE_CAPACITY = 41
 REQ_SET_FLIGHT_MODE_TO_MANUAL = 46  # bool
+REQ_HEARTBEAT_INFO = 70  # Empty, the app sends it at 1 Hz over Wi-Fi
 REQ_GET_BLE_ENCRY_LIST = 71
+REQ_CAMERA_START_PREVIEW = 240  # StartPreviewParams
+REQ_EXIT_PREVIEW_MODE = 250  # Empty
+REQ_ENTER_PREVIEW_MODE = 254  # EnterPreview
 
 # RpcResponse: id plus one response in the `response` oneof
 RESPONSE_ID = 7
@@ -66,6 +74,24 @@ _WIFI_RATE_STRATEGY = 7
 WIFI_TYPE_AP = 1
 WIFI_FREQUENCY_BEST_AVAILABLE = 0
 WIFI_RATE_DOWNLOAD = 2
+
+# EnterPreview: the drone pushes live video as UDP to `udp_server_ip` (the port is fixed at 7078)
+_PREVIEW_UDP_SERVER_IP = 1
+_PREVIEW_CAMERA_START = 3
+_PREVIEW_CONNECT_TYPE = 4
+CONNECT_TYPE_APP = 1
+# StartPreviewParams
+_START_PREVIEW_ENABLE = 1
+_START_PREVIEW_CODEC = 3
+VIDEO_CODEC_AVC = 1
+VIDEO_CODEC_HEVC = 2
+
+# The Wi-Fi RPC the app uses for everything but Bluetooth: raw RpcRequest in an HTTP POST
+WIFI_RPC_URL = f"http://{DRONE_HOST}:1234/rpc"
+WIFI_RPC_TIMEOUT_S = 3.0
+WIFI_REQUEST_ID = 1
+DRONE_NETWORK_PREFIX = DRONE_HOST.rsplit(".", 1)[0] + "."
+_ROUTE_PROBE_PORT = 9  # connect() on UDP sends nothing, it only picks the local interface
 
 # FlightEngineeringInfo
 _ENG_VELOCITY = (1, 2, 3)
@@ -299,6 +325,53 @@ def encode_wifi_start_request(request_id: int, ssid: str, password: str, country
         + _int_field(_WIFI_RATE_STRATEGY, WIFI_RATE_DOWNLOAD)
     )
     return encode_rpc_request(request_id, REQ_WIFI_START, body)
+
+
+def _preview_params(enable: bool, codec: int) -> bytes:
+    """StartPreviewParams as the app sends it (session_id 0, proto3 omits false and 0)."""
+    return (_int_field(_START_PREVIEW_ENABLE, 1) if enable else b"") + _int_field(
+        _START_PREVIEW_CODEC, codec
+    )
+
+
+def encode_enter_preview_request(request_id: int, udp_server_ip: str, codec: int) -> bytes:
+    """Start live video: the drone pushes it to udp_server_ip:7078."""
+    body = (
+        _str_field(_PREVIEW_UDP_SERVER_IP, udp_server_ip)
+        + _bytes_field(_PREVIEW_CAMERA_START, _preview_params(True, codec))
+        + _int_field(_PREVIEW_CONNECT_TYPE, CONNECT_TYPE_APP)
+    )
+    return encode_rpc_request(request_id, REQ_ENTER_PREVIEW_MODE, body)
+
+
+def encode_stop_preview_request(request_id: int, codec: int) -> bytes:
+    """First half of stopping video (the app then sends exit_preview_mode_request)."""
+    return encode_rpc_request(request_id, REQ_CAMERA_START_PREVIEW, _preview_params(False, codec))
+
+
+# --- Wi-Fi RPC (HTTP, only reachable on the drone's own network) -----------------------------
+
+
+def drone_network_ip() -> str | None:
+    """Our address on the drone's Wi-Fi: the interface that routes to the drone, if it is one."""
+    probe = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    try:
+        probe.connect((DRONE_HOST, _ROUTE_PROBE_PORT))
+        address = str(probe.getsockname()[0])
+    except OSError:
+        return None  # no route at all
+    finally:
+        probe.close()
+    return address if address.startswith(DRONE_NETWORK_PREFIX) else None
+
+
+def post_wifi_rpc(request: bytes) -> "RpcResponse":
+    """POST one RpcRequest to the drone; raises OSError (URLError included) if unreachable."""
+    http_request = urllib.request.Request(
+        WIFI_RPC_URL, request, {"Content-Type": "application/octet-stream"}
+    )
+    with urllib.request.urlopen(http_request, timeout=WIFI_RPC_TIMEOUT_S) as reply:  # noqa: S310
+        return decode_rpc_response(reply.read())
 
 
 # --- responses and pushes --------------------------------------------------------------------

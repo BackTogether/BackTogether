@@ -209,11 +209,15 @@
     <aside class="side">
       <section id="drone">
         <h2 class="mono"><span>Drone · bluetooth</span><span id="d-link-age"></span></h2>
-        <div class="dronemode"><div class="big" id="d-mode">—</div><div class="mono" id="d-note"></div></div>
+        <div class="dronemode"><div class="big" id="d-mode">—</div><div class="mono" id="d-note"></div><div class="mono" id="d-wifi-note"></div></div>
         <div id="d-groups"></div>
         <div class="actions">
           <button class="btn" id="d-manual" type="button">Manual</button>
           <button class="btn" id="d-land" type="button">Land</button>
+        </div>
+        <div class="actions">
+          <button class="btn" id="d-video" type="button">Video start</button>
+          <button class="btn" id="d-video-stop" type="button">Video stop</button>
         </div>
         <form class="actions wifi" id="d-wifi" autocomplete="off">
           <input type="password" id="d-wifi-pw" placeholder="wi-fi password (8+)" autocomplete="off">
@@ -268,6 +272,7 @@ const DATA_STALE_S = 5;       // drone data older than this is greyed out
 const LAND_ARM_MS = 3000;     // LAND needs a second click within this time
 const STATUS_MS = 6000;       // how long an action result stays on screen
 const MIN_WIFI_PASSWORD = 8;
+const DRONE_NETWORK_PREFIX = "<DRONE_SUBNET>.";  // the laptop's address here means it is on the drone's Wi-Fi
 const KIB_PER_GIB = 1024 ** 2;  // the drone's storage fields are named bytes but read as KiB (32 GB card = 33554432)
 const STOP_KEY = " ";
 const VIDEO_KEY = "v";
@@ -564,6 +569,8 @@ function renderDrone(state) {
     element.hidden = !present;
   }
   $("d-manual").classList.toggle("off", !present);
+  $("d-wifi-note").textContent = wifiText(present ? drone.wifi : null);
+  autoStartVideo(state);
   const connected = present && drone.connection.connected;
   const mode = present && drone.mode.name && !isStale(age(state.now, drone.mode.ts)) ? drone.mode.name : null;
   $("d-mode").textContent = mode ?? "—";
@@ -594,6 +601,13 @@ function renderLock(sticks, present) {
 }
 
 // ---- drone buttons ----
+
+function wifiText(wifi) {
+  if (!wifi || wifi.state === "off") return "";
+  if (wifi.state === "on") return `wifi: on · ${wifi.ssid}`;
+  if (wifi.state === "error") return `wifi: ${wifi.error}`;
+  return "wifi: starting...";
+}
 
 let statusTimer = 0;
 function showStatus(text, warn = false) {
@@ -632,6 +646,17 @@ $("d-land").addEventListener("click", () => {
   $("d-land").textContent = "Confirm land";
   setTimeout(disarmLand, LAND_ARM_MS);
 });
+$("d-video").addEventListener("click", () => droneAction("video", "/api/drone/video"));
+$("d-video-stop").addEventListener("click", () => droneAction("video stop", "/api/drone/video-stop"));
+// Once: on the drone's Wi-Fi with no video packets yet, ask the drone to push video to us.
+let videoAutoStarted = false;
+function autoStartVideo(state) {
+  const onDroneWifi = (state.video.local_ip || "").startsWith(DRONE_NETWORK_PREFIX);
+  if (videoAutoStarted || !onDroneWifi || state.video.packets > 0) return;
+  if (!state.drone || !state.drone.connection.connected) return;
+  videoAutoStarted = true;
+  droneAction("video", "/api/drone/video");
+}
 $("d-wifi").addEventListener("submit", (event) => {
   event.preventDefault();
   const password = $("d-wifi-pw").value;
