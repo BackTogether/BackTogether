@@ -159,7 +159,8 @@ function render(status) {
     document.body.className = "asking";
     $("title").textContent = care.profile.name.split(" ")[0] + ", I am here with you";
     $("question").textContent = care.question || "Are you okay?";
-    $("hint").textContent = care.options.length ? "" : "Listen to the robot…";
+    $("hint").textContent = !care.options.length ? "Listen to the robot…"
+      : care.listening ? "You can also answer out loud." : "";
     showButtons(care.options);
   } else if (escalated) {
     $("title").textContent = "Help is coming";

@@ -14,8 +14,8 @@ PHRASES = {
     # ids fixed by the contract
     "greeting": "Hello. I am your care robot. I am here with you.",
     "are_you_ok": "Are you okay?",
-    "press_button": "Press the green button on my screen if you are fine, "
-    "or the red button if you need help.",
+    "press_button": "Say yes, or press the green button, if you are fine. "
+    "Say help, or press the red button, if you need help.",
     "all_good": "Good. I am glad you are fine.",
     "calling_help": "I am calling for help now. Stay calm.",
     "help_on_way": "Help is on the way. I am staying with you.",

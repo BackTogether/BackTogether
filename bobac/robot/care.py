@@ -42,14 +42,22 @@ ETA_BUTTONS = (
     ("I'm calling the emergency services", "emergency"),
 )
 ARRIVED_BUTTON = (("I have arrived", "arrived"),)
+# words that mean each screen answer when said out loud (only the current options are used)
+SPOKEN_ANSWERS = {
+    "ok": ("yes", "fine", "okay", "good"),
+    "help": ("help", "no"),
+    "yes": ("yes", "yeah"),
+    "no": ("no", "nope"),
+}
 
 log = logging.getLogger("care")
 
 
 class CareSession:
-    def __init__(self, profile, zone, fall_time, speech, telegram, take_photo, buzz):
+    def __init__(self, profile, zone, fall_time, speech, telegram, take_photo, buzz, listen=None):
         """`speech`: module with say / say_text / play_file. `telegram`: caregiver.Telegram or
-        None. `take_photo(path) -> bool` and `buzz() -> None` reach the robot hardware."""
+        None. `take_photo(path) -> bool` and `buzz() -> None` reach the robot hardware.
+        `listen`: module with wait_word (listen.py) to also accept spoken answers, or None."""
         self._profile = profile
         self._name = profile["name"].split()[0]
         self._zone = zone
@@ -58,6 +66,7 @@ class CareSession:
         self._telegram = telegram
         self._take_photo = take_photo
         self._buzz = buzz
+        self._listen = listen
 
         self._lock = threading.Lock()
         self._stopped = threading.Event()
@@ -123,6 +132,7 @@ class CareSession:
                     "eta_at": self._eta_at,
                     "alerts_sent": len(self._alerted),
                     "breath": self._breath,
+                    "listening": self._listen is not None and bool(self._options),
                     "timeline": self._timeline[-TIMELINE_IN_SNAPSHOT:],
                     "profile": self._profile,
                 },
@@ -164,7 +174,7 @@ class CareSession:
         for key, question in TRIAGE_QUESTIONS:
             if self._stopped.is_set():
                 return
-            self._speech.say_text(question + " Press yes or no.")
+            self._speech.say_text(question + " Say or press yes or no.")
             answer = self._wait_answer(question, ("yes", "no"), TRIAGE_WAIT_S)
             with self._lock:
                 self._triage[key] = answer or "no answer"
@@ -319,11 +329,23 @@ class CareSession:
             self._options = list(options)
             self._answer = None
         self._answered.clear()
+        done = threading.Event()
+        if self._listen:
+            spoken = {option: SPOKEN_ANSWERS[option] for option in options}
+            threading.Thread(
+                target=self._answer_by_voice, args=(spoken, timeout_s, done), daemon=True
+            ).start()
         self._answered.wait(timeout_s)
+        done.set()  # stop listening as soon as there is an answer (or none)
         with self._lock:
             self._question = None
             self._options = []
             return self._answer
+
+    def _answer_by_voice(self, spoken: dict, timeout_s: float, done) -> None:
+        heard = self._listen.wait_word(spoken, timeout_s, cancel=done)
+        if heard and self.answer(heard):
+            self._note("answer heard out loud: " + heard)
 
     def _set_state(self, state: str) -> None:
         if self._stopped.is_set() and state != "idle":

@@ -14,7 +14,8 @@ On the robot (system Python 3.8) or on a laptop:
     python3 care_server.py            # then open http://localhost:8000/ui/
     curl -X POST localhost:8000/care/start -d '{"zone": "sofa"}'
 
-Caregiver alerts need TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_IDS (see caregiver.py).
+Caregiver alerts need TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_IDS (see caregiver.py). Spoken
+answers need Vosk and its model (see listen.py); without them only the buttons work.
 """
 
 import argparse
@@ -30,6 +31,7 @@ from pathlib import Path
 
 import care
 import caregiver
+import listen
 import speech
 
 DEFAULT_PORT = 8000
@@ -80,10 +82,11 @@ def buzz() -> None:
 class CareServer(ThreadingHTTPServer):
     daemon_threads = True
 
-    def __init__(self, address, profile, telegram):
+    def __init__(self, address, profile, telegram, ears):
         super().__init__(address, Handler)
         self.profile = profile
         self.telegram = telegram
+        self.ears = ears
         self.session = None
         self.session_thread = None
         self.session_lock = threading.Lock()
@@ -95,7 +98,7 @@ class CareServer(ThreadingHTTPServer):
             if self.telegram:
                 self.telegram.skip_backlog()
             self.session = care.CareSession(
-                self.profile, zone, fall_time, speech, self.telegram, take_photo, buzz
+                self.profile, zone, fall_time, speech, self.telegram, take_photo, buzz, self.ears
             )
             self.session_thread = threading.Thread(target=self.session.run, daemon=True)
             self.session_thread.start()
@@ -210,7 +213,8 @@ def main() -> None:
     args = parser.parse_args()
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(name)s: %(message)s")
     profile = json.loads(PROFILE_PATH.read_text(encoding="utf-8"))
-    server = CareServer(("0.0.0.0", args.port), profile, caregiver.from_environment())
+    ears = listen if listen.available() else None
+    server = CareServer(("0.0.0.0", args.port), profile, caregiver.from_environment(), ears)
     log.info("care server on port %d, screen page at /ui/", args.port)
     try:
         server.serve_forever()
