@@ -1,9 +1,9 @@
 """What the robot does once it reaches the lost child the drone found.
 
     greet the child by name -> "are you okay?" -> "did you get hurt?"
-    -> tell the parents at once (photo, answers, video call link, "on my way" buttons)
-    -> video call with the parent on the robot's screen
-    -> keep the child company (calm phrases, a breathing game, the parent's ETA, their text and
+    -> photo -> video call with the parent on the robot's screen (opened first: it is slow)
+    -> tell the parents (photo, answers, video call link, "on my way" buttons)
+    -> keep the child company (calm phrases, a counting game, the parent's ETA, their text and
        voice messages) until a parent says they are with the child. A report closes it.
 
 Plain Python 3.8, no ROS: everything that touches hardware is passed in, so it runs on a laptop.
@@ -11,12 +11,14 @@ The HTTP bridge (or care_server.py) owns one CareSession: `run()` in a thread, `
 the screen buttons, `stop()` to abort, `snapshot()` for /status.
 """
 
+import json
 import logging
 import math
 import os
 import tempfile
 import threading
 import time
+import urllib.parse
 import uuid
 
 ASK_ATTEMPTS = 2
@@ -24,17 +26,29 @@ ANSWER_WAIT_S = 20
 HURT_WAIT_S = 15
 POLL_S = 2  # how long one wait for parent events lasts
 CALM_EVERY_S = 40
-BREATH_CYCLES = 3
-BREATH_IN_S = 4
-BREATH_OUT_S = 6
+COUNT_TO = 5
+COUNT_STEP_S = 1.5  # one number every 1.5 s: slow enough for a child to follow
 MAX_SPOKEN_MESSAGE_CHARS = 300
 TIMELINE_IN_SNAPSHOT = 8
 # Public Jitsi server that lets anyone open a room without logging in (meet.jit.si no longer
 # does). The robot and the parent both open the same room URL.
 DEFAULT_CALL_BASE_URL = "https://meet.ffmuc.net"
-CALL_URL_OPTIONS = (
-    "#config.prejoinConfig.enabled=false&config.startWithAudioMuted=false"
-    "&config.startWithVideoMuted=false"
+# Only for the robot's own window: join straight away as the child (no "enter your name"
+# screen), and hide everything that is not the parent's face, so it is calm for a child.
+ROBOT_CALL_OPTIONS = (
+    "config.prejoinConfig.enabled=false",
+    "config.prejoinPageEnabled=false",
+    "config.requireDisplayName=false",
+    "config.startWithAudioMuted=false",
+    "config.startWithVideoMuted=false",
+    "config.toolbarButtons=[]",
+    "config.hideConferenceSubject=true",
+    "config.hideConferenceTimer=true",
+    "config.disableInviteFunctions=true",
+    "config.disableReactions=true",
+    "config.notifications=[]",
+    "config.disableDeepLinking=true",
+    "config.enableWelcomePage=false",
 )
 
 ETA_BUTTONS = (
@@ -88,6 +102,9 @@ class CareSession:
         self._show_call = show_call
         room = f"find-{self._name.lower()}-{uuid.uuid4().hex[:8]}"
         self._call_url = "{}/{}".format((call_base or DEFAULT_CALL_BASE_URL).rstrip("/"), room)
+        robot_name = urllib.parse.quote(json.dumps(self._name))
+        options = ROBOT_CALL_OPTIONS + ("userInfo.displayName=" + robot_name,)
+        self._robot_call_url = self._call_url + "#" + "&".join(options)
 
         self._lock = threading.Lock()
         self._stopped = threading.Event()
@@ -102,7 +119,7 @@ class CareSession:
         self._parent_coming = None  # name of the parent who replied
         self._eta_at = None
         self._call_active = False
-        self._breath = None
+        self._count = None
         self._timeline = []
 
     # ---------------------------------------------------------------- called by the bridge
@@ -120,8 +137,12 @@ class CareSession:
         if self._stopped.is_set():
             return
         self._comfort_after_answers()
-        self._tell_parents()
+        # photo before the call (the call takes the camera), call before the messages (sending
+        # the photo is slow on the robot's connection and the call takes a while to load)
+        photo_path = os.path.join(tempfile.gettempdir(), "bobac_care_photo.jpg")
+        has_photo = self._take_photo(photo_path)
         self._start_call()
+        self._tell_parents(photo_path if has_photo else None)
         self._stay_until_parent_arrives()
 
     def answer(self, value: str) -> bool:
@@ -155,7 +176,7 @@ class CareSession:
                     "parent_coming": self._parent_coming,
                     "eta_at": self._eta_at,
                     "call_url": self._call_url if self._call_active else None,
-                    "breath": self._breath,
+                    "count": self._count,
                     "listening": self._listen is not None and bool(self._options),
                     "timeline": self._timeline[-TIMELINE_IN_SNAPSHOT:],
                     "child": self._child,
@@ -197,7 +218,7 @@ class CareSession:
             self._speech.say("all_good")
         self._speech.say("stay_here")
 
-    def _tell_parents(self) -> None:
+    def _tell_parents(self, photo_path) -> None:
         if not self._telegram:
             self._note("no parent channel configured: nobody was told")
             return
@@ -209,15 +230,11 @@ class CareSession:
             + ("\n" + hurt_line if self._hurt == "yes" else "")
         )
         buttons = (("📹 Video call", self._call_url),) + ETA_BUTTONS
-        photo_path = os.path.join(tempfile.gettempdir(), "bobac_care_photo.jpg")
-        has_photo = self._take_photo(photo_path)
         for chat_id in self._telegram.chat_ids:
-            sent = self._telegram.send(
-                chat_id, text, buttons=buttons, photo_path=photo_path if has_photo else None
-            )
+            sent = self._telegram.send(chat_id, text, buttons=buttons, photo_path=photo_path)
             self._note(
                 "parent message {} ({})".format(
-                    "sent" if sent else "FAILED", "with photo" if has_photo else "no photo"
+                    "sent" if sent else "FAILED", "with photo" if photo_path else "no photo"
                 )
             )
 
@@ -225,14 +242,14 @@ class CareSession:
         with self._lock:
             self._call_active = True
         if self._show_call:
-            self._show_call(self._call_url)
+            self._show_call(self._robot_call_url)
         self._set_state("video_call")
         self._note("video call open on the screen: " + self._call_url)
         self._speech.say_text(f"I am calling your {self._parent}. Look at my screen!")
 
     def _stay_until_parent_arrives(self) -> None:
         next_calm_at = time.time() + CALM_EVERY_S
-        breathe_next = False
+        count_next = False
         while not self._stopped.is_set():
             if self._telegram:
                 events = self._telegram.events(POLL_S)
@@ -245,11 +262,11 @@ class CareSession:
                     return
             # once a parent replied they are probably talking on the call: stay quiet
             if self._parent_coming is None and time.time() >= next_calm_at:
-                if breathe_next:
-                    self._breathing_game()
+                if count_next:
+                    self._counting_game()
                 else:
                     self._speech.say("still_here")
-                breathe_next = not breathe_next
+                count_next = not count_next
                 next_calm_at = time.time() + CALM_EVERY_S
             elif self._parent_coming and self._eta_at and time.time() >= next_calm_at:
                 self._say_eta()
@@ -318,21 +335,18 @@ class CareSession:
             )
         )
 
-    def _breathing_game(self) -> None:
-        self._speech.say_text(f"{self._name}, let us blow up a big balloon together.")
-        for _ in range(BREATH_CYCLES):
-            for phase, phrase, seconds in (
-                ("in", "breathe_in", BREATH_IN_S),
-                ("out", "breathe_out", BREATH_OUT_S),
-            ):
-                self._set_breath(phase)
-                started = time.time()
-                self._speech.say(phrase)
-                remaining = seconds - (time.time() - started)
-                if self._stopped.wait(max(0.0, remaining)):
-                    self._set_breath(None)
-                    return
-        self._set_breath(None)
+    def _counting_game(self) -> None:
+        """Count to five together, one finger at a time: simple, and it keeps them busy."""
+        self._speech.say("count_intro")
+        for number in range(1, COUNT_TO + 1):
+            self._set_count(number)
+            started = time.time()
+            self._speech.say_text(str(number))
+            if self._stopped.wait(max(0.0, COUNT_STEP_S - (time.time() - started))):
+                break
+        self._set_count(None)
+        if not self._stopped.is_set():
+            self._speech.say("count_done")
 
     # ---------------------------------------------------------------- helpers
 
@@ -367,9 +381,9 @@ class CareSession:
             self._state = state
             self._updated_at = time.time()
 
-    def _set_breath(self, phase) -> None:
+    def _set_count(self, number) -> None:
         with self._lock:
-            self._breath = phase
+            self._count = number
 
     def _note(self, event: str) -> None:
         log.info(event)
