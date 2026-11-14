@@ -13,10 +13,15 @@ The drone is the original X1 ("HOVER CAMERA X1"), Wi-Fi SSID `HoverX1_<last 6 of
 
 | What | Channel | Status |
 |---|---|---|
-| Commands and queries (flight mode, land, takeoff, Wi-Fi start, status) | BLE, `RpcRequest` protobuf inside the "ADGP" framing (header + crc8) | Messages known; BLE UUIDs and framing bytes still to confirm |
-| Manual sticks | UDP → `<DRONE_IP>:19091` from local port 19091, about 30 Hz, raw protobuf `RockerControlCommand` | ✅ Known |
-| Live video | UDP, **the drone sends to the phone's port 7078**; packets of 2 KB or less; H.264 or H.265 | Payload format to confirm |
-| Heartbeat or state | HTTP to `<DRONE_IP>`, about 1 Hz | Seen, not decoded |
+| Commands, queries, telemetry (mode, state, battery, land, Wi-Fi start) | BLE service `0xFE45`: write `6e400002-b5a3-f393-e0a9-e50e24dcca9e`, notify `6e400003-…`. `RpcRequest`/`RpcResponse`/`PushMessage` protobuf in ADGP framing (`adgp.py`) | ✅ **Works from the Mac** (`hoverctl status`), 2026-11-14 |
+| Telemetry push | BLE `PushMessage`, `flight_engineering_info_event=16`: position/velocity xyz, motor rpm, battery V/A | ✅ Fixed **1 Hz** (614 events measured) |
+| Manual sticks | UDP → `<DRONE_IP>:19091` from local port 19091, about 30 Hz, raw protobuf `RockerControlCommand` | Format known; not yet flown from the Mac |
+| Wi-Fi RPC | HTTP POST `http://<DRONE_IP>:1234/rpc`, body = raw `RpcRequest`, reply = raw `RpcResponse`. The app sends `heartbeat_info_request=70` here at 1 Hz | From app code; not yet confirmed on the wire |
+| Live video | UDP, the drone pushes to the client's **port 7078** after `enter_preview_mode_request=254` over the Wi-Fi RPC | Request built (`start_video()`); not yet confirmed on the drone |
+
+**Connecting over BLE.** No pairing and no encryption. Right after connecting, the app sends `get_ble_encry_list_request` with its phone id. The drone replies with its list of bound phone ids. The Mac reuses the owner's phone id (`ble.py`), and the drone accepts it. The drone takes **one BLE client at a time**, so close the Hover app before using `hoverctl`.
+
+**Wi-Fi.** The drone's access point only runs after a `wifi_start_request` over BLE, and that request sets the password. `hoverctl` sends it on every BLE connect with the team test password **`<DRONE_WIFI_PASSWORD>`** (`--wifi-password` to change it; rotate after the hackathon). A drone restart turns the access point off until the next BLE connect.
 
 The full schema is `proto/h130.proto`, generated from the app.
 
@@ -27,7 +32,10 @@ Key messages:
   - `abort_flight_request=40`: this is **land**, and the app uses it
   - `set_flight_mode_request=54` (a `FlightModeConfig`): HOVER=1, REVEAL=2, FOLLOW=3, ORBIT=4, MANUAL=255
   - `takeoff_request=1023` (`TakeOffParams`, `trigger_source` APP=1). Untested on the X1.
-  - `wifi_start_request=25` (`WifiParams`: ssid, password, type=AP). **The app sets the Wi-Fi password over BLE on each connection**, so it isn't printed anywhere.
+  - `wifi_start_request=25` (`WifiParams`: ssid, password, type=AP, country). It sets the Wi-Fi password; see above.
+  - `enter_preview_mode_request=254` (`EnterPreview`: `udp_server_ip`, `flight_mode_manual`, `camera_start_preview{enable, codec}`, `connect_type`): starts live video to `udp_server_ip:7078`. Stop it with `camera_start_preview_request=240` (enable=false), then `exit_preview_mode_request=250`.
+  - `set_flight_mode_to_manual_request=46`: on its own, the drone acks it and then **falls back to the mode set on the drone** (seen 2026-11-14). See "Manual Control in the app" below.
+- No live roll/pitch/yaw: the app has a `flight_analytics_log_event=31` path with attitude, but the X1 never sent it in our captures.
 
 ## Behaviour learned in test flights
 - Every takeoff so far used the **drone's button**. The state sequence is PRE_TAKEOFF, then TAKING_OFF, then FLYING_TRAJ (Follow) or FLYING_MANUAL.
@@ -36,9 +44,17 @@ Key messages:
 - **The app's joystick screen switches the drone to MANUAL.**
 - **Manual Control is unlocked** on our drone.
 
+### Manual Control in the app (observed 2026-11-14)
+1. "Searching for Hover": hold the drone's power button. To pair a new phone, press mode + power together and the light flashes blue. Then tap **Connect** (BLE), then "Got it".
+2. On the home screen, tap **Manual Control**. The app shows "Connecting to Hover's Wi-Fi" (`wifi_start` over BLE, then the phone joins `HoverX1_…`).
+3. The joystick screen opens with the low-res live video, and the drone shows **"Waiting to take off"**. Take off with the drone's button.
+
+So Manual Control is a **session**: Wi-Fi joined, then preview started with `flight_mode_manual`, then a stick stream. It is more than one mode request. `hoverctl` is being changed to run the same sequence from its MANUAL button.
+
 ## Gotchas
 - **Don't use VPN-based capture (PCAPdroid).** The app binds its sockets to the drone's Wi-Fi, a VPN blocks that, and the video goes black.
-- **USB tethering from the Samsung test phone doesn't work on macOS.** The phone only offers RNDIS, which macOS can't use. When the Mac joins the drone's Wi-Fi it loses internet, so script the switch.
+- **USB tethering from the Samsung test phone doesn't work on macOS.** The phone only offers RNDIS, which macOS can't use. When the Mac joins the drone's Wi-Fi it loses internet. To stay online, use an iPhone hotspot over USB or Bluetooth tethering. A Wi-Fi hotspot can't work, because the Mac has one Wi-Fi card.
+- **macOS may switch back** from the drone's Wi-Fi (it has no internet) to a known network. Turn off Auto-Join on your usual network while testing.
 - **The Hover app logs the account password in plain text** to logcat. Redact logs before sharing them.
 
 Raw captures and the decompiled app live outside git, in `../drone-re/` on rorosaga's machine.
