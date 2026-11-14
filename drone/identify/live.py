@@ -70,6 +70,13 @@ def watch(
         found = None
         for face in embedder.faces(image):
             name, similarity = people.classify(face.embedding)
+            log.info(
+                "%s: face %dpx -> %s %.2f",
+                frame.name,
+                face.box[2],
+                name or "unknown",
+                similarity,
+            )
             if name == target and (found is None or similarity > found.similarity):
                 found = Sighting(frame, face.box, similarity, attempt=matches + 1)
         matches = matches + 1 if found else 0
