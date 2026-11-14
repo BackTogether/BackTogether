@@ -12,14 +12,16 @@ uv run --with opencv-python-headless python -m drone.identify.models   # 38 MB o
 Add a few other people too: a face that looks more like someone else is never taken for Leo.
 
 ## During the flight
-Start it when the drone starts: it watches `recordings/frames/` (newest session) and checks
-every new frame the drone saves, logging each face it sees.
+Start it when the drone starts. It watches `recordings/frames/` (newest session), checks every
+face the drone sees against the whole database and logs each one:
 ```bash
-uv run --with opencv-python-headless python -m drone.identify leo            # live
-uv run --with opencv-python-headless python -m drone.identify leo --timeout 300
+uv run --with opencv-python-headless python -m drone.identify          # everyone, until Ctrl+C
+uv run --with opencv-python-headless python -m drone.identify leo      # only Leo, 120 s
 ```
-- **POSITIVE**: two rising beeps, exit code 0, `found.jpg` with the face marked.
-- **FAILED**: one low beep, exit code 1, after `--timeout` seconds without a confirmed match.
+- Whole database: each person seen in 2 frames in a row is announced once with **POSITIVE**,
+  two rising beeps and `found_<name>.jpg` with the face marked.
+- One person: stops at the first **POSITIVE** (exit code 0), or **FAILED** with one low beep
+  (exit code 1) after `--timeout` seconds.
 
 ## On recorded flights
 ```bash
