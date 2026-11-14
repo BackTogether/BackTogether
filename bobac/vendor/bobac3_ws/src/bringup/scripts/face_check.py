@@ -14,6 +14,30 @@ Params (set in bringup.launch):
   ~search_on_start  true: search right away, without waiting for a goal (to test it alone)
 """
 
+
+
+
+'''
+CENTER:
+    xmin: 260.0
+    xmax: 404.0
+    ymin: 232.0
+    ymax: 376.0
+---
+MAX RIGHT
+    xmin: 452.0
+    xmax: 596.0
+    ymin: 248.0
+    ymax: 392.0
+---
+MIN LEFT
+    xmin: 4.0
+    xmax: 148.0
+    ymin: 248.0
+    ymax: 392.0
+---
+'''
+
 import math
 import threading
 import time
