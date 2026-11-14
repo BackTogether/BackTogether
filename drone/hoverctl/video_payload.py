@@ -100,22 +100,28 @@ class StreamExtractor:
         self.skip = skip
         self.kind: PayloadKind | None = None
         self._ssrc: bytes | None = None
-        self._rtp_streak = 0
+        self._held: list[bytes] = []  # RTP candidates, kept so the first SPS/PPS isn't lost
 
     def feed(self, datagram: bytes) -> bytes:
         data = datagram[self.skip :]
-        if self.kind is None:
-            self.kind = self._detect(data)
         if self.kind is PayloadKind.ANNEXB:
             return data
         if self.kind is PayloadKind.RTP:
             return depacketize_h264(_rtp_payload(data))
-        return b""
+        return self._detect(data)
 
-    def _detect(self, data: bytes) -> PayloadKind | None:
+    def _detect(self, data: bytes) -> bytes:
         if start_code_offset(data) == 0:
-            return PayloadKind.ANNEXB
+            self.kind = PayloadKind.ANNEXB
+            return data
         ssrc = _rtp_ssrc(data)
-        self._rtp_streak = self._rtp_streak + 1 if ssrc and ssrc == self._ssrc else int(bool(ssrc))
+        if not ssrc or ssrc != self._ssrc:
+            self._held.clear()
         self._ssrc = ssrc
-        return PayloadKind.RTP if self._rtp_streak >= RTP_LOCK_PACKETS else None
+        if ssrc:
+            self._held.append(data)
+        if len(self._held) < RTP_LOCK_PACKETS:
+            return b""
+        self.kind = PayloadKind.RTP
+        held, self._held = self._held, []
+        return b"".join(depacketize_h264(_rtp_payload(packet)) for packet in held)

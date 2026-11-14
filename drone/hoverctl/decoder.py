@@ -15,6 +15,7 @@ JPEG_QUALITY = "5"  # ffmpeg -q:v, 2 (best) .. 31
 READ_CHUNK = 1 << 16
 MAX_PENDING_BYTES = 4 << 20  # stream kept while waiting for the first parameter set
 RESTART_DELAY_S = 2.0
+CLOSE_TIMEOUT_S = 1.0
 
 
 def _ffmpeg_command(codec: str) -> list[str]:
@@ -23,12 +24,12 @@ def _ffmpeg_command(codec: str) -> list[str]:
         "-hide_banner",
         "-loglevel",
         "error",
-        "-fflags",
-        "nobuffer",
         "-flags",
         "low_delay",
+        # Probe as little as possible. Not `-fflags nobuffer`: it drops the probed packets,
+        # which hold the SPS/PPS and first keyframe, so a whole GOP is lost.
         "-probesize",
-        "32768",
+        "32",
         "-analyzeduration",
         "0",
         "-f",
@@ -84,10 +85,15 @@ class MjpegDecoder:
             return self.frames, self._frame
 
     def close(self) -> None:
-        if self._process:
+        """Let ffmpeg finish on end of input (killing it mid-write spams broken-pipe errors)."""
+        if not self._process:
+            return
+        try:
             self._process.stdin.close()
-            self._process.terminate()
-            self._process = None
+            self._process.wait(CLOSE_TIMEOUT_S)
+        except (BrokenPipeError, subprocess.TimeoutExpired):
+            self._process.kill()
+        self._process = None
 
     def _buffer_until_codec(self, data: bytes) -> None:
         self._pending += data

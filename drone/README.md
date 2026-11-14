@@ -42,3 +42,19 @@ Key messages:
 - **The Hover app logs the account password in plain text** to logcat. Redact logs before sharing them.
 
 Raw captures and the decompiled app live outside git, in `../drone-re/` on rorosaga's machine.
+
+## Usage (`drone/hoverctl/`)
+Stdlib only, plus the `ffmpeg` CLI for video (`brew install ffmpeg`). Nothing to download on the drone's Wi-Fi. Run from the repo root:
+
+```bash
+uv run python -m drone.hoverctl web            # browser UI on http://127.0.0.1:8000: video, two sticks, STOP
+uv run python -m drone.hoverctl sticks         # keyboard teleop in the terminal
+uv run python -m drone.hoverctl video          # receive UDP 7078: stats + dump to recordings/ (gitignored)
+uv run python -m drone.hoverctl sticks --dry-run   # print packets, send nothing
+```
+
+- **Keys:** W/S pitch, A/D roll, I/K thrust, J/L yaw, U/O gimbal, Space = neutral (web: STOP), Q quits the terminal teleop. Web UI: left stick is thrust/yaw, right stick is pitch/roll.
+- **Safety:** `--max` (default 50 of 100) caps every axis. Ramp like the app: start at 28, then +3 per tick, and release is instant. Sticks go neutral 0.3 s after the last input: browser tab closed, key released (terminal: 0.15 s after the last auto-repeat). Exit, Ctrl-C, SIGTERM or an error send 0.5 s of neutral.
+- **Terminal limits:** it only sees auto-repeat, so a single tap moves for about 0.5 s, and only one key works at a time. Use the web UI for diagonals.
+- **Video:** the payload format is still a guess (`video_payload.py`). We handle bare Annex-B (H.264/H.265) and RTP/H.264. The first 10 datagrams print in hex, and the UI shows them while nothing decodes. If a fixed header shows up, try `--skip N`. Force the codec with `--codec h264|hevc`.
+- **Testing without the drone:** `uv run python -m drone.hoverctl.devsend [--mode rtp | --codec hevc]` sends an ffmpeg test pattern to 127.0.0.1:7078. `--replay recordings/<dump>.udp` replays a real capture with its original timing.
