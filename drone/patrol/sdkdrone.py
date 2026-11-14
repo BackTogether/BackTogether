@@ -106,8 +106,11 @@ class RemoteDrone:
     def set_tilt(self, deg: float) -> float | None:
         """Move the camera to `deg` (re-anchoring the estimate if unknown); the tilt reached."""
         self.client.tilt(deg)
-        while self.client.status()["task"]["state"] == "running":
+        while (task := self.client.status()["task"])["state"] == "running":
             time.sleep(TILT_POLL_S)
+        # STOP during the tilt must end the patrol: its first /move resumes after a STOP.
+        if task["state"] == "stopped":
+            raise Stopped(f"stopped while tilting the camera: {task['message']}")
         return self.client.camera_tilt()["deg"]
 
     def yaw_rate_dps(self, yaw_input: float) -> float:

@@ -13,8 +13,9 @@
     --line: #e9ecf1; --rule: #252932; --red: #b4443e;
     --sans: "Geist", ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
     --mono: "Geist Mono", ui-monospace, "SFMono-Regular", Menlo, monospace;
-    --gap: 16px; --side: 380px; --pip-w: 320px; --pip-clear: calc(var(--pip-w) * 9 / 16 + var(--gap));
-    --controls-h: clamp(270px, 36vh, 360px); --legend-h: 126px;
+    --gap: 16px; --side: clamp(330px, 25vw, 372px); --pip-w: 300px;
+    --pip-clear: calc(var(--pip-w) * 9 / 16 + var(--gap));
+    --controls-h: clamp(236px, 31vh, 300px); --legend-h: 64px;
     color-scheme: dark;
   }
   * { box-sizing: border-box; }
@@ -22,176 +23,63 @@
   body { font: 14px/1.5 var(--sans); -webkit-font-smoothing: antialiased; padding: var(--gap);
     height: 100dvh; overflow: hidden; user-select: none; -webkit-user-select: none; }
   .mono { font-family: var(--mono); font-size: 11px; letter-spacing: .08em; text-transform: uppercase; }
-  button { all: unset; cursor: pointer; }
+  button, summary { all: unset; cursor: pointer; }
+  [hidden] { display: none !important; }
 
   .frame { height: 100%; display: grid; grid-template-rows: auto minmax(0, 1fr);
     border: 1px solid var(--line); background: var(--panel); }
-  .top { display: flex; justify-content: space-between; border-bottom: 1px solid var(--line); }
-  .brand { display: flex; align-items: baseline; gap: 12px; padding: 13px 18px; }
+
+  /* top bar: chips for what the drone does, icons for the links */
+  .top { display: flex; align-items: stretch; border-bottom: 1px solid var(--line); min-height: 42px; }
+  .brand { display: flex; align-items: baseline; gap: 10px; padding: 11px 18px; border-right: 1px solid var(--line); }
   .brand b { font-weight: 600; font-size: 13px; letter-spacing: .14em; text-transform: uppercase; }
-  .brand span { color: var(--muted); }
-  .status { display: flex; }
-  .cell { display: flex; align-items: center; gap: 8px; padding: 0 16px; border-left: 1px solid var(--line);
+  .brand span { color: var(--faint); }
+  .chips { display: flex; align-items: center; gap: 6px; padding: 0 12px; flex: 1; min-width: 0; }
+  .chip { padding: 3px 8px; border: 1px solid var(--faint); color: var(--muted); white-space: nowrap; }
+  .chip.on { background: var(--ink); border-color: var(--ink); color: var(--bg); }
+  .chip.warn { border-color: var(--red); color: var(--red); }
+  .chip.dim { color: var(--faint); border-color: var(--rule); }
+  .stats { display: flex; }
+  .stat { display: flex; align-items: center; gap: 7px; padding: 0 14px; border-left: 1px solid var(--line);
     color: var(--muted); white-space: nowrap; font-variant-numeric: tabular-nums; }
-  .cell b { color: var(--ink); font-weight: 500; }
-  .cell.tag { background: var(--ink); color: var(--bg); }
-  .cell.warn, .cell.warn b { color: var(--red); }
-  .cell.tag b { color: var(--bg); }
-  .cell.stale, .cell.stale b { color: var(--faint); }
-  button.cell:hover { color: var(--ink); }
+  .stat svg { width: 16px; height: 16px; flex: none; fill: none; stroke: currentColor; stroke-width: 1.25; }
+  .stat svg .fill { fill: currentColor; stroke: none; }
+  .stat b { color: var(--ink); font-weight: 500; }
+  .stat.warn, .stat.warn b { color: var(--red); }
+  .stat.dim, .stat.dim b { color: var(--faint); }
+  button.stat:hover { color: var(--ink); }
 
   .main { display: grid; grid-template-columns: minmax(0, 1fr) var(--side); min-height: 0; }
-  .stage { position: relative; display: grid; grid-template-rows: minmax(0, 1fr) var(--controls-h);
-    min-height: 0; }
+  .stage { position: relative; display: grid; grid-template-rows: minmax(0, 1fr) var(--controls-h); min-height: 0; }
   body.mini .stage { grid-template-rows: minmax(0, 1fr); }
 
+  /* video and what floats over it */
   .video { position: relative; min-height: 0; background: var(--bg); overflow: hidden; }
   .video img { width: 100%; height: 100%; object-fit: contain; display: block; }
   body.mini .video { position: absolute; z-index: 2; top: var(--gap); left: var(--gap);
     width: var(--pip-w); height: auto; aspect-ratio: 16 / 9; border: 1px solid var(--line); cursor: pointer; }
-  .corner { position: absolute; padding: 2px 6px; background: var(--panel); color: var(--faint);
-    pointer-events: none; z-index: 1; }
-  .tl { left: 8px; top: 8px; } .tr { right: 8px; top: 8px; }
   .no-video { position: absolute; inset: 0; display: grid; place-content: center; gap: 8px;
     text-align: center; padding: 24px; background: var(--panel); }
   .no-video .big { font-size: 30px; font-weight: 500; letter-spacing: -.02em; line-height: 1.1; }
   .no-video .mono { color: var(--muted); }
   body.mini .no-video .big { font-size: 15px; }
-  body.mini .no-video .mono, body.mini .video .tr { display: none; }
-  .stall { position: absolute; left: 50%; top: 8px; transform: translateX(-50%); padding: 4px 10px;
-    border: 1px solid var(--red); background: var(--panel); color: var(--red); }
+  body.mini .no-video .mono { display: none; }
+  .notices { position: absolute; left: 50%; top: 10px; transform: translateX(-50%); z-index: 1;
+    display: grid; gap: 6px; justify-items: center; pointer-events: none; }
+  .notice { padding: 4px 10px; border: 1px solid var(--red); background: var(--panel); color: var(--red); white-space: nowrap; }
+  .notice.ok { border-color: var(--ink); background: var(--ink); color: var(--bg); padding: 8px 16px; }
+  body.mini .notices { display: none; }
   .takeoff { position: absolute; left: 50%; bottom: 16px; transform: translateX(-50%); z-index: 1;
     display: grid; gap: 4px; padding: 10px 18px; text-align: center; background: var(--ink); color: var(--bg); }
   .takeoff b { font: 600 22px var(--mono); letter-spacing: .16em; }
   body.mini .takeoff { bottom: 8px; padding: 4px 8px; }
   body.mini .takeoff b { font-size: 13px; }
   body.mini .takeoff span { display: none; }
-  [hidden] { display: none !important; }
-
-  .controls { container-type: size; display: grid; grid-template-columns: 1fr minmax(200px, 260px) 1fr;
-    align-items: center; justify-items: center; gap: var(--gap); padding: 14px 24px;
-    border-top: 1px solid var(--line); min-height: 0; }
-  body.mini .controls { border-top: 0; padding-top: var(--pip-clear); }
-  .stick { --pad: min(26cqw, calc(100cqh - var(--legend-h)));
-    display: grid; gap: 10px; justify-items: center; }
-  body.mini .stick { --pad: min(34cqw, calc(100cqh - var(--legend-h)), 460px); }
-  .caption { width: var(--pad); display: flex; justify-content: space-between; color: var(--faint);
-    font-variant-numeric: tabular-nums; }
-  .caption b { font-weight: 500; color: var(--muted); }
-  .stick.live .caption b { color: var(--ink); }
-  .pad { position: relative; width: var(--pad); height: var(--pad); border: 1px solid var(--line);
-    touch-action: none; cursor: crosshair; }
-  .pad::before, .pad::after { content: ""; position: absolute; background: var(--rule); }
-  .pad::before { left: 50%; top: 0; bottom: 0; width: 1px; }
-  .pad::after { top: 50%; left: 0; right: 0; height: 1px; }
-  .knob { position: absolute; left: 50%; top: 50%; width: 14%; aspect-ratio: 1; z-index: 1;
-    transform: translate(-50%, -50%); border: 1px solid var(--line); background: var(--panel); }
-  .stick.live .knob { background: var(--ink); }
-
-  .keys { display: grid; grid-template-columns: repeat(3, 26px); grid-auto-rows: 24px; gap: 4px; }
-  kbd { display: grid; place-items: center; min-width: 26px; padding: 0 6px; border: 1px solid var(--faint);
-    color: var(--muted); font: 500 11px var(--mono); text-transform: uppercase; }
-  kbd.held { background: var(--ink); border-color: var(--ink); color: var(--bg); }
-  .keys .up { grid-column: 2; } .keys .left { grid-column: 1; grid-row: 2; }
-  .keys .down { grid-column: 2; grid-row: 2; } .keys .right { grid-column: 3; grid-row: 2; }
-  .hint { color: var(--faint); }
-
-  .center { display: grid; gap: 14px; width: 100%; }
-  #stop { display: grid; place-items: center; height: 76px; background: var(--red); border: 1px solid var(--red);
-    color: #fff; font: 600 20px var(--mono); letter-spacing: .24em; touch-action: none; }
-  #stop.flash { background: var(--ink); border-color: var(--ink); color: var(--bg); }
-  .legend { display: grid; grid-template-columns: auto 1fr; gap: 6px 10px; align-items: center; }
-  .legend > span:first-of-type, .legend .caps { display: flex; gap: 4px; }
-
-  .side { border-left: 1px solid var(--line); overflow-y: auto; min-height: 0; }
-  .side section + section { border-top: 1px solid var(--line); }
-  .side h2 { margin: 0; padding: 12px 16px; border-bottom: 1px solid var(--rule); color: var(--muted);
-    font-weight: 500; display: flex; justify-content: space-between; }
-  .meters { display: grid; grid-template-columns: max-content 1fr 72px; align-items: center; gap: 12px 12px;
-    padding: 14px 16px; border-bottom: 1px solid var(--rule); }
-  .meters span { color: var(--muted); }
-  .meters output { font: 500 13px var(--mono); text-align: right; font-variant-numeric: tabular-nums; }
-  .meter { position: relative; height: 10px; border: 1px solid var(--faint); }
-  .meter::before { content: ""; position: absolute; left: 50%; top: -4px; bottom: -4px; width: 1px;
-    background: var(--muted); }
-  .meter i { position: absolute; top: 0; bottom: 0; left: 50%; width: 0; background: var(--ink); }
-  .meter .cap { position: absolute; top: -4px; bottom: -4px; width: 1px; background: var(--faint); }
-  .kv { display: grid; grid-template-columns: 1fr 1fr; }
-  .kv > div { padding: 9px 16px 10px; border-bottom: 1px solid var(--rule); min-width: 0; }
-  .kv > div:nth-child(odd):not(.wide) { border-right: 1px solid var(--rule); }
-  .kv > div:last-child:nth-child(odd) { border-right: 0; }
-  .kv .wide { grid-column: 1 / -1; }
-  .kv label { display: block; color: var(--faint); font-size: 10.5px; }
-  .kv output { display: block; font: 13px/1.5 var(--mono); overflow: hidden; text-overflow: ellipsis;
-    white-space: nowrap; font-variant-numeric: tabular-nums; }
-  .kv output.warn { color: var(--red); }
-  .kv output.wrap { white-space: normal; word-break: break-all; }
-  .kv output.dim { color: var(--faint); }
-  .kv .alt output { font: 500 28px/1.15 var(--sans); letter-spacing: -.02em; }
-  #hex { margin: 4px 0 0; color: var(--muted); font: 10.5px/1.6 var(--mono); white-space: pre-wrap;
-    word-break: break-all; }
-
-  .dronemode { padding: 14px 16px 12px; border-bottom: 1px solid var(--rule); display: grid; gap: 2px; }
-  .dronemode .big { font-size: 34px; font-weight: 500; letter-spacing: -.02em; line-height: 1.1; }
-  .dronemode .mono { color: var(--muted); }
-  .side h3 { margin: 0; padding: 7px 16px; border-bottom: 1px solid var(--rule); color: var(--faint);
-    font-weight: 500; display: flex; justify-content: space-between; background: var(--bg); }
-  .group.stale output, .stale { color: var(--faint); }
-  .bar { height: 4px; border: 1px solid var(--faint); margin: 6px 0 2px; }
-  .bar i { display: block; height: 100%; width: 0; background: var(--ink); }
-  .group.stale .bar i { background: var(--faint); }
-  .actions { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; padding: 12px 16px 0; }
-  .actions.wifi { grid-template-columns: 1fr auto; padding-bottom: 0; }
-  .btn { display: grid; place-items: center; height: 34px; padding: 0 12px; border: 1px solid var(--line);
-    font: 500 11px var(--mono); letter-spacing: .1em; text-transform: uppercase; }
-  .btn:hover { background: var(--rule); }
-  .btn.armed { background: var(--red); border-color: var(--red); color: #fff; }
-  .btn:disabled, .btn.off { opacity: .35; cursor: default; pointer-events: none; }
-  .speed { display: grid; grid-template-columns: auto repeat(5, 1fr) auto; align-items: center;
-    padding: 10px 16px; border-bottom: 1px solid var(--rule); }
-  .speed label { color: var(--muted); font-size: 11px; letter-spacing: .08em; text-transform: uppercase;
-    padding-right: 12px; }
-  .speed .btn { height: 28px; padding: 0; margin-left: -1px; font: 12px var(--mono); }
-  .speed .btn.on { background: var(--ink); color: var(--bg); }
-  .speed #sport { margin-left: 10px; padding: 0 10px; letter-spacing: .1em; }
-  .speed #sport.on, .cell.sport { background: var(--red); border-color: var(--red); color: #fff; }
-  .cell.sport b { color: #fff; }
-  .quality { display: grid; grid-template-columns: auto 1fr 1fr; align-items: center; gap: 0;
-    padding: 10px 16px; border-bottom: 1px solid var(--rule); }
-  .quality label { color: var(--muted); font-size: 11px; letter-spacing: .08em; text-transform: uppercase;
-    padding-right: 12px; }
-  .quality .btn { height: 28px; padding: 0; margin-left: -1px; }
-  .quality .btn.on { background: var(--ink); color: var(--bg); }
-  input[type=password], input[type=text] { all: unset; box-sizing: border-box; height: 34px; padding: 0 10px;
-    border: 1px solid var(--faint); font: 13px var(--mono); user-select: text; -webkit-user-select: text; min-width: 0; }
-  input:focus { border-color: var(--line); }
-  #d-manual-steps { padding: 8px 16px 0; color: var(--muted); }
-  #d-manual-steps.warn { color: var(--red); }
-  #d-action-status { padding: 8px 16px 12px; min-height: 36px; color: var(--muted); }
-  #d-action-status.warn { color: var(--red); }
-  .lock { padding: 6px 10px; border: 1px solid var(--line); text-align: center; color: var(--ink); }
-  .controls.locked .stick { opacity: .3; }
-  .controls.locked .legend .gate { color: var(--ink); }
-
-  /* camera tilt presets (drone.sdk server only) */
-  .tilt { display: grid; grid-template-columns: auto repeat(5, 1fr); align-items: center;
-    padding: 12px 16px 0; }
-  .tilt label { color: var(--muted); font-size: 11px; letter-spacing: .08em; text-transform: uppercase;
-    padding-right: 12px; }
-  .tilt .btn { height: 28px; padding: 0 2px; margin-left: -1px; font: 10.5px var(--mono); letter-spacing: 0;
-    white-space: nowrap; }
-  .tilt .btn.on { background: var(--ink); color: var(--bg); }
-  .tilt form { grid-column: 2 / -1; display: grid; grid-template-columns: 1fr auto; margin-top: 6px; }
-  .tilt input { height: 28px; }
-  .tilt form .btn { margin-left: -1px; padding: 0 14px; }
-
-  /* photos and recording (drone.sdk server only) */
   .capture { position: absolute; left: 8px; bottom: 8px; z-index: 1; display: flex; align-items: center; }
   .capture .btn { height: 28px; padding: 0 10px; margin-right: -1px; gap: 6px; background: var(--panel);
     grid-auto-flow: column; }
   .capture .btn kbd { min-width: 0; height: 16px; padding: 0 4px; font-size: 10px; }
-  .capture .btn.rec-on { border-color: var(--red); color: var(--red); }
-  .capture .btn.rec-on kbd { border-color: var(--red); color: var(--red); }
+  .capture .btn.rec-on, .capture .btn.rec-on kbd { border-color: var(--red); color: var(--red); }
   .rec-dot { display: inline-block; width: 8px; height: 8px; margin-right: 4px; border-radius: 50%;
     background: var(--red); vertical-align: middle; }
   .capture-status { margin-left: 10px; padding: 2px 6px; background: var(--panel); color: var(--muted);
@@ -199,22 +87,148 @@
   .capture-status.warn { color: var(--red); }
   body.mini .capture { display: none; }
 
-  /* estimated pose: compass and path map */
-  .dials { display: grid; grid-template-columns: 1fr 1fr; border-bottom: 1px solid var(--rule); }
-  .dial { padding: 10px 12px 8px; display: grid; gap: 6px; min-width: 0; }
-  .dial + .dial { border-left: 1px solid var(--rule); }
-  .dial label { color: var(--faint); font-size: 10.5px; display: flex; justify-content: space-between; }
-  .dial svg { width: 100%; aspect-ratio: 1; display: block; overflow: hidden; }
-  .est-tag { padding: 0 6px; border: 1px solid var(--line); color: var(--ink); }
+  /* sticks: left = W A S D (move), right = I J K L (height, turn), like the keyboard */
+  .controls { container-type: size; display: grid; grid-template-columns: 1fr minmax(210px, 250px) 1fr;
+    align-items: center; justify-items: center; gap: var(--gap); padding: 14px 24px;
+    border-top: 1px solid var(--line); min-height: 0; }
+  body.mini .controls { border-top: 0; padding-top: var(--pip-clear); }
+  .stick { --pad: min(24cqw, calc(100cqh - var(--legend-h))); display: grid; gap: 10px; justify-items: center; }
+  body.mini .stick { --pad: min(32cqw, calc(100cqh - var(--legend-h)), 440px); }
+  .pad { position: relative; width: var(--pad); height: var(--pad); border: 1px solid var(--line);
+    touch-action: none; cursor: crosshair; }
+  .pad::before, .pad::after { content: ""; position: absolute; background: var(--rule); }
+  .pad::before { left: 50%; top: 0; bottom: 0; width: 1px; }
+  .pad::after { top: 50%; left: 0; right: 0; height: 1px; }
+  .pad .dir { position: absolute; color: var(--faint); font-size: 9.5px; pointer-events: none; padding: 0 3px;
+    background: var(--panel); line-height: 1.4; }
+  .pad .dir.n { top: 5px; left: 50%; transform: translateX(-50%); }
+  .pad .dir.s { bottom: 5px; left: 50%; transform: translateX(-50%); }
+  .pad .dir.w { left: 6px; top: 50%; transform: translateY(-50%); }
+  .pad .dir.e { right: 6px; top: 50%; transform: translateY(-50%); }
+  .knob { position: absolute; left: 50%; top: 50%; width: 14%; aspect-ratio: 1; z-index: 1;
+    transform: translate(-50%, -50%); border: 1px solid var(--line); background: var(--panel); }
+  .stick.live .knob { background: var(--ink); }
+  .controls.locked .stick { opacity: .3; }
+  .keys { display: grid; grid-template-columns: repeat(3, 26px); grid-auto-rows: 22px; gap: 4px; }
+  kbd { display: grid; place-items: center; min-width: 26px; padding: 0 5px; border: 1px solid var(--faint);
+    color: var(--muted); font: 500 11px var(--mono); text-transform: uppercase; }
+  kbd.held { background: var(--ink); border-color: var(--ink); color: var(--bg); }
+  .keys .up { grid-column: 2; } .keys .left { grid-column: 1; grid-row: 2; }
+  .keys .down { grid-column: 2; grid-row: 2; } .keys .right { grid-column: 3; grid-row: 2; }
+
+  .center { display: grid; gap: 12px; width: 100%; }
+  .lock { padding: 6px 10px; border: 1px solid var(--line); text-align: center; }
+  #stop { display: grid; place-content: center; gap: 2px; height: 84px; text-align: center; background: var(--red);
+    border: 1px solid var(--red); color: #fff; touch-action: none; }
+  #stop b { font: 600 22px var(--mono); letter-spacing: .24em; padding-left: .24em; }
+  #stop span { font-size: 10px; opacity: .85; }
+  #stop.stopped { background: var(--ink); border-color: var(--ink); color: var(--bg); }
+  .legend { display: grid; grid-template-columns: auto 1fr; gap: 5px 10px; align-items: center; color: var(--faint); }
+  .legend .caps { display: flex; gap: 4px; }
+  .legend kbd { min-width: 22px; height: 20px; font-size: 10px; }
+
+  /* side panel: the flight view first, everything else under "details" */
+  .side { border-left: 1px solid var(--line); overflow-y: auto; min-height: 0; display: flex; flex-direction: column; }
+  .side > section { border-bottom: 1px solid var(--line); }
+  .label { color: var(--faint); font-size: 10.5px; }
+  .compass { position: relative; padding: 10px 16px 6px; }
+  .compass .head { display: flex; justify-content: space-between; align-items: center; }
+  .est-tag { padding: 0 6px; border: 1px solid var(--muted); color: var(--muted); }
+  .dial { position: relative; width: min(100%, 236px); margin: 2px auto 0; aspect-ratio: 1; }
+  .dial svg { position: absolute; inset: 0; width: 100%; height: 100%; overflow: visible; }
+  .dial .readout { position: absolute; inset: 0; display: grid; place-content: center; text-align: center; gap: 2px; }
+  .dial .deg { font: 500 34px/1 var(--sans); letter-spacing: -.02em; font-variant-numeric: tabular-nums; }
+  .dial .deg small { font-size: 18px; font-weight: 500; margin-left: 4px; color: var(--muted); letter-spacing: 0; }
+  .dial .sd { color: var(--faint); }
+  .dial .sd.warn { color: var(--red); }
+  #ring { transition: transform 250ms linear; transform-origin: 0 0; }
+  #ring text { transition: transform 250ms linear; transform-box: fill-box; transform-origin: center; }
+  .tick { stroke: var(--faint); stroke-width: 1; vector-effect: non-scaling-stroke; }
+  .tick.major { stroke: var(--ink); }
+  .ring-text { fill: var(--faint); font: 500 9px var(--mono); }
+  .ring-text.card { fill: var(--ink); font: 600 14px var(--sans); }
+  .heading-line { stroke: var(--ink); stroke-width: 2.5; }
+  .sigma { fill: none; stroke: var(--muted); stroke-width: 3; opacity: .55; }
+  .travel { fill: var(--ink); }
+
+  .readouts { display: grid; grid-template-columns: 1.1fr 1fr 1fr; }
+  .readouts > div { padding: 9px 14px 10px; min-width: 0; }
+  .readouts > div + div { border-left: 1px solid var(--rule); }
+  .readouts output { display: block; font: 500 21px/26px var(--sans); letter-spacing: -.02em; white-space: nowrap;
+    overflow: hidden; text-overflow: ellipsis; font-variant-numeric: tabular-nums; }
+  .readouts output small { font-size: 13px; color: var(--muted); letter-spacing: 0; margin-left: 2px; }
+  .readouts .note { display: block; color: var(--faint); font-size: 10px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .readouts output.dim { color: var(--faint); font-size: 16px; }
+  .autopilot { grid-column: 1 / -1; border-top: 1px solid var(--rule); border-left: 0 !important;
+    display: flex; gap: 10px; align-items: baseline; }
+  .autopilot output { font: 12px/1.4 var(--mono); letter-spacing: 0; white-space: normal; }
+  .autopilot output.warn { color: var(--red); }
+
+  .row { display: grid; align-items: center; padding: 10px 16px; }
+  .row + .row { padding-top: 0; }
+  .row > .label { padding-right: 10px; }
+  .btn { display: grid; place-items: center; height: 34px; padding: 0 12px; border: 1px solid var(--line);
+    font: 500 11px var(--mono); letter-spacing: .1em; text-transform: uppercase; white-space: nowrap; }
+  .btn:hover { background: var(--rule); }
+  .btn.on { background: var(--ink); color: var(--bg); }
+  .btn.armed { background: var(--red); border-color: var(--red); color: #fff; }
+  .btn:disabled, .btn.off { opacity: .35; cursor: default; pointer-events: none; }
+  .seg .btn { height: 28px; padding: 0 4px; margin-left: -1px; letter-spacing: .02em; }
+  .actions { grid-template-columns: 1fr 1fr; gap: 8px; padding-top: 12px; }
+  .speed { grid-template-columns: 48px repeat(5, 1fr) auto; }
+  .speed #sport { margin-left: 8px; padding: 0 9px; letter-spacing: .08em; }
+  .speed #sport.on { background: var(--red); border-color: var(--red); color: #fff; }
+  .tilt { grid-template-columns: 48px repeat(5, 1fr); }
+  .tilt form { grid-column: 2 / -1; display: grid; grid-template-columns: 1fr auto; margin-top: 6px; }
+  .tilt input { height: 28px; }
+  .tilt form .btn { margin-left: -1px; padding: 0 12px; }
+  .vid { grid-template-columns: 48px 1fr 1fr 12px 1fr 1fr; }
+  .vid .gap { grid-column: 4; }
+  input[type=password], input[type=text] { all: unset; box-sizing: border-box; height: 34px; padding: 0 10px;
+    border: 1px solid var(--faint); font: 12px var(--mono); user-select: text; -webkit-user-select: text; min-width: 0; }
+  input:focus { border-color: var(--line); }
+  .wifi { grid-template-columns: 1fr auto; padding-top: 0; }
+  .wifi .btn { margin-left: -1px; }
+  .msg { padding: 0 16px 10px; min-height: 26px; color: var(--muted); }
+  .msg.warn, .msg .warn { color: var(--red); }
+  .nolink { padding: 12px 16px; color: var(--muted); }
+
+  /* details: diagnostics, closed by default */
+  details { border-bottom: 0 !important; }
+  summary { display: flex; justify-content: space-between; padding: 11px 16px; color: var(--muted); }
+  summary:hover { color: var(--ink); }
+  summary::after { content: "+"; font: 13px var(--mono); }
+  details[open] summary::after { content: "−"; }
+  details h3 { margin: 0; padding: 7px 16px; border-top: 1px solid var(--rule); border-bottom: 1px solid var(--rule);
+    color: var(--faint); font-weight: 500; display: flex; justify-content: space-between; background: var(--bg); }
+  .kv { display: grid; grid-template-columns: 1fr 1fr; }
+  .kv > div { padding: 7px 16px 8px; border-bottom: 1px solid var(--rule); min-width: 0; }
+  .kv > div:nth-child(odd):not(.wide) { border-right: 1px solid var(--rule); }
+  .kv > div:last-child { border-bottom: 0; }
+  .kv .wide { grid-column: 1 / -1; border-right: 0 !important; }
+  .kv label { display: block; color: var(--faint); font-size: 10px; }
+  .kv output { display: block; font: 12px/1.5 var(--mono); overflow: hidden; text-overflow: ellipsis;
+    white-space: nowrap; font-variant-numeric: tabular-nums; }
+  .kv output.warn { color: var(--red); }
+  .kv output.wrap { white-space: normal; overflow-wrap: anywhere; }
+  .kv output.dim, .group.stale output { color: var(--faint); }
+  #hex { margin: 4px 0 0; color: var(--muted); font: 10.5px/1.6 var(--mono); white-space: pre-wrap; word-break: break-all; }
+  .meters { display: grid; grid-template-columns: max-content 1fr 64px; align-items: center; gap: 10px 12px; padding: 12px 16px; }
+  .meters span { color: var(--muted); }
+  .meters output { font: 500 12px var(--mono); text-align: right; font-variant-numeric: tabular-nums; }
+  .meter { position: relative; height: 10px; border: 1px solid var(--faint); }
+  .meter::before { content: ""; position: absolute; left: 50%; top: -4px; bottom: -4px; width: 1px; background: var(--muted); }
+  .meter i { position: absolute; top: 0; bottom: 0; left: 50%; width: 0; background: var(--ink); }
+  .meter .cap { position: absolute; top: -4px; bottom: -4px; width: 1px; background: var(--faint); }
+  .map { padding: 10px 16px 12px; }
+  .map svg { display: block; width: 100%; max-width: 240px; margin: 6px auto 0; aspect-ratio: 1; overflow: hidden; }
   .ln { fill: none; stroke: var(--ink); stroke-width: 1; vector-effect: non-scaling-stroke; }
   .ln.faint { stroke: var(--faint); }
   .ln.rule { stroke: var(--rule); }
   .ln.dash { stroke-dasharray: 3 3; }
   .ink { fill: var(--ink); stroke: none; }
-  .wedge { fill: var(--ink); fill-opacity: .14; stroke: var(--faint); stroke-width: 1; vector-effect: non-scaling-stroke; }
   .svg-text { fill: var(--muted); font-family: var(--mono); }
-  #needle { transition: transform 250ms linear; }
-  .est-note { padding: 8px 16px 12px; color: var(--faint); }
+  .note-text { padding: 8px 16px 12px; color: var(--faint); }
 
   @media (max-width: 900px) {
     body { height: auto; overflow: auto; padding: 0; }
@@ -222,7 +236,7 @@
     .main { grid-template-columns: 1fr; }
     .stage { height: 100svh; }
     .side { border-left: 0; border-top: 1px solid var(--line); }
-    .status .cell:not(.tag):not(#link):not(#drone-mode) { display: none; }
+    .brand span, #st-video, #st-wifi { display: none; }
     .controls { grid-template-columns: 1fr 1fr; padding: 12px var(--gap); --controls-h: 360px; }
     .center { grid-column: 1 / -1; grid-row: 1; }
     .stick { --pad: min(40cqw, calc(100cqh - var(--legend-h) - 110px)); }
@@ -233,17 +247,23 @@
 <body>
 <div class="frame">
   <header class="top">
-    <div class="brand"><b>hoverctl</b><span>HoverAir X1</span></div>
-    <div class="status">
-      <span class="cell mono" id="drone-mode">mode <b>—</b></span>
-      <span class="cell mono" id="flight-state">state <b>—</b></span>
-      <span class="cell mono" id="sport-cell" title="is_sport_mode in the stick packets">sport <b>off</b></span>
-      <span class="cell mono" id="battery">bat <b>—</b></span>
-      <span class="cell mono" id="mode">—</span>
-      <span class="cell mono" id="keys-held" title="lit while this page holds a flight key">keys <b>—</b></span>
-      <span class="cell mono" id="link">link <b>—</b></span>
-      <span class="cell mono" id="video-status">video <b>—</b></span>
-      <button class="cell mono" id="toggle-video" type="button"><kbd>V</kbd><span id="toggle-label">minimize video</span></button>
+    <div class="brand"><b>hoverctl</b><span class="mono">HoverAir X1</span></div>
+    <div class="chips">
+      <span class="chip mono dim" id="chip-mode" title="the drone's mode">—</span>
+      <span class="chip mono dim" id="chip-state" title="the drone's flight state">—</span>
+      <span class="chip mono on" id="chip-dry" hidden title="--dry-run: nothing is sent to the drone">dry run</span>
+      <span class="chip mono warn" id="chip-tabs" hidden></span>
+    </div>
+    <div class="stats">
+      <span class="stat mono" id="st-battery" title="battery">
+        <svg viewBox="0 0 16 16"><rect x="1" y="4.5" width="12" height="7"></rect><rect class="fill" x="13.5" y="6.5" width="1.5" height="3"></rect><rect class="fill" id="bat-level" x="2.5" y="6" width="0" height="4"></rect></svg><b>—</b></span>
+      <span class="stat mono" id="st-link" title="bluetooth link to the drone">
+        <svg viewBox="0 0 16 16"><path d="M4 5 L11.5 11 L8 14 V2 L11.5 5 L4 11"></path></svg><b>—</b></span>
+      <span class="stat mono" id="st-wifi" title="the drone's Wi-Fi">
+        <svg viewBox="0 0 16 16"><path d="M1.5 6.5 a9 9 0 0 1 13 0 M3.8 9 a5.8 5.8 0 0 1 8.4 0 M6.1 11.4 a2.6 2.6 0 0 1 3.8 0"></path><circle class="fill" cx="8" cy="13.6" r="1"></circle></svg><b>—</b></span>
+      <span class="stat mono" id="st-video" title="decoded video">
+        <svg viewBox="0 0 16 16"><rect x="1" y="4" width="9.5" height="8"></rect><path d="M10.5 7 L15 4.8 V11.2 L10.5 9"></path></svg><b>—</b></span>
+      <button class="stat mono" id="toggle-video" type="button"><kbd>V</kbd><span id="toggle-label">mini video</span></button>
     </div>
   </header>
 
@@ -251,13 +271,14 @@
     <section class="stage">
       <div class="video" id="video" title="">
         <img id="stream" alt="">
-        <span class="corner tl mono" id="cam-port">cam</span>
-        <span class="corner tr mono" id="cam-format"></span>
         <div class="no-video" id="no-video">
           <div class="big">No video</div>
           <div class="mono" id="no-video-detail">waiting for the server</div>
         </div>
-        <span class="stall mono" id="stall" hidden></span>
+        <div class="notices">
+          <span class="notice ok mono" id="stopped-banner" hidden></span>
+          <span class="notice mono" id="stall" hidden></span>
+        </div>
         <div class="takeoff" id="takeoff" hidden><b id="takeoff-title"></b><span class="mono" id="takeoff-hint"></span></div>
         <div class="capture" id="capture" hidden>
           <button class="btn" id="c-photo" type="button" title="Save the current frame on the Mac (recordings/)"><kbd>P</kbd>photo</button>
@@ -270,94 +291,97 @@
 
       <div class="controls">
         <div class="stick">
-          <div class="pad" id="pad-left" data-x="yaw" data-y="thrust"><div class="knob"></div></div>
+          <div class="pad" id="pad-left" data-x="roll" data-y="pitch"><div class="knob"></div></div>
           <div class="keys" id="keys-left"></div>
         </div>
         <div class="center">
           <div class="lock mono" id="lock" hidden></div>
-          <button id="stop" type="button">STOP</button>
+          <button id="stop" type="button"><b>STOP</b><span class="mono" id="stop-note">space · all neutral</span></button>
           <div class="legend mono" id="legend"></div>
         </div>
         <div class="stick">
-          <div class="pad" id="pad-right" data-x="roll" data-y="pitch"><div class="knob"></div></div>
+          <div class="pad" id="pad-right" data-x="yaw" data-y="thrust"><div class="knob"></div></div>
           <div class="keys" id="keys-right"></div>
         </div>
       </div>
     </section>
 
     <aside class="side">
-      <section id="estimate" hidden>
-        <h2 class="mono"><span>Position · estimated</span><span id="e-source"></span></h2>
-        <div class="dials">
-          <div class="dial">
-            <label class="mono"><span>heading</span><span class="est-tag">estimated</span></label>
-            <svg viewBox="-100 -100 200 200" aria-label="estimated heading">
-              <circle class="ln" r="88"></circle>
-              <g id="ticks"></g>
-              <path class="wedge" id="wedge"></path>
-              <g id="travel"><line class="ln dash" x1="0" y1="0" x2="0" y2="-60" id="travel-line"></line>
-                <polygon class="ln" id="travel-head" points="0,-66 -5,-56 5,-56"></polygon></g>
-              <g id="needle"><polygon class="ink" points="0,-80 4,0 -4,0"></polygon>
-                <line class="ln faint" x1="0" y1="0" x2="0" y2="22"></line></g>
-              <circle class="ink" r="3"></circle>
-            </svg>
-          </div>
-          <div class="dial">
-            <label class="mono"><span>path since takeoff</span><span id="e-scale"></span></label>
-            <svg id="map" viewBox="-5 -5 10 10" aria-label="estimated path"></svg>
+      <section class="compass" id="estimate" hidden>
+        <div class="head"><span class="label mono">heading</span><span class="est-tag mono" title="Not a real compass: N is the takeoff frame's +x, from the yaw stick and the direction of travel">estimated</span></div>
+        <div class="dial">
+          <svg viewBox="-110 -110 220 220" aria-label="estimated heading">
+            <path class="sigma" id="sigma"></path>
+            <g id="ring"></g>
+            <line class="heading-line" x1="0" y1="-109" x2="0" y2="-80"></line>
+          </svg>
+          <div class="readout">
+            <div class="deg" id="heading">—</div>
+            <div class="sd mono" id="heading-sd"></div>
           </div>
         </div>
-        <div class="kv">
-          <div><label class="mono">heading · ± 1 sd</label><output id="e-heading">—</output></div>
-          <div><label class="mono">travel · speed</label><output id="e-travel">—</output></div>
-          <div><label class="mono">position x y · ± 1 sd</label><output id="e-position">—</output></div>
-          <div><label class="mono">altitude</label><output id="e-alt">—</output></div>
-          <div class="wide"><label class="mono">autopilot</label><output class="wrap" id="e-task">—</output></div>
-        </div>
-        <div class="mono est-note" id="e-note"></div>
       </section>
+
+      <section class="readouts">
+        <div><span class="label mono">altitude</span><output id="r-alt">—</output><span class="note mono" id="r-alt-note"></span></div>
+        <div><span class="label mono">tilt</span><output id="r-tilt">—</output><span class="note mono" id="r-tilt-note"></span></div>
+        <div><span class="label mono">speed</span><output id="r-speed">—</output><span class="note mono" id="r-speed-note"></span></div>
+        <div class="autopilot" id="r-task-cell" hidden><span class="label mono">autopilot</span><output id="r-task">—</output></div>
+      </section>
+
       <section id="drone">
-        <h2 class="mono"><span>Drone · bluetooth</span><span id="d-link-age"></span></h2>
-        <div class="dronemode"><div class="big" id="d-mode">—</div><div class="mono" id="d-note"></div><div class="mono" id="d-wifi-note"></div></div>
-        <div id="d-groups"></div>
-        <div class="actions">
+        <div class="nolink mono" id="d-nolink" hidden></div>
+        <div class="row actions" id="d-actions">
           <button class="btn" id="d-manual" type="button" title="What the app does on Manual Control: Wi-Fi heartbeat, preview, manual flag, video">Manual control</button>
-          <button class="btn" id="d-land" type="button">Land</button>
+          <button class="btn" id="d-land" type="button" title="Press twice within 3 s">Land</button>
         </div>
-        <div class="actions">
-          <button class="btn" id="d-video" type="button">Video start</button>
-          <button class="btn" id="d-video-stop" type="button">Video stop</button>
+        <div class="row speed seg" id="speed" title="Speed cap: how far the sticks go, in % of full stick. Keys - and =">
+          <span class="label mono">speed</span>
         </div>
-        <div class="tilt" id="d-tilt" hidden title="Camera tilt, estimated and open loop (drone/sdk/tilt.py): anchors at the top stop first if unknown. STOP or any flight key cancels">
-          <label class="mono">tilt</label>
-          <button class="btn" type="button" data-tilt="15">+15 top</button>
-          <button class="btn" type="button" data-tilt="0">0 level</button>
+        <div class="row tilt seg" id="d-tilt" hidden title="Camera tilt, estimated and open loop (drone/sdk/tilt.py): anchors at the top stop first if unknown. STOP or any flight key cancels">
+          <span class="label mono">tilt</span>
+          <button class="btn" type="button" data-tilt="15">+15</button>
+          <button class="btn" type="button" data-tilt="0">0</button>
           <button class="btn" type="button" data-tilt="-30">−30</button>
           <button class="btn" type="button" data-tilt="-45">−45</button>
-          <button class="btn" type="button" data-tilt="-90">−90 down</button>
+          <button class="btn" type="button" data-tilt="-90">−90</button>
           <form id="d-tilt-form" autocomplete="off">
             <input type="text" inputmode="decimal" id="d-tilt-deg" placeholder="any angle, +15 … −90">
             <button class="btn" type="submit">tilt</button>
           </form>
         </div>
-        <div class="mono" id="d-manual-steps"></div>
-        <form class="actions wifi" id="d-wifi" autocomplete="off">
-          <input type="password" id="d-wifi-pw" placeholder="wi-fi password (8+)" autocomplete="off">
-          <button class="btn" id="d-wifi-set" type="submit">Set</button>
-        </form>
-        <div class="mono" id="d-action-status"></div>
-      </section>
-      <section>
-        <h2 class="mono"><span>Sticks · output</span><span id="max-label"></span></h2>
-        <div class="speed" id="speed" title="Speed cap: how far the sticks go, in % of full stick. Keys - and =">
-          <label class="mono">speed</label>
+        <div class="row vid seg" id="d-video-row">
+          <span class="label mono">video</span>
+          <button class="btn" id="d-video" type="button">start</button>
+          <button class="btn" id="d-video-stop" type="button">stop</button>
+          <span class="gap"></span>
+          <button class="btn" type="button" data-quality="sd" title="SD: what the app gets">SD</button>
+          <button class="btn" type="button" data-quality="hd" title="HD: also asks the drone for its MEDIUM preview resolution (untested)">HD</button>
         </div>
+        <form class="row wifi" id="d-wifi" autocomplete="off" hidden>
+          <input type="password" id="d-wifi-pw" placeholder="drone wi-fi password (8+)" autocomplete="off">
+          <button class="btn" id="d-wifi-set" type="submit">Set wi-fi</button>
+        </form>
+        <div class="msg mono" id="d-action-status"></div>
+      </section>
+
+      <details id="details">
+        <summary class="mono">details</summary>
+        <h3 class="mono"><span>Link</span><span id="x-link-age"></span></h3>
+        <div class="kv">
+          <div class="wide"><label class="mono">bluetooth</label><output class="wrap" id="x-link">—</output></div>
+          <div class="wide"><label class="mono">wi-fi · app announce</label><output class="wrap" id="x-wifi">—</output></div>
+          <div class="wide"><label class="mono">manual control steps</label><output class="wrap" id="x-manual">—</output></div>
+          <div class="wide"><label class="mono">page ↔ server · last state</label><output id="x-poll">—</output></div>
+        </div>
+        <div id="d-groups"></div>
+        <h3 class="mono"><span>Sticks · output</span><span id="max-label"></span></h3>
         <div class="meters" id="meters"></div>
         <div class="kv">
-          <div><label class="mono">max cap</label><output id="s-max">—</output></div>
+          <div><label class="mono">output</label><output id="s-mode">—</output></div>
+          <div><label class="mono">gate</label><output id="s-gate">—</output></div>
           <div><label class="mono">packets sent</label><output id="s-sent">—</output></div>
           <div><label class="mono">non-neutral sent</label><output id="s-non-neutral">—</output></div>
-          <div><label class="mono">gate</label><output id="s-gate">—</output></div>
           <div><label class="mono">errors</label><output id="s-errors">—</output></div>
           <div><label class="mono">target</label><output id="s-target">—</output></div>
           <div><label class="mono">control source</label><output id="s-source">—</output></div>
@@ -367,29 +391,33 @@
           <div class="wide"><label class="mono">last packet · hex</label><output class="wrap" id="s-last-hex">—</output></div>
           <div class="wide"><label class="mono">last error</label><output class="wrap" id="s-last-error">—</output></div>
         </div>
-      </section>
-      <section>
-        <h2 class="mono"><span>Video</span><span id="v-port"></span></h2>
-        <div class="quality" id="quality" title="SD: what the app gets. HD: also asks the drone for its MEDIUM preview resolution (untested)">
-          <label class="mono">preview</label>
-          <button class="btn" type="button" data-quality="sd">SD</button>
-          <button class="btn" type="button" data-quality="hd">HD (try)</button>
-        </div>
+        <h3 class="mono"><span>Video</span><span id="v-port"></span></h3>
         <div class="kv">
           <div><label class="mono">decoded size</label><output id="v-size">—</output></div>
-          <div><label class="mono">decoded fps</label><output id="v-fps">—</output></div>
+          <div><label class="mono">decoder fps · page fps</label><output id="v-fps">—</output></div>
           <div class="wide"><label class="mono">quality · asked / drone</label><output class="wrap" id="v-quality">—</output></div>
           <div><label class="mono">packets</label><output id="v-packets">—</output></div>
-          <div><label class="mono">pkt/s</label><output id="v-pps">—</output></div>
-          <div><label class="mono">KB/s</label><output id="v-kbps">—</output></div>
+          <div><label class="mono">pkt/s · KB/s</label><output id="v-rate">—</output></div>
           <div><label class="mono">frames</label><output id="v-frames">—</output></div>
-          <div><label class="mono">kind</label><output id="v-kind">—</output></div>
-          <div><label class="mono">codec</label><output id="v-codec">—</output></div>
+          <div><label class="mono">kind · codec</label><output id="v-kind">—</output></div>
           <div class="wide"><label class="mono">senders</label><output class="wrap" id="v-senders">—</output></div>
           <div class="wide"><label class="mono">dump</label><output class="wrap" id="v-dump">—</output></div>
           <div class="wide" id="hex-cell" hidden><label class="mono">first datagrams (hex)</label><pre id="hex"></pre></div>
         </div>
-      </section>
+        <div id="e-details" hidden>
+          <h3 class="mono"><span>Position · estimated</span><span id="e-source"></span></h3>
+          <div class="kv">
+            <div class="wide"><label class="mono">position x y · ± 1 sd</label><output id="e-position">—</output></div>
+            <div class="wide"><label class="mono">velocity x y z</label><output id="e-velocity">—</output></div>
+            <div class="wide"><label class="mono">camera tilt · range that still fits</label><output id="e-tilt">—</output></div>
+          </div>
+          <div class="map">
+            <span class="label mono" style="display:flex;justify-content:space-between"><span>path since takeoff</span><span id="e-scale"></span></span>
+            <svg id="map" viewBox="-5 -5 10 10" aria-label="estimated path"></svg>
+          </div>
+          <div class="mono note-text" id="e-note"></div>
+        </div>
+      </details>
     </aside>
   </main>
 </div>
@@ -408,11 +436,12 @@ const FPS_WINDOW_MS = 2000;
 const RETRY_VIDEO_MS = 2000;
 const KNOB_TRAVEL = 0.42;     // knob reach from the pad centre, as a fraction of the pad width
 const HEX_LINES = 6;
-const FLASH_MS = 150;
 const DATA_STALE_S = 5;       // drone data older than this is greyed out
 const LAND_ARM_MS = 3000;     // LAND needs a second click within this time
 const STATUS_MS = 6000;       // how long an action result stays on screen
+const STOP_FEEDBACK_S = 4;    // how long "STOPPED · hovering" stays on screen
 const MIN_WIFI_PASSWORD = 8;
+const LOW_BATTERY_PCT = 25;   // the SDK's default low_battery_pct: it returns home and lands
 const MANUAL_STEPS = ["connect", "wifi", "preview", "manual", "video"];  // the order enter_manual() runs them
 const CONTROL_SOURCE_NAMES = { 1: "app (1)", 6: "cross-key (6)" };  // packet control_source_type
 const GATE_LIVE = "live";
@@ -422,12 +451,16 @@ const STOP_KEY = " ";
 const VIDEO_KEY = "v";
 const PHOTO_KEY = "p";        // photo / recording on the Mac (drone.sdk server only)
 const RECORD_KEY = "r";
-const COMPASS_TICK_DEG = 30;
-const TRAVEL_MIN_SPEED = 0.1; // m/s: below this no direction-of-travel arrow
-const TRAVEL_MIN_LEN = 24, TRAVEL_MAX_LEN = 70, TRAVEL_LEN_PER_MPS = 40;  // compass units
+const SPORT_KEY_CODES = ["Backslash", "Tab"];  // toggle is_sport_mode; Tab would move the focus
+const MODE_MANUAL = "MANUAL";
+// compass: a ring of ticks every 2°, long ones every 30°, turned so the heading is at the top
+const RING_TICK_DEG = 2, RING_MAJOR_DEG = 30;
+const RING_R = 97, RING_MINOR_IN = 90, RING_MAJOR_IN = 83, RING_LABEL_R = 69, SIGMA_R = 104;
+const CARDINALS = ["N", "NE", "E", "SE", "S", "SW", "W", "NW"];
+const HEADING_UNSURE_DEG = 45;  // ± more than this: the heading readout turns red
+const TRAVEL_MIN_SPEED = 0.1; // m/s: below this no direction-of-travel mark
 const MAP_MIN_HALF_M = 3;     // the map shows at least ±3 m
 const MAP_MARGIN_M = 1;
-const SPORT_KEY_CODES = ["Backslash", "Tab"];  // toggle is_sport_mode; Tab would move the focus
 // Takeoff states, shown large over the video: the drone flies these on its own.
 const TAKEOFF_STATES = {
   pre_takeoff: ["PRE-TAKEOFF", "rotors starting · hands clear"],
@@ -448,9 +481,9 @@ const describe = (axis, value, digits) =>
 function makePad(element) {
   const pad = { element, xAxis: element.dataset.x, yAxis: element.dataset.y, x: 0, y: 0, pointer: null };
   pad.knob = element.querySelector(".knob");
-  element.insertAdjacentHTML("beforebegin",
-    `<div class="caption mono"><span><b></b></span><span><b></b></span></div>`);
-  [pad.yValue, pad.xValue] = element.previousElementSibling.querySelectorAll("b");
+  const [up, down] = DIRECTIONS[pad.yAxis], [right, left] = DIRECTIONS[pad.xAxis];
+  element.insertAdjacentHTML("beforeend", `<span class="dir mono n">${up}</span><span class="dir mono s">${down}</span>` +
+    `<span class="dir mono w">${left}</span><span class="dir mono e">${right}</span>`);
   const move = (event) => {
     const rect = element.getBoundingClientRect();
     const reach = rect.width * KNOB_TRAVEL;
@@ -494,17 +527,13 @@ function drawInput() {
     pad.knob.style.left = `${50 + x * KNOB_TRAVEL * 100}%`;
     pad.knob.style.top = `${50 - y * KNOB_TRAVEL * 100}%`;
     pad.element.parentElement.classList.toggle("live", x !== 0 || y !== 0);
-    pad.xValue.textContent = x ? describe(pad.xAxis, x, 2) : axisLabel(pad.xAxis);
-    pad.yValue.textContent = y ? describe(pad.yAxis, y, 2) : axisLabel(pad.yAxis);
   }
   for (const cap of document.querySelectorAll("kbd[data-key]")) {
     cap.classList.toggle("held", keys.has(cap.dataset.key));
   }
-  const held = [...keys].join(" ").toUpperCase();
-  setCell("keys-held", "keys", held || "—", held ? "tag" : "");
 }
 
-// ---- key legend, built from the server's bindings ----
+// ---- key caps under each stick and the legend, built from the server's bindings ----
 
 const keyFor = (axis, direction) =>
   Object.keys(BINDINGS).find((key) => BINDINGS[key][0] === axis && BINDINGS[key][1] === direction);
@@ -515,13 +544,9 @@ for (const [pad, id] of [[pads[0], "keys-left"], [pads[1], "keys-right"]]) {
     keyCap(keyFor(pad.yAxis, -1), "down") + keyCap(keyFor(pad.xAxis, 1), "right");
 }
 $("legend").innerHTML =
-  `<span class="caps">${keyCap(keyFor("gimbal", 1))}${keyCap(keyFor("gimbal", -1))}</span>` +
-  `<span class="hint">camera up / down</span>` +
-  `<span class="caps"><kbd>space</kbd></span><span class="hint">stop, all neutral</span>` +
-  `<span class="caps gate"></span><span class="hint gate" id="gate-hint">keys fly the drone</span>` +
-  `<span class="caps"><kbd>-</kbd><kbd>=</kbd></span><span class="hint">speed down / up</span>` +
-  `<span class="caps"><kbd>\\</kbd><kbd>tab</kbd></span><span class="hint">sport on / off</span>` +
-  `<span class="caps"><kbd>${VIDEO_KEY}</kbd></span><span class="hint">minimize / restore video</span>`;
+  `<span class="caps">${keyCap(keyFor("gimbal", 1))}${keyCap(keyFor("gimbal", -1))}</span><span>camera up / down</span>` +
+  `<span class="caps"><kbd>-</kbd><kbd>=</kbd></span><span>speed down / up</span>` +
+  `<span class="caps"><kbd>\\</kbd><kbd>tab</kbd></span><span>sport on / off</span>`;
 
 // ---- sending ----
 
@@ -535,18 +560,48 @@ function releaseKeys() {
   drawInput();
 }
 
+// STOP: local keys and pads off at once, then the server cancels any autopilot action (patrol,
+// goto, tilt, a /move stream) and sends neutral: the drone hovers. The page says so until
+// STOP_FEEDBACK_S, and says it loudly if the server never confirmed.
+const stopPress = { at: 0, result: "", cancelled: "" };
+let runningTask = null;  // name of the autopilot action running at the last poll
+
 function stop() {
   keys.clear();
   for (const pad of pads) pad.release();
   drawInput();
-  post("/api/stop");
-  $("stop").classList.add("flash");
-  setTimeout(() => $("stop").classList.remove("flash"), FLASH_MS);
+  Object.assign(stopPress, { at: performance.now(), result: "sending", cancelled: runningTask ?? "" });
+  renderStopFeedback();
+  fetch("/api/stop", { method: "POST", body: "", keepalive: true })
+    .then((response) => { stopPress.result = response.ok ? "ok" : `server answered ${response.status}`; })
+    .catch(() => { stopPress.result = "server unreachable"; })
+    .finally(renderStopFeedback);
+}
+
+// Explicit STOPs from elsewhere (API, ROS, another tab) show too, from the server's clock.
+let serverStopAge = null;  // seconds since the server's last STOP, at the last poll
+
+function renderStopFeedback() {
+  const sincePoll = stateAt ? (performance.now() - stateAt) / 1000 : 0;
+  const localAge = stopPress.at ? (performance.now() - stopPress.at) / 1000 : null;
+  const remoteAge = serverStopAge === null ? null : serverStopAge + sincePoll;
+  const local = localAge !== null && localAge < STOP_FEEDBACK_S;
+  const remote = !local && remoteAge !== null && remoteAge < STOP_FEEDBACK_S;
+  const failed = local && stopPress.result !== "ok" && stopPress.result !== "sending";
+  const shown = (local || remote) && !failed;
+  $("stop").classList.toggle("stopped", shown);
+  $("stop").firstElementChild.textContent = shown ? "STOPPED" : "STOP";
+  const cancelled = local && stopPress.cancelled ? ` · ${stopPress.cancelled} cancelled` : "";
+  $("stop-note").textContent = failed ? `not confirmed · ${stopPress.result}` : shown ? "hovering" : "space · all neutral";
+  $("stopped-banner").hidden = !(local || remote);
+  $("stopped-banner").classList.toggle("ok", !failed);
+  $("stopped-banner").textContent = failed ? `STOP not confirmed · ${stopPress.result} · press again`
+    : `STOPPED · sticks neutral, hovering${cancelled}${remote ? " · from the API" : ""}`;
 }
 
 function toggleVideo() {
   const mini = document.body.classList.toggle("mini");
-  $("toggle-label").textContent = mini ? "show video" : "minimize video";
+  $("toggle-label").textContent = mini ? "show video" : "mini video";
   $("video").title = mini ? "click to restore" : "";
 }
 
@@ -557,11 +612,17 @@ function keyName(event) {
 }
 
 window.addEventListener("keydown", (event) => {
+  const key = keyName(event);
+  // Space is STOP even in the angle field (an angle has no space); a password may have one.
+  if (key === STOP_KEY && document.activeElement !== $("d-wifi-pw")) {
+    event.preventDefault();
+    if (!event.repeat) stop();
+    return;
+  }
+  if (event.key === "Escape" && typing()) { document.activeElement.blur(); return; }
   if (typing()) return;
   // macOS drops key-ups while Cmd is held, so any shortcut releases everything.
   if (event.metaKey || event.ctrlKey || event.altKey) { releaseKeys(); return; }
-  const key = keyName(event);
-  if (key === STOP_KEY) { event.preventDefault(); if (!event.repeat) stop(); return; }
   if (key === VIDEO_KEY) { if (!event.repeat) toggleVideo(); return; }
   if (key === PHOTO_KEY || key === RECORD_KEY) {
     if (!event.repeat && captureAvailable) (key === PHOTO_KEY ? takePhoto : toggleRecord)();
@@ -592,10 +653,9 @@ document.addEventListener("visibilitychange", () => { if (document.hidden) relea
 $("stop").addEventListener("pointerdown", (event) => { event.preventDefault(); stop(); });
 $("toggle-video").addEventListener("click", toggleVideo);
 $("video").addEventListener("click", () => { if (document.body.classList.contains("mini")) toggleVideo(); });
-// Keep focus off buttons, so Space never "clicks" one.
-for (const button of document.querySelectorAll("button")) {
-  button.addEventListener("mousedown", (event) => event.preventDefault());
-}
+// Keep focus off buttons and the details toggle, so Space never "clicks" one.
+const keepFocusOff = (element) => element.addEventListener("mousedown", (event) => event.preventDefault());
+for (const element of document.querySelectorAll("button, summary")) keepFocusOff(element);
 
 // ---- speed cap ----
 // Presets in % of full stick; - and = step through them. The server holds the value.
@@ -603,7 +663,6 @@ const SPEED_PRESETS = [20, 40, 60, 80, 100];
 let speed = 0;
 
 function setSpeed(value) {
-  speed = value;
   renderSpeed(value);
   post("/api/max", { max: value });
 }
@@ -617,32 +676,27 @@ function stepSpeed(direction) {
 
 function renderSpeed(value) {
   speed = value;
-  for (const button of $("speed").querySelectorAll("button")) {
+  for (const button of $("speed").querySelectorAll("button[data-value]")) {
     button.classList.toggle("on", Number(button.dataset.value) === value);
   }
 }
 
-for (const preset of SPEED_PRESETS) {
-  const button = document.createElement("button");
-  button.className = "btn";
-  button.type = "button";
-  button.dataset.value = String(preset);
-  button.textContent = String(preset);
-  button.addEventListener("mousedown", (event) => event.preventDefault());
-  button.addEventListener("click", () => setSpeed(preset));
-  $("speed").append(button);
+function addButton(parent, text, onClick, attrs = {}) {
+  const button = Object.assign(document.createElement("button"), { className: "btn", type: "button", textContent: text });
+  Object.assign(button.dataset, attrs);
+  keepFocusOff(button);
+  button.addEventListener("click", onClick);
+  parent.append(button);
+  return button;
 }
+
+for (const preset of SPEED_PRESETS) addButton($("speed"), String(preset), () => setSpeed(preset), { value: preset });
 
 // ---- sport: is_sport_mode in every stick packet. The server holds it; off by default. ----
 let sport = false;
-const sportButton = document.createElement("button");
-sportButton.className = "btn";
+const sportButton = addButton($("speed"), "sport", () => setSport(!sport));
 sportButton.id = "sport";
-sportButton.type = "button";
 sportButton.title = "is_sport_mode in the stick packets (the app never sets it). Keys \\ or Tab";
-sportButton.addEventListener("mousedown", (event) => event.preventDefault());
-sportButton.addEventListener("click", () => setSport(!sport));
-$("speed").append(sportButton);
 
 function setSport(on) {
   renderSport(on);
@@ -651,9 +705,8 @@ function setSport(on) {
 
 function renderSport(on) {
   sport = on;
-  sportButton.textContent = on ? "sport on" : "sport off";
+  sportButton.textContent = on ? "sport on" : "sport";
   sportButton.classList.toggle("on", on);
-  setCell("sport-cell", "sport", on ? "on" : "off", on ? "sport" : "");
 }
 
 window.addEventListener("keydown", (event) => {
@@ -673,7 +726,27 @@ const TAB_ID = Math.random().toString(36).slice(2);
 setInterval(() => post(`/api/sticks?tab=${TAB_ID}`, inputAxes()), SEND_MS);
 drawInput();
 
-// ---- telemetry ----
+// ---- readout helpers ----
+
+function setText(id, text, warn = false) {
+  const element = $(id);
+  element.textContent = text;
+  element.classList.toggle("warn", warn);
+}
+
+function setStat(id, value, level = "", title) {
+  const element = $(id);
+  element.querySelector("b").textContent = value;
+  element.className = `stat mono ${level}`;
+  if (title !== undefined) element.title = title;
+}
+
+function setChip(id, text, level) {
+  $(id).textContent = text;
+  $(id).className = `chip mono ${level}`;
+}
+
+// ---- sticks (details) ----
 
 const meters = {};
 for (const axis of AXES) {
@@ -682,17 +755,6 @@ for (const axis of AXES) {
     `<div class="meter"><b class="cap"></b><b class="cap"></b><i></i></div><output>0</output>`);
   const row = $("meters").lastElementChild;
   meters[axis] = { meter: row.previousElementSibling, value: row };
-}
-
-function setText(id, text, warn = false) {
-  const element = $(id);
-  element.textContent = text;
-  element.classList.toggle("warn", warn);
-}
-
-function setCell(id, label, value, level = "") {
-  $(id).innerHTML = `${label} <b>${value}</b>`;
-  $(id).className = `cell mono ${level}`;
 }
 
 function renderSticks(sticks) {
@@ -709,17 +771,17 @@ function renderSticks(sticks) {
     output.textContent = value ? describe(axis, value, 0) : "0";
   }
   $("max-label").textContent = `±${AXIS_LIMIT} · cap ${sticks.max}`;
-  $("mode").textContent = sticks.dry_run ? "dry run" : "live";
-  $("mode").className = `cell mono ${sticks.dry_run ? "tag" : ""}`;
-  setText("s-max", `${sticks.max} / ${AXIS_LIMIT}`);
+  $("chip-dry").hidden = !sticks.dry_run;
+  setText("s-mode", sticks.dry_run ? "dry run (printed only)" : "live");
   renderSpeed(sticks.max);
   setText("s-sent", sticks.sent.toLocaleString());
   setText("s-non-neutral", sticks.non_neutral_sent.toLocaleString());
-  // Red when a key is held but the gate holds the sticks: the drone is not the problem then.
-  // Also red with more than one tab open: only the tab that is flying should stay open.
+  // Only the tab that is flying should stay open: the others post neutral sticks too.
   const extraTabs = sticks.open_tabs > 1;
-  const gateText = extraTabs ? `${sticks.gate} · ${sticks.open_tabs} tabs open, close the others` : sticks.gate;
-  setText("s-gate", gateText, extraTabs || (keys.size > 0 && sticks.gate !== GATE_LIVE));
+  $("chip-tabs").hidden = !extraTabs;
+  $("chip-tabs").textContent = `${sticks.open_tabs} tabs open · close the others`;
+  // Red when a key is held but the gate holds the sticks: the drone is not the problem then.
+  setText("s-gate", sticks.gate, keys.size > 0 && sticks.gate !== GATE_LIVE);
   setText("s-errors", String(sticks.errors), sticks.errors > 0);
   setText("s-target", sticks.target);
   setText("s-source", CONTROL_SOURCE_NAMES[sticks.control_source] ?? String(sticks.control_source));
@@ -741,6 +803,8 @@ function renderLastPacket(packet) {
   setText("s-last-hex", packet.hex);
 }
 
+// ---- video ----
+
 const video = { last: null, samples: [], frameChangedAt: 0, fps: 0 };
 
 function noVideoReason(stats) {
@@ -758,24 +822,19 @@ function renderVideo(stats) {
   const [firstTime, firstFrames] = video.samples[0];
   video.fps = now > firstTime ? ((stats.frames - firstFrames) * 1000) / (now - firstTime) : 0;
 
-  const decoding = stats.frames > 0;
-  $("no-video").hidden = decoding;
+  $("no-video").hidden = stats.frames > 0;
   $("no-video-detail").textContent = noVideoReason(stats);
-  $("cam-port").textContent = `cam · udp ${stats.port}`;
   const size = stats.width ? `${stats.width}×${stats.height}` : "";
-  $("cam-format").textContent = decoding ? [stats.codec, size, `${stats.fps.toFixed(0)} fps`].filter(Boolean).join(" · ") : "";
   setText("v-size", size || "—");
-  setText("v-fps", stats.decoding ? stats.fps.toFixed(1) : "—");
+  setText("v-fps", stats.decoding ? `${stats.fps.toFixed(1)} · ${video.fps.toFixed(1)}` : "—");
   $("v-port").textContent = `udp ${stats.port}`;
   setText("v-packets", stats.packets.toLocaleString());
-  setText("v-pps", stats.pps.toFixed(1));
-  setText("v-kbps", (stats.bytes_per_s / 1024).toFixed(0));
-  setText("v-frames", `${stats.frames.toLocaleString()} · ${video.fps.toFixed(1)} fps`);
-  setText("v-kind", stats.kind || "—");
-  setText("v-codec", stats.codec || (stats.decoding ? "detecting" : "off"));
+  setText("v-rate", `${stats.pps.toFixed(1)} · ${(stats.bytes_per_s / 1024).toFixed(0)}`);
+  setText("v-frames", stats.frames.toLocaleString());
+  setText("v-kind", `${stats.kind || "—"} · ${stats.codec || (stats.decoding ? "detecting" : "off")}`);
   setText("v-senders", stats.senders.join(", ") || "—");
   setText("v-dump", stats.dump || "off");
-  $("hex-cell").hidden = decoding || !stats.previews.length;
+  $("hex-cell").hidden = stats.frames > 0 || !stats.previews.length;
   $("hex").textContent = stats.previews.slice(0, HEX_LINES).join("\n");
 }
 
@@ -783,66 +842,34 @@ function renderVideo(stats) {
 
 const num = (value, digits = 0) => (value === null || value === undefined ? "—" : Number(value).toFixed(digits));
 const xyz = (v) => (v ? `${signed(v.x, 2)} ${signed(v.y, 2)} ${signed(v.z, 2)}` : "—");
-const altitude = (v) => (v ? `${(-v.z).toFixed(2)} m` : "—");  // the drone frame has z down
 // Position is only meaningful in flight: its origin resets at takeoff (issue #13).
 const onGround = (d) => !d.flight_state.in_flight;
 const gigabytes = (kib) => (kib === null ? "—" : (kib / KIB_PER_GIB).toFixed(1));
+const stateName = (value) => value.replaceAll("_", " ");
 
-// One block per message group: its age (from the server clock) and its rows.
+// Details: one block per message group, with its age (from the server clock) and its rows.
+// Mode, flight state, charge, altitude and tilt are in the main view, not here.
 const DRONE_GROUPS = [
-  { id: "state", title: "Flight state", ts: (d) => d.flight_state.ts,
-    rows: [["state", "wide", (d) => d.flight_state.value ?? "—"]] },
-  { id: "battery", title: "Battery", ts: (d) => d.battery.ts, bar: true, rows: [
-    ["charge", "", (d) => (d.battery.soc === null ? "—" : `${d.battery.soc} %`)],
+  { id: "battery", title: "Battery", ts: (d) => d.battery.ts, rows: [
     ["charging", "", (d) => (d.battery.charging === null ? "—" : d.battery.charging ? "yes" : "no")],
     ["voltage", "", (d) => num(d.battery.voltage)], ["current", "", (d) => num(d.battery.current)],
     ["temp", "", (d) => num(d.battery.temp)]] },
   { id: "odometry", title: "Odometry", ts: (d) => d.odometry.ts, rows: [
-    ["altitude (−z) · zeroed at takeoff", "wide alt",
-      (d) => (onGround(d) ? "on ground" : altitude(d.odometry.position))],
     ["position x y z (z down) · frame resets at takeoff", "wide", (d) => xyz(d.odometry.position), onGround],
     ["velocity x y z", "wide", (d) => xyz(d.odometry.velocity)],
     ["motor rpm", "wide", (d) => (d.odometry.motors_rpm || []).join("  ") || "—"],
     ["total current", "", (d) => num(d.odometry.total_current)]] },
-  { id: "camera", title: "Camera", ts: (d) => d.camera_tilt.ts ?? (tiltEstimate ? serverNow : null), rows: [
-    ["camera tilt ° · 0 = level, −90 = down", "wide", (d) => tiltText(d)]] },
   { id: "storage", title: "Storage", ts: (d) => d.storage.ts, rows: [
     ["free", "", (d) => `${gigabytes(d.storage.available_bytes)} GB`],
     ["total", "", (d) => `${gigabytes(d.storage.total_bytes)} GB`]] },
   { id: "exception", title: "Last exception", ts: (d) => d.exception.ts, rows: [
-    ["codes", "wide", (d) => (d.exception.errors ? d.exception.errors.join(", ") || "none" : "—")],
+    ["codes", "", (d) => (d.exception.errors ? d.exception.errors.join(", ") || "none" : "—")],
     ["event", "", (d) => num(d.exception.event)]] },
 ];
 
-// The SDK server (drone.sdk) estimates the camera tilt from the gimbal stick sent (sdk/tilt.py).
-let tiltEstimate = null;
-let tiltTask = null;  // the SDK's "tilt" action (presets), while it is the latest action
-let serverNow = null;
-const TILT_RESULT_S = 6;  // how long a stopped/failed tilt stays in the row
-const degrees = (value) => `${value < 0 ? "−" : "+"}${Math.abs(value).toFixed(0)}°`;
-function tiltText(d) {
-  if (d.camera_tilt.degrees !== null) return `${degrees(d.camera_tilt.degrees)} · reported`;
-  if (!tiltEstimate) return "not reported (the X1 never sent it)";
-  if (tiltTask && tiltTask.state === "running") {
-    const target = degrees(tiltTask.detail.target_deg);
-    return tiltEstimate.anchored ? `tilting… → ${target} · now ≈ ${degrees(tiltEstimate.deg)}`
-      : `tilting… → ${target} · anchoring at the top stop first`;
-  }
-  const recent = tiltTask && tiltTask.ended_at && serverNow - tiltTask.ended_at < TILT_RESULT_S;
-  if (recent && tiltTask.state !== "done") {
-    const now = tiltEstimate.anchored ? ` · ≈ ${degrees(tiltEstimate.deg)}` : "";
-    return `tilt ${tiltTask.state}${tiltTask.message ? `: ${tiltTask.message}` : ""}${now}`;
-  }
-  if (!tiltEstimate.anchored) {
-    return `unknown — hold U or O to a stop (${degrees(tiltEstimate.low_deg)} … ${degrees(tiltEstimate.high_deg)})`;
-  }
-  return `≈ ${degrees(tiltEstimate.deg)} · estimated`;
-}
-
 for (const group of DRONE_GROUPS) {
-  const rows = group.rows.map(([label, cls, , ], i) =>
-    `<div class="${cls}"><label class="mono">${label}</label><output id="d-${group.id}-${i}">—</output>` +
-    `${group.bar && i === 0 ? '<div class="bar"><i></i></div>' : ""}</div>`).join("");
+  const rows = group.rows.map(([label, cls], i) =>
+    `<div class="${cls}"><label class="mono">${label}</label><output id="d-${group.id}-${i}">—</output></div>`).join("");
   $("d-groups").insertAdjacentHTML("beforeend",
     `<div class="group" id="d-${group.id}"><h3 class="mono"><span>${group.title}</span><span></span></h3>` +
     `<div class="kv">${rows}</div></div>`);
@@ -864,8 +891,6 @@ function renderGroups(drone, now) {
       output.classList.toggle("dim", Boolean(dim && dim(drone)));
     });
   }
-  const soc = drone.battery.soc ?? 0;
-  $("d-battery").querySelector(".bar i").style.width = `${Math.max(0, Math.min(100, soc))}%`;
 }
 
 function linkText(connection, note) {
@@ -874,58 +899,113 @@ function linkText(connection, note) {
   return connection.error ? `error · ${connection.error}` : "searching";
 }
 
+// The SDK server (drone.sdk) estimates the camera tilt from the gimbal stick sent (sdk/tilt.py).
+let tiltEstimate = null;
+let tiltTask = null;  // the SDK's "tilt" action (presets), while it is the latest action
+let serverNow = null;
+const TILT_RESULT_S = 6;  // how long a stopped/failed tilt stays in the readout
+const degrees = (value) => `${value < 0 ? "−" : "+"}${Math.abs(value).toFixed(0)}°`;
+
+// [value, note] for the camera tilt readout.
+function tiltReadout(d) {
+  if (d && d.camera_tilt.degrees !== null) return [degrees(d.camera_tilt.degrees), "reported"];
+  if (!tiltEstimate) return ["—", d ? "not reported by the X1" : ""];
+  const now = tiltEstimate.anchored ? `≈ ${degrees(tiltEstimate.deg)}` : "unknown";
+  if (tiltTask && tiltTask.state === "running") {
+    return [`→ ${degrees(tiltTask.detail.target_deg)}`, tiltEstimate.anchored ? `now ${now}` : "anchoring at the top stop"];
+  }
+  const recent = tiltTask && tiltTask.ended_at && serverNow - tiltTask.ended_at < TILT_RESULT_S;
+  if (recent && tiltTask.state !== "done") return [now, `tilt ${tiltTask.state}${tiltTask.message ? `: ${tiltTask.message}` : ""}`];
+  if (!tiltEstimate.anchored) {
+    return ["unknown", "hold U or O"];
+  }
+  return [now, "estimated"];
+}
+
+// [value, note] for the altitude: the SDK's estimate, else the odometry (z down, zeroed at takeoff).
+function altitudeReadout(state) {
+  const pose = state.estimate ? state.estimate.pose : null;
+  const drone = state.drone;
+  if (pose) return pose.in_flight ? [`${pose.alt.toFixed(2)}`, "above takeoff"] : ["—", "on ground"];
+  if (!drone || !drone.odometry.position) return ["—", ""];
+  return onGround(drone) ? ["—", "on ground"] : [`${(-drone.odometry.position.z).toFixed(2)}`, "odometry"];
+}
+
+function setReadout(id, [value, note], unit = "") {
+  $(id).innerHTML = "";
+  $(id).append(value);
+  if (unit && value !== "—") $(id).insertAdjacentHTML("beforeend", `<small>${unit}</small>`);
+  $(id).classList.toggle("dim", value === "—" || value === "unknown");
+  $(`${id}-note`).textContent = note;
+}
+
+function wifiStat(wifi) {
+  if (!wifi || wifi.state === "off") return ["off", "dim"];
+  if (wifi.state === "on") return ["on", ""];
+  if (wifi.state === "error") return ["error", "warn"];
+  return ["starting", ""];
+}
+
+function renderLinkStats(state, drone) {
+  const connected = drone && drone.connection.connected;
+  const linkAge = connected ? drone.connection.last_message_age_s : null;
+  const linkTitle = drone ? linkText(drone.connection, state.ble_note) : state.ble_note || "bluetooth off";
+  if (connected) setStat("st-link", ageText(linkAge), isStale(linkAge) ? "warn" : "", `bluetooth · ${linkTitle}`);
+  else setStat("st-link", drone ? "searching" : "off", drone && drone.connection.error ? "warn" : "dim", `bluetooth · ${linkTitle}`);
+  const [wifi, wifiLevel] = wifiStat(drone ? drone.wifi : null);
+  const wifiTitle = drone && drone.wifi.state === "on" ? `wi-fi on · ${drone.wifi.ssid}` : `wi-fi ${wifi}`;
+  setStat("st-wifi", wifi, wifiLevel, drone && drone.wifi.error ? `wi-fi · ${drone.wifi.error}` : wifiTitle);
+  const battery = drone ? drone.battery.soc : null;
+  const old = !drone || isStale(age(state.now, drone.battery.ts));
+  const low = battery !== null && battery <= LOW_BATTERY_PCT;
+  setStat("st-battery", battery === null ? "—" : `${battery}%`, old ? "dim" : low ? "warn" : "");
+  $("bat-level").setAttribute("width", String(((battery ?? 0) / 100) * 9));
+}
+
 function renderDrone(state) {
   const drone = state.drone, sticks = state.sticks;
   tiltEstimate = state.estimate ? state.estimate.tilt : null;
   tiltTask = state.estimate && state.estimate.task.name === "tilt" ? state.estimate.task : null;
   serverNow = state.now;
-  renderTiltPresets(Boolean(state.drone && state.estimate));
   const present = Boolean(drone);
-  for (const element of [$("d-groups"), ...document.querySelectorAll("#drone .actions")]) {
-    element.hidden = !present;
-  }
-  $("d-manual").classList.toggle("off", !present);
+  renderTiltPresets(present && Boolean(state.estimate));
+  for (const id of ["d-actions", "d-video-row"]) $(id).hidden = !present;
+  $("d-nolink").hidden = present;
+  $("d-nolink").textContent = `no bluetooth link · ${state.ble_note || "bluetooth is off"}`;
   // The Wi-Fi starts by itself on every Bluetooth connect; the form is only a fallback.
   const wifi = present ? drone.wifi : null;
   $("d-wifi").hidden = !wifi || wifi.state === "on" || wifi.state === "pending";
   if (wifi && wifi.password && !$("d-wifi-pw").value) $("d-wifi-pw").value = wifi.password;
-  $("d-wifi-note").textContent = [wifiText(present ? drone.wifi : null),
-    announceText(present ? drone.app_announced : null)].filter(Boolean).join(" · ");
+  setText("x-wifi", [wifiText(wifi), announceText(present ? drone.app_announced : null)].filter(Boolean).join(" · ") || "—");
   autoStartVideo(state);
   renderManualSteps(state, present);
+  renderLinkStats(state, drone);
   const connected = present && drone.connection.connected;
+  setText("x-link", linkText(present ? drone.connection : { connected: false }, state.ble_note) +
+    (connected ? ` · last message ${ageText(drone.connection.last_message_age_s)} · rssi ${num(drone.connection.rssi)}` : ""));
+  $("x-link-age").textContent = present ? (connected ? "connected" : "no link") : "off";
   const mode = present && drone.mode.name && !isStale(age(state.now, drone.mode.ts)) ? drone.mode.name : null;
-  $("d-mode").textContent = mode ?? "—";
-  $("d-mode").classList.toggle("stale", !mode);
-  $("d-note").textContent = linkText(present ? drone.connection : { connected: false }, state.ble_note) +
-    (present && connected ? ` · last message ${ageText(drone.connection.last_message_age_s)}` : "");
-  $("d-link-age").textContent = present ? (connected ? "connected" : "no link") : "off";
-  setCell("drone-mode", "mode", mode ?? "—", mode === "MANUAL" ? "tag" : "");
+  setChip("chip-mode", mode ?? "no mode", mode === MODE_MANUAL ? "on" : mode ? "" : "dim");
   renderTakeoff(present ? drone : null, state.now);
   renderQuality(present ? drone.video_quality : null);
-  if (present) {
-    renderGroups(drone, state.now);
-    const soc = drone.battery.soc;
-    const old = isStale(age(state.now, drone.battery.ts));
-    setCell("battery", "bat", soc === null ? "—" : `${soc}%`, old ? "stale" : "");
-  } else {
-    setCell("battery", "bat", "—");
-  }
+  if (present) renderGroups(drone, state.now);
+  setReadout("r-alt", altitudeReadout(state), "m");
+  setReadout("r-tilt", tiltReadout(drone));
   renderLock(sticks, present);
 }
 
-// Flight state in the top bar, and a banner over the video while the drone takes off by itself.
+// Flight state chip, and a banner over the video while the drone takes off by itself.
 function renderTakeoff(drone, now) {
   const fresh = drone && drone.flight_state.value && !isStale(age(now, drone.flight_state.ts));
   const value = fresh ? drone.flight_state.value : null;
   const takeoff = TAKEOFF_STATES[value];
-  setCell("flight-state", "state", value ?? "—", takeoff ? "tag" : "");
+  setChip("chip-state", value ? stateName(value) : "no state", takeoff ? "on" : value ? "" : "dim");
   $("takeoff").hidden = !takeoff;
   if (takeoff) [$("takeoff-title").textContent, $("takeoff-hint").textContent] = takeoff;
 }
 
 function renderQuality(quality) {
-  for (const button of $("quality").querySelectorAll("button")) {
+  for (const button of document.querySelectorAll("button[data-quality]")) {
     button.classList.toggle("on", Boolean(quality) && button.dataset.quality === quality.wanted);
     button.classList.toggle("off", !quality);
   }
@@ -938,28 +1018,25 @@ function renderQuality(quality) {
 function renderLock(sticks, present) {
   const locked = sticks.interlock && sticks.locked;
   const reason = present ? "not MANUAL" : "no bluetooth link";
-  $("lock").hidden = !locked;
-  const sent = sticks.silent ? "nothing is sent" : "neutral is sent";
-  $("lock").textContent = `LOCKED · ${reason}`;
+  const sent = sticks.dry_run ? "dry run: still printed" : sticks.silent ? "nothing is sent" : "neutral is sent";
+  $("lock").hidden = sticks.interlock && !locked;
+  $("lock").textContent = sticks.interlock ? `LOCKED · ${reason} · ${sent}` : "interlock off · keys fly the drone";
   document.querySelector(".controls").classList.toggle("locked", locked);
-  $("gate-hint").textContent = !sticks.interlock ? "keys fly the drone (interlock off)"
-    : locked ? `keys locked: ${reason}${sticks.dry_run ? " (dry run: still printed)" : `, ${sent}`}` : "keys fly the drone (MANUAL)";
 }
 
 // ---- drone buttons ----
 
 function renderManualSteps(state, present) {
-  const element = $("d-manual-steps");
-  const entry = present ? state.drone.manual_entry : null;
+  if (!present) { setText("x-manual", "—"); return; }
+  const entry = state.drone.manual_entry;
   const onDroneWifi = state.simulated || (state.video.local_ip || "").startsWith(DRONE_NETWORK_PREFIX);
-  if (!present) { element.textContent = ""; return; }
   const ssid = state.drone.wifi.ssid ?? "the drone's Wi-Fi";
-  const mode = state.drone.mode.name ?? "—";
   const marks = MANUAL_STEPS.map((step) => `${step} ${entry.steps.includes(step) ? "✓" : "·"}`).join(" / ");
-  const hint = onDroneWifi ? "" : ` · not on ${ssid} yet: Manual control joins it`;
-  const error = entry.error ? ` · ${entry.error}` : "";
-  element.textContent = `${marks} / mode: ${mode}${entry.session ? " · session on" : ""}${error}${hint}`;
-  element.classList.toggle("warn", Boolean(entry.error) || !onDroneWifi);
+  const hint = onDroneWifi ? "" : `not on ${ssid} yet: Manual control joins it`;
+  setText("x-manual", `${marks}${entry.session ? " · session on" : ""}${entry.error ? ` · ${entry.error}` : ""}`, Boolean(entry.error));
+  // Problems only, under the buttons; the checklist is in the details.
+  manualProblem = [entry.error ? `manual control: ${entry.error}` : "", hint].filter(Boolean).join(" · ");
+  renderActionStatus();
 }
 
 // connect_type_request(APP) + clock, sent over Bluetooth on every connect like the app does
@@ -971,17 +1048,22 @@ function announceText(announced) {
 
 function wifiText(wifi) {
   if (!wifi || wifi.state === "off") return "";
-  if (wifi.state === "on") return `wifi: on · ${wifi.ssid}`;
-  if (wifi.state === "error") return `wifi: ${wifi.error}`;
-  return "wifi: starting...";
+  if (wifi.state === "on") return `on · ${wifi.ssid}`;
+  if (wifi.state === "error") return wifi.error;
+  return "starting...";
 }
 
-let statusTimer = 0;
+// The line under the buttons: the last action's result for a while, else a standing problem.
+let actionStatus = { text: "", warn: false, until: 0 };
+let manualProblem = "";
 function showStatus(text, warn = false) {
-  $("d-action-status").textContent = text;
-  $("d-action-status").classList.toggle("warn", warn);
-  clearTimeout(statusTimer);
-  statusTimer = setTimeout(() => { $("d-action-status").textContent = ""; }, STATUS_MS);
+  actionStatus = { text, warn, until: performance.now() + STATUS_MS };
+  renderActionStatus();
+}
+
+function renderActionStatus() {
+  const recent = actionStatus.text && performance.now() < actionStatus.until;
+  setText("d-action-status", recent ? actionStatus.text : manualProblem, recent ? actionStatus.warn : Boolean(manualProblem));
 }
 
 async function droneAction(name, path, body) {
@@ -1015,8 +1097,7 @@ $("d-land").addEventListener("click", () => {
 });
 $("d-video").addEventListener("click", () => droneAction("video", "/api/drone/video"));
 $("d-video-stop").addEventListener("click", () => droneAction("video stop", "/api/drone/video-stop"));
-for (const button of $("quality").querySelectorAll("button")) {
-  button.addEventListener("mousedown", (event) => event.preventDefault());
+for (const button of document.querySelectorAll("button[data-quality]")) {
   button.addEventListener("click", () =>
     droneAction(`video ${button.dataset.quality}`, "/api/drone/video-quality", { quality: button.dataset.quality }));
 }
@@ -1036,6 +1117,7 @@ $("d-wifi").addEventListener("submit", (event) => {
     showStatus(`wifi · password needs ${MIN_WIFI_PASSWORD}+ characters`, true);
     return;
   }
+  $("d-wifi-pw").blur();
   droneAction("wifi", "/api/drone/wifi", { password });
 });
 // Camera tilt presets: the SDK runs them (POST /api/drone/tilt); STOP or any flight key cancels.
@@ -1049,11 +1131,11 @@ for (const button of $("d-tilt").querySelectorAll("button[data-tilt]")) {
 $("d-tilt-form").addEventListener("submit", (event) => {
   event.preventDefault();
   const deg = Number($("d-tilt-deg").value.replace("−", "-"));
+  $("d-tilt-deg").blur();
   if ($("d-tilt-deg").value.trim() === "" || !Number.isFinite(deg) || deg > TILT_TOP || deg < TILT_BOTTOM) {
     showStatus(`tilt · give an angle from +${TILT_TOP} to ${TILT_BOTTOM}`, true);
     return;
   }
-  $("d-tilt-deg").blur();
   setTilt(deg);
 });
 $("d-tilt-deg").addEventListener("focus", releaseKeys);
@@ -1065,11 +1147,11 @@ function renderTiltPresets(available) {
   }
 }
 
-// Typing a password or an angle must not fly the drone, and Space must not stop on a text field.
+// Typing a password or an angle must not fly the drone.
 const typing = () => [$("d-wifi-pw"), $("d-tilt-deg")].includes(document.activeElement);
 
 // ---- estimated pose: compass + path map (drone.sdk server only, from its Estimator) ----
-// Frame: the odometry's takeoff frame. Heading 0 = its +x, drawn up; + = clockwise (turn right).
+// Frame: the odometry's takeoff frame. Heading 0 = its +x, labelled N; + = clockwise (turn right).
 // So a frame point (x, y) is drawn at (y, -x).
 
 const SVG_NS = "http://www.w3.org/2000/svg";
@@ -1080,60 +1162,79 @@ const svgEl = (tag, attrs, text) => {
   return element;
 };
 const onDial = (deg, r) => [r * Math.sin(deg * Math.PI / 180), -r * Math.cos(deg * Math.PI / 180)];
+const normalDeg = (deg) => ((deg % 360) + 360) % 360;
+const cardinal = (deg) => CARDINALS[Math.round(normalDeg(deg) / 45) % CARDINALS.length];
 
-for (let deg = 0; deg < 360; deg += COMPASS_TICK_DEG) {
-  const major = deg % 90 === 0;
-  const [x1, y1] = onDial(deg, major ? 76 : 81), [x2, y2] = onDial(deg, 88);
-  $("ticks").append(svgEl("line", { class: "ln", x1, y1, x2, y2 }));
-  if (major) {
-    const [x, y] = onDial(deg, 64);
-    $("ticks").append(svgEl("text", { class: "svg-text", x, y: y + 4, "font-size": 11,
-      "text-anchor": "middle" }, deg === 0 ? "+x" : String(deg)));
-  }
+const ringLabels = [];
+for (let deg = 0; deg < 360; deg += RING_TICK_DEG) {
+  const major = deg % RING_MAJOR_DEG === 0;
+  const [x1, y1] = onDial(deg, major ? RING_MAJOR_IN : RING_MINOR_IN), [x2, y2] = onDial(deg, RING_R);
+  $("ring").append(svgEl("line", { class: `tick${major ? " major" : ""}`, x1, y1, x2, y2 }));
+  if (!major) continue;
+  const card = deg % 90 === 0;
+  const [x, y] = onDial(deg, RING_LABEL_R);
+  const label = svgEl("text", { class: `ring-text${card ? " card" : ""}`, x, y, "text-anchor": "middle",
+    "dominant-baseline": "central" }, card ? CARDINALS[deg / 45] : String(deg));
+  $("ring").append(label);
+  ringLabels.push(label);
 }
+const travelMark = svgEl("polygon", { class: "travel", points: `0,${-RING_MINOR_IN + 1} -4,${-RING_R - 5} 4,${-RING_R - 5}` });
+$("ring").append(travelMark);
 
-let needleAngle = 0;  // unwrapped, so the needle turns the short way through 0
+let ringAngle = 0;  // unwrapped, so the ring turns the short way through 0
 function unwrap(previous, deg) {
   return previous + ((((deg - previous) % 360) + 540) % 360) - 180;
 }
 
-function wedgePath(heading, sigma) {
-  if (sigma >= 180) return "M -88 0 A 88 88 0 1 1 88 0 A 88 88 0 1 1 -88 0 Z";
-  const [x1, y1] = onDial(heading - sigma, 88), [x2, y2] = onDial(heading + sigma, 88);
-  return `M 0 0 L ${x1} ${y1} A 88 88 0 ${sigma > 90 ? 1 : 0} 1 ${x2} ${y2} Z`;
+// The heading's ± 1 sd, as an arc around the fixed heading line at the top.
+function sigmaPath(sigma) {
+  if (sigma >= 180) return `M 0 ${-SIGMA_R} A ${SIGMA_R} ${SIGMA_R} 0 1 1 0 ${SIGMA_R} A ${SIGMA_R} ${SIGMA_R} 0 1 1 0 ${-SIGMA_R}`;
+  const [x1, y1] = onDial(-sigma, SIGMA_R), [x2, y2] = onDial(sigma, SIGMA_R);
+  return `M ${x1} ${y1} A ${SIGMA_R} ${SIGMA_R} 0 ${sigma > 90 ? 1 : 0} 1 ${x2} ${y2}`;
 }
 
 function renderEstimate(estimate) {
   $("estimate").hidden = !estimate;
-  if (!estimate) return;
+  $("e-details").hidden = !estimate;
+  $("r-task-cell").hidden = !estimate;
+  serverStopAge = estimate && estimate.stopped_at ? Math.max(0, serverNow - estimate.stopped_at) : null;
+  if (!estimate) { setReadout("r-speed", ["—", ""]); return; }
   const pose = estimate.pose;
-  const [vx, vy] = pose.velocity;
+  const [vx, vy, vz] = pose.velocity;
   const speed = Math.hypot(vx, vy);
   const travel = Math.atan2(vy, vx) * 180 / Math.PI;
-  needleAngle = unwrap(needleAngle, pose.heading_deg);
-  $("needle").style.transform = `rotate(${needleAngle}deg)`;
-  $("wedge").setAttribute("d", wedgePath(pose.heading_deg, pose.heading_sigma_deg));
+  ringAngle = unwrap(ringAngle, -pose.heading_deg);
+  $("ring").style.transform = `rotate(${ringAngle}deg)`;
+  for (const label of ringLabels) label.style.transform = `rotate(${-ringAngle}deg)`;  // labels stay upright
+  $("sigma").setAttribute("d", sigmaPath(pose.heading_sigma_deg));
   const moving = pose.in_flight && speed >= TRAVEL_MIN_SPEED;
-  $("travel").style.display = moving ? "" : "none";
-  const length = Math.min(TRAVEL_MAX_LEN, TRAVEL_MIN_LEN + speed * TRAVEL_LEN_PER_MPS);
-  $("travel").setAttribute("transform", `rotate(${travel})`);
-  $("travel-line").setAttribute("y2", -length);
-  $("travel-head").setAttribute("points", `0,${-length - 6} -5,${-length + 4} 5,${-length + 4}`);
-  setText("e-heading", `${degrees(pose.heading_deg)} · ±${pose.heading_sigma_deg.toFixed(0)}°`,
-    pose.heading_sigma_deg > 45);
-  setText("e-travel", moving ? `${degrees(travel)} · ${speed.toFixed(2)} m/s` : "hovering");
+  travelMark.style.display = moving ? "" : "none";
+  travelMark.setAttribute("transform", `rotate(${travel})`);
+  $("heading").innerHTML = `${normalDeg(pose.heading_deg).toFixed(0)}°<small>${cardinal(pose.heading_deg)}</small>`;
+  setText("heading-sd", `± ${pose.heading_sigma_deg.toFixed(0)}°`, pose.heading_sigma_deg > HEADING_UNSURE_DEG);
+  setReadout("r-speed", pose.in_flight ? [speed.toFixed(2), moving ? `→ ${normalDeg(travel).toFixed(0)}° ${cardinal(travel)}` : "hovering"]
+    : ["—", "on ground"], "m/s");
   setText("e-position", pose.in_flight
     ? `${signed(pose.x, 2)} ${signed(pose.y, 2)} · ±${pose.position_sigma_m.toFixed(1)} m` : "on ground");
-  setText("e-alt", pose.in_flight ? `${pose.alt.toFixed(2)} m` : "—");
-  const task = estimate.task;
-  const progress = task.patrol && task.state === "running"
-    ? ` · loop ${task.patrol.loop} wp ${task.patrol.index ?? "—"} ${task.patrol.state}` : "";
-  setText("e-task", task.name ? `${task.name} · ${task.state}${progress}${task.message ? ` · ${task.message}` : ""}`
-    : "idle", task.state === "failed" || task.state === "landed");
+  setText("e-velocity", `${signed(vx, 2)} ${signed(vy, 2)} ${signed(vz, 2)} m/s`);
+  const tilt = estimate.tilt;
+  setText("e-tilt", `${tilt.source} · ${degrees(tilt.low_deg)} … ${degrees(tilt.high_deg)}${tilt.anchored ? " · anchored" : ""}`);
+  renderTask(estimate);
   $("e-source").textContent = estimate.estimator;
   $("e-note").textContent = `${estimate.estimator}: heading = yaw stick × ${estimate.yaw_rate_dps?.toFixed(0) ?? "?"}°/s` +
-    " + direction of travel; position = 1 Hz odometry, extrapolated. Not a real compass: 0° is the takeoff frame's +x.";
+    " + direction of travel; position = 1 Hz odometry, extrapolated. Not a real compass: N (0°) is the takeoff frame's +x.";
   renderMap(estimate);
+}
+
+function renderTask(estimate) {
+  const task = estimate.task;
+  runningTask = task.state === "running" ? task.name : null;
+  const progress = task.patrol && task.state === "running"
+    ? ` · loop ${task.patrol.loop} wp ${task.patrol.index ?? "—"} ${task.patrol.state}` : "";
+  const message = task.message && task.message !== task.state ? ` · ${task.message}` : "";
+  const locked = estimate.remote_locked ? " · /move locked until resume" : "";
+  setText("r-task", task.name ? `${task.name} · ${task.state}${progress}${message}${locked}` : `idle${locked}`,
+    task.state === "failed" || task.state === "landed");
 }
 
 function renderMap(estimate) {
@@ -1174,9 +1275,8 @@ function renderMap(estimate) {
   }
   if (!pose.in_flight) return;
   map.append(svgEl("circle", { class: "ln faint", cx: pose.y, cy: -pose.x, r: Math.max(pose.position_sigma_m, mark) }));
-  const drone = svgEl("polygon", { class: "ink", points: `0,${-mark * 2.2} ${mark},${mark} ${-mark},${mark}`,
-    transform: `translate(${pose.y} ${-pose.x}) rotate(${pose.heading_deg})` });
-  map.append(drone);
+  map.append(svgEl("polygon", { class: "ink", points: `0,${-mark * 2.2} ${mark},${mark} ${-mark},${mark}`,
+    transform: `translate(${pose.y} ${-pose.x}) rotate(${pose.heading_deg})` }));
 }
 
 // ---- photos and recording on the Mac, and on the drone's SD card (drone.sdk server only) ----
@@ -1234,6 +1334,7 @@ function renderCapture(state) {
 let stateAt = 0;
 let serverLost = false;
 let seenFrames = 0;
+let lastState = null;
 
 // A finished MJPEG response leaves the <img> frozen on its last frame without firing
 // onerror, so reopen the stream when the server comes back or the decoder restarts.
@@ -1249,6 +1350,7 @@ async function poll() {
     const response = await fetch("/api/state", { cache: "no-store", signal: AbortSignal.timeout(STALE_MS) });
     const state = await response.json();
     stateAt = performance.now();
+    lastState = state;
     reopenStreamIfNeeded(state.video.frames || 0);
     renderSticks(state.sticks);
     renderVideo(state.video);
@@ -1261,12 +1363,17 @@ async function poll() {
   setTimeout(poll, POLL_MS);
 }
 
+// Freshness: of the page's own state (server lost overrides the Bluetooth age) and of the video.
 function renderClock() {
   const now = performance.now();
+  renderStopFeedback();
+  renderActionStatus();
   if (stateAt) {
-    const age = (now - stateAt) / 1000;
+    const pollAge = (now - stateAt) / 1000;
     const lost = now - stateAt > STALE_MS;
-    setCell("link", lost ? "link lost" : "link", `${age.toFixed(1)} s`, lost ? "warn" : "");
+    setText("x-poll", `${pollAge.toFixed(1)} s${lost ? " · lost" : ""}`, lost);
+    if (lost) setStat("st-link", `server lost ${pollAge.toFixed(1)} s`, "warn", "this page gets no state from the server");
+    else if (lastState) renderLinkStats(lastState, lastState.drone);
   }
   const stats = video.last;
   if (!stats) return;
@@ -1274,9 +1381,9 @@ function renderClock() {
   const stalled = stats.frames > 0 && stalledFor > VIDEO_STALL_MS;
   $("stall").hidden = !stalled;
   $("stall").textContent = `video stalled · ${(stalledFor / 1000).toFixed(1)} s`;
-  if (!stats.frames) setCell("video-status", "video", "none");
-  else if (stalled) setCell("video-status", "video", "stalled", "warn");
-  else setCell("video-status", "video", `${video.fps.toFixed(0)} fps`);
+  if (!stats.frames) setStat("st-video", "none", "dim");
+  else if (stalled) setStat("st-video", "stalled", "warn");
+  else setStat("st-video", `${video.fps.toFixed(0)} fps`);
 }
 
 const stream = $("stream");

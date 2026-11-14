@@ -149,6 +149,7 @@ class ApiServer(WebServer):
         self.sim = drone.link if isinstance(drone.link, SimLink) else None
         self.extra_state = self.estimate
         self.remote_locked = False  # set by STOP: /move needs "resume" to fly again
+        self.stopped_at: float | None = None  # last explicit STOP (page, API, ROS), for the page
 
     def autopilot_active(self) -> bool:
         return self.tasks.busy() or self.drone.command_active()
@@ -157,6 +158,11 @@ class ApiServer(WebServer):
         """STOP: cancel the running action and lock out /move streams until they resume."""
         self.remote_locked = True
         self.drone.stop()
+
+    def press_stop(self) -> None:
+        """An explicit STOP (not LAND, not a pilot taking over): the page shows it."""
+        self.stop_all()
+        self.stopped_at = time.time()
 
     def status(self, telemetry: Any = None) -> dict[str, Any]:
         """GET /status and every /events message."""
@@ -199,6 +205,8 @@ class ApiServer(WebServer):
                 "fence": [limits.x_min, limits.x_max, limits.y_min, limits.y_max],
                 "task": self.tasks.status(),
                 "tilt": self.drone.camera_tilt().as_dict(),
+                "stopped_at": self.stopped_at,
+                "remote_locked": self.remote_locked,
             },
             "recording": self.drone.recording(),
             "simulated": self.sim is not None,
@@ -292,7 +300,7 @@ class ApiHandler(WebHandler):
         self._send(HTTPStatus.NO_CONTENT, "text/plain", b"")
 
     def _page_stop(self) -> None:
-        self.server.stop_all()
+        self.server.press_stop()
         self._send(HTTPStatus.NO_CONTENT, "text/plain", b"")
 
     def _page_tilt(self) -> None:
@@ -410,7 +418,7 @@ class ApiHandler(WebHandler):
         return _result(self.server.drone.land())
 
     def _stop(self, body: dict[str, Any]) -> Reply:
-        self.server.stop_all()
+        self.server.press_stop()
         return HTTPStatus.OK, {"ok": True}
 
     def _speed(self, body: dict[str, Any]) -> Reply:
