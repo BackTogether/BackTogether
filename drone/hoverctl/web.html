@@ -442,7 +442,9 @@ for (const button of document.querySelectorAll("button")) {
   button.addEventListener("mousedown", (event) => event.preventDefault());
 }
 
-setInterval(() => post("/api/sticks", inputAxes()), SEND_MS);
+// Each tab tags its posts, so the server can ignore an idle tab's neutral posts while another flies.
+const TAB_ID = Math.random().toString(36).slice(2);
+setInterval(() => post(`/api/sticks?tab=${TAB_ID}`, inputAxes()), SEND_MS);
 drawInput();
 
 // ---- telemetry ----
@@ -487,7 +489,10 @@ function renderSticks(sticks) {
   setText("s-sent", sticks.sent.toLocaleString());
   setText("s-non-neutral", sticks.non_neutral_sent.toLocaleString());
   // Red when a key is held but the gate holds the sticks: the drone is not the problem then.
-  setText("s-gate", sticks.gate, keys.size > 0 && sticks.gate !== GATE_LIVE);
+  // Also red with more than one tab open: only the tab that is flying should stay open.
+  const extraTabs = sticks.open_tabs > 1;
+  const gateText = extraTabs ? `${sticks.gate} · ${sticks.open_tabs} tabs open, close the others` : sticks.gate;
+  setText("s-gate", gateText, extraTabs || (keys.size > 0 && sticks.gate !== GATE_LIVE));
   setText("s-errors", String(sticks.errors), sticks.errors > 0);
   setText("s-target", sticks.target);
   setText("s-source", CONTROL_SOURCE_NAMES[sticks.control_source] ?? String(sticks.control_source));

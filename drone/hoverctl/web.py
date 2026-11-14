@@ -7,6 +7,7 @@ turns the sticks neutral if the tab stops posting (closed, crashed, network hicc
 
 import json
 import math
+import threading
 import time
 from collections.abc import Callable
 from dataclasses import asdict
@@ -14,6 +15,7 @@ from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
+from urllib.parse import parse_qs, urlsplit
 
 from .pbwire import drone_network_ip
 from .protocol import AXIS_DIRECTIONS, AXIS_NAMES, NEUTRAL, Axes
@@ -38,6 +40,8 @@ DRONE_PATHS = (
     "/api/drone/video-stop",
 )
 MIN_WIFI_PASSWORD = 8
+PILOT_HOLD_S = 0.5  # ignore other tabs' neutral posts this long after the pilot's last values
+TAB_SEEN_S = 2.0  # a tab that posted this recently counts as open
 NO_LINK = {"ok": False, "error": "bluetooth is off or unavailable"}
 
 
@@ -66,8 +70,12 @@ class _Handler(BaseHTTPRequestHandler):
         if command:
             self._drone_command(command)
             return
-        if self.path == "/api/sticks":
-            self.server.sender.set_input(self._read_axes())
+        url = urlsplit(self.path)
+        if url.path == "/api/sticks":
+            axes = self._read_axes()
+            tab = parse_qs(url.query).get("tab", [""])[0]
+            if self.server.pilot.accept(tab, axes):
+                self.server.sender.set_input(axes)
         elif self.path == "/api/stop":
             self.server.sender.set_input(NEUTRAL)
         else:
@@ -142,6 +150,7 @@ class _Handler(BaseHTTPRequestHandler):
                 "locked": sender.locked,
                 "silent": sender.silent,
                 "interlock": sender.interlocked,
+                "open_tabs": self.server.pilot.open_tabs(),
             },
             "now": time.time(),
             "drone": self.server.link.snapshot() if self.server.link else None,
@@ -177,6 +186,36 @@ class _Handler(BaseHTTPRequestHandler):
             pass  # browser tab closed
 
 
+class PilotFilter:
+    """Picks which browser tab's stick posts count.
+
+    Every open tab posts its sticks at 20 Hz. Without this, an idle tab's neutral posts
+    interleave with the flying tab's values, so the sticks flicker to zero and the ramp keeps
+    restarting at its first step. The tab that last sent values is the pilot; while it is
+    active, other tabs' neutral posts are ignored. STOP is not filtered.
+    """
+
+    def __init__(self) -> None:
+        self._pilot = ""
+        self._pilot_at = 0.0
+        self._seen: dict[str, float] = {}
+        self._lock = threading.Lock()
+
+    def accept(self, tab: str, axes: Axes) -> bool:
+        now = time.monotonic()
+        with self._lock:
+            self._seen[tab] = now
+            if axes != NEUTRAL:
+                self._pilot, self._pilot_at = tab, now
+                return True
+            return tab == self._pilot or now - self._pilot_at > PILOT_HOLD_S
+
+    def open_tabs(self) -> int:
+        now = time.monotonic()
+        with self._lock:
+            return sum(1 for seen in self._seen.values() if now - seen < TAB_SEEN_S)
+
+
 class WebServer(ThreadingHTTPServer):
     daemon_threads = True
 
@@ -192,6 +231,7 @@ class WebServer(ThreadingHTTPServer):
         super().__init__((bind, port), _Handler)
         self.sender = sender
         self.receiver = receiver
+        self.pilot = PilotFilter()
         self.link = link  # None: Bluetooth off or unavailable (`ble_note` says which)
         if link:
             sender.set_session_gate(link.in_manual_session)
