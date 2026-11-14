@@ -11,8 +11,8 @@
 Run from the repo root, e.g. on a phone-screen recording (drone.telemetry.record):
   uv run --no-project --with numpy --with pillow --with torch --with transformers --with av \
       python -m drone.patrol.front_distance --video <video.mkv> --crop-preview --height 1.8
-or live from the hoverctl web app (altitude from its odometry):
-  ... python -m drone.patrol.front_distance --web http://127.0.0.1:8077 --takeoff-height 1.0
+or live from the drone.sdk server (drone/fly; altitude and camera tilt from the SDK):
+  ... python -m drone.patrol.front_distance --sdk http://127.0.0.1:8077 --takeoff-height 1.0
 """
 
 import argparse
@@ -27,11 +27,13 @@ from pathlib import Path
 import numpy as np
 from PIL import Image
 
+from drone.sdk.camera import CAMERA_HFOV_DEG
+
 MODEL_ID = "depth-anything/Depth-Anything-V2-Metric-Indoor-Small-hf"
 PATCH = 14  # the model needs sides that are multiples of 14
 DEFAULT_INPUT_WIDTH = 392
-DEFAULT_PITCH_DEG = 45.0
-DEFAULT_HFOV_DEG = 80.0  # unknown for the X1 preview: calibrate (see the patrol plan, T1)
+DEFAULT_PITCH_DEG = 45.0  # recorded videos; live, the SDK's camera tilt estimate is used
+DEFAULT_HFOV_DEG = CAMERA_HFOV_DEG  # ~74 deg, measured (drone/sdk/camera.py)
 FLOOR_BAND = 0.25  # bottom fraction of the image assumed to be floor for the scale check
 MIN_RAY_DOWN = 0.05  # skip rays that barely point down (floor depth explodes)
 OBSTACLE_MIN_M = 0.3  # higher than this above the floor = obstacle
@@ -185,36 +187,47 @@ def run_video(args: argparse.Namespace, model: DepthModel) -> None:
 
 
 def run_live(args: argparse.Namespace, model: DepthModel) -> None:
-    from drone.patrol.hoverweb import HoverWeb
+    from drone.patrol.sdkdrone import RemoteDrone
 
-    web = HoverWeb(args.web)
-    latest = LatestFrame(web.frames())
+    drone = RemoteDrone(args.sdk)
+    latest = LatestFrame(drone.frames())
     seen, started = 0, time.monotonic()
     while True:
         seen, image = latest.wait_new(seen)
-        state = web.state()
+        state = drone.state()
         height = (state.altitude_m or 0.0) + args.takeoff_height if state.in_flight else None
-        if height is None:
-            print(f"{state.flight_state}: not flying, no height for the geometry", flush=True)
+        pitch = args.pitch if args.pitch is not None else _pitch_from_tilt(state.tilt_deg)
+        if height is None or pitch is None:
+            why = "not flying, no height" if height is None else "camera tilt unknown"
+            print(f"{state.flight_state}: {why} for the geometry", flush=True)
             time.sleep(NOT_FLYING_WAIT_S)
             continue
         tick = time.monotonic()
-        reading = measure_front(model.predict(image), height, args.pitch, args.hfov)
+        reading = measure_front(model.predict(image), height, pitch, args.hfov)
         rate = 1 / (time.monotonic() - tick)
         t = time.monotonic() - started
         print(f"t={t:6.1f}s  {format_reading(reading)}  h={height:.2f} m  {rate:.1f} fps")
+
+
+def _pitch_from_tilt(tilt_deg: float | None) -> float | None:
+    """Degrees below level, from the SDK's tilt estimate (down is negative there)."""
+    return None if tilt_deg is None else -tilt_deg
 
 
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     source = parser.add_mutually_exclusive_group(required=True)
     source.add_argument("--video", type=Path, help="recorded video file")
-    source.add_argument("--web", help="hoverctl web app URL, e.g. http://127.0.0.1:8077")
+    source.add_argument("--sdk", help="drone.sdk server URL, e.g. http://127.0.0.1:8077")
     parser.add_argument("--crop-preview", action="store_true", help="phone-screen recording")
     parser.add_argument("--every", type=int, default=10, help="video: use every Nth frame")
     parser.add_argument("--height", type=float, default=1.8, help="video: camera height (m)")
     parser.add_argument("--takeoff-height", type=float, default=1.0, help="live: m above floor")
-    parser.add_argument("--pitch", type=float, default=DEFAULT_PITCH_DEG, help="camera down, deg")
+    parser.add_argument(
+        "--pitch",
+        type=float,
+        help=f"camera down, deg (video default {DEFAULT_PITCH_DEG:.0f}; live: the SDK's tilt)",
+    )
     parser.add_argument("--hfov", type=float, default=DEFAULT_HFOV_DEG, help="horizontal FOV")
     parser.add_argument("--input-width", type=int, default=DEFAULT_INPUT_WIDTH)
     args = parser.parse_args()
@@ -223,6 +236,7 @@ def main() -> None:
     model = DepthModel(args.input_width)
     try:
         if args.video:
+            args.pitch = DEFAULT_PITCH_DEG if args.pitch is None else args.pitch
             run_video(args, model)
         else:
             run_live(args, model)
