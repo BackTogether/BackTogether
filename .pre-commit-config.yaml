@@ -12,11 +12,13 @@ repos:
         entry: uv run --no-sync ruff check --fix
         language: unsupported
         types: [python]
+        exclude: ^bobac/vendor/  # read-only copy of the robot's code
       - id: ruff-format
         name: ruff format
         entry: uv run --no-sync ruff format
         language: unsupported
         types: [python]
+        exclude: ^bobac/vendor/  # read-only copy of the robot's code
       - id: commit-msg-format
         name: commit message follows COMMITS.md
         entry: uv run --no-sync python scripts/check_commit_msg.py
