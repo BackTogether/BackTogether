@@ -34,6 +34,8 @@ from .drone import Drone
 from .map_image import decode_cells, grid_from_cells
 from .map_view import MapView
 from .mission import (
+    APPROACH_FLY_OVER,
+    APPROACHES,
     FRAME_LAUNCH,
     FRAMES,
     STRATEGIES,
@@ -882,8 +884,10 @@ def _mission_config(body: dict[str, Any]) -> MissionConfig:
         patrol_alt_m=number("patrol_alt_m"),
         patrol_tilt_deg=tilt,
         align_m=number("align_m", 0, 5),
+        approach=_choice(body, "approach", APPROACH_FLY_OVER, APPROACHES),
+        approach_speed=number("approach_speed", 0.05, 1),
         approach_tilt_deg=number("approach_tilt_deg", GIMBAL_BOTTOM_DEG, 0),
-        orbit_alt_m=number("orbit_alt_m"),
+        orbit_alt_m=number("orbit_alt_m"),  # null or missing: the current altitude
         orbit_radius_m=number("orbit_radius_m", 0.5, 5),
         orbit_turns=number("orbit_turns", 0, 5),
         standoff_m=number("standoff_m", 0, 5),

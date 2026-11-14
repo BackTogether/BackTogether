@@ -30,6 +30,13 @@ detector's latency does not matter. A bbox centre becomes a floor point through 
 model of camera.py and the height above the target (altitude + launch_height_m -
 target_height_m).
 
+Approach (`approach`), both slow (`approach_speed`) and at the patrol altitude (no descent):
+- "fly_over": goto the floor point of the triggering detection, then camera down and
+  stop-and-correct until the bbox is centred (below).
+- "track": approach_track.py, the camera follows the child the whole way and the gimbal
+  reaches -90 when the drone is overhead.
+The orbit then flies at `orbit_alt_m`; None (the default) keeps the current altitude.
+
 Safety: every flight step runs under the Navigator's rules (geofence, battery, link loss);
 STOP (Drone.stop through the server) ends the mission at once; each step has a timeout.
 """
@@ -43,6 +50,7 @@ from collections.abc import Callable, Sequence
 from dataclasses import asdict, dataclass, field, replace
 from typing import Any
 
+from .approach_track import TrackApproach, TrackSettings
 from .client import standoff_goal
 from .estimate import DEFAULT_YAW_RATE_DPS, wrap_deg
 from .mission_geometry import (
@@ -96,6 +104,9 @@ FRAMES = (FRAME_LAUNCH, FRAME_DRONE, FRAME_MAP)
 STRATEGY_WAYPOINTS = "waypoints"  # the SDK's Patrol
 STRATEGY_EXTERNAL = "external"  # hover under the safety rules while a client flies /move
 STRATEGIES = (STRATEGY_WAYPOINTS, STRATEGY_EXTERNAL)
+APPROACH_FLY_OVER = "fly_over"  # goto the detection, then centre with the camera down
+APPROACH_TRACK = "track"  # approach_track.py: the camera follows the child all the way
+APPROACHES = (APPROACH_FLY_OVER, APPROACH_TRACK)
 # Why the mission interrupted its own step (Drone.stop), by priority
 REASON_TARGET = "target"
 REASON_TIMEOUT = "timeout"
@@ -154,8 +165,10 @@ class MissionConfig:
     patrol_alt_m: float = 2.0  # above the takeoff point
     patrol_tilt_deg: float | None = -40.0  # None: leave the camera where it is
     align_m: float = 1.5  # the calibration leg; 0 = none (then only frame "drone")
+    approach: str = APPROACH_FLY_OVER
+    approach_speed: float = 0.2  # horizontal stick fraction while approaching
     approach_tilt_deg: float = -90.0
-    orbit_alt_m: float = 1.2
+    orbit_alt_m: float | None = None  # None: orbit at the current altitude (no descent)
     orbit_radius_m: float = 1.5
     orbit_turns: float = 2.0  # 0 = no orbit
     standoff_m: float = 0.8  # the robot's goal stops this short of the child
@@ -514,6 +527,8 @@ class Mission:
         self._set(APPROACHING, "locating")
         deadline = time.monotonic() + config.approach_timeout_s
         try:
+            if config.approach == APPROACH_TRACK:
+                return self._track(config, deadline)
             if trigger is not None:
                 self._fly_over(config, trigger, deadline)
             self._set_tilt(config.approach_tilt_deg)
@@ -523,6 +538,17 @@ class Mission:
             with self._lock:
                 self._ignore_until = time.time() + RETRY_COOLDOWN_S
             return None
+
+    def _track(self, config: MissionConfig, deadline: float) -> tuple[float, float]:
+        settings = TrackSettings(
+            speed=config.approach_speed,
+            height_offset_m=config.launch_height_m - config.target_height_m,
+            lost_timeout_s=config.lost_timeout_s,
+        )
+        approach = TrackApproach(
+            self.navigator, self.history.at, self._fresh_detection, settings, self._step_note
+        )
+        return approach.run(deadline)
 
     def _fly_over(self, config: MissionConfig, detection: Detection, deadline: float) -> None:
         located = self._locate(config, detection)
@@ -534,7 +560,9 @@ class Mission:
             return
         x, y = self._inside_fence(x, y)
         self._step_note(f"flying over ({x:.1f}, {y:.1f})")
-        self.navigator.goto(x, y, None, COARSE_TOLERANCE_M, _left(deadline))
+        self.navigator.goto(
+            x, y, None, COARSE_TOLERANCE_M, _left(deadline), max_fraction=config.approach_speed
+        )
 
     def _centre(self, config: MissionConfig, deadline: float) -> tuple[float, float]:
         """Visual servo, stop-and-correct: use only frames taken after the drone settled."""
@@ -562,7 +590,7 @@ class Mission:
                     return _mean(centred)
                 continue
             centred.clear()
-            self._pulse(fwd, right)
+            self._pulse(fwd, right, min(APPROACH_FRACTION, config.approach_speed))
             self.navigator.hover(SETTLE_S)
             settled = time.time()
 
@@ -584,8 +612,10 @@ class Mission:
     def _orbit(self, config: MissionConfig, child: tuple[float, float]) -> None:
         if config.orbit_turns <= 0:
             return
-        self._set(ORBITING, f"down to {config.orbit_alt_m:.1f} m")
-        self.navigator.climb_to(config.orbit_alt_m)
+        alt = self.drone.pose().alt if config.orbit_alt_m is None else config.orbit_alt_m
+        self._set(ORBITING, f"at {alt:.1f} m")
+        if config.orbit_alt_m is not None:
+            self.navigator.climb_to(alt)
         pose = self.drone.pose()
         away = math.atan2(pose.y - child[1], pose.x - child[0])
         if math.hypot(pose.x - child[0], pose.y - child[1]) < MIN_RANGE_M:
@@ -593,22 +623,20 @@ class Mission:
         radius = config.orbit_radius_m
         start = (child[0] + radius * math.cos(away), child[1] + radius * math.sin(away))
         try:
-            self.navigator.limits.check_target(
-                *self._circle_extent(child, radius), config.orbit_alt_m
-            )
+            self.navigator.limits.check_target(*self._circle_extent(child, radius), alt)
         except ValueError as error:
             self._note(f"no orbit: {error}")
             return
         self._step_note("to the circle")
-        self.navigator.goto(*start, config.orbit_alt_m)
+        self.navigator.goto(*start, alt)
         self.navigator.turn_to(_bearing_deg(start, child))
-        height = max(config.orbit_alt_m + config.launch_height_m - config.target_height_m, 0.0)
+        height = max(alt + config.launch_height_m - config.target_height_m, 0.0)
         tilt = -math.degrees(math.atan2(height, radius)) if height else DEFAULT_ORBIT_TILT_DEG
         self._set_tilt(tilt)
-        self._circle(config, child, away)
+        self._circle(config, child, away, alt)
 
     def _circle(
-        self, config: MissionConfig, child: tuple[float, float], start_angle: float
+        self, config: MissionConfig, child: tuple[float, float], start_angle: float, alt: float
     ) -> None:
         """Fly the circle clockwise (seen from above), facing the centre: feed-forward
         sideways speed and yaw rate (the calibrated yaw_rate_dps), plus position and heading
@@ -643,7 +671,7 @@ class Mission:
                     epoch,
                     fwd=_clip(fwd / mps_per_fraction, CRUISE_MAX),
                     right=_clip(right / mps_per_fraction, CRUISE_MAX),
-                    up=_clip(ALT_GAIN * (config.orbit_alt_m - pose.alt), MAX_VERTICAL),
+                    up=_clip(ALT_GAIN * (alt - pose.alt), MAX_VERTICAL),
                     turn=_clip(rate_dps / fastest_dps + YAW_GAIN * facing, 1.0),
                 )
                 self._step_note(
@@ -661,7 +689,8 @@ class Mission:
             return f"{why} (on the ground)"
         config = self._require_config()
         self._set(RETURNING, why)
-        alt = self.navigator.limits.clamp_alt(max(self.drone.pose().alt, config.orbit_alt_m))
+        alt = max(self.drone.pose().alt, config.orbit_alt_m or 0.0)
+        alt = self.navigator.limits.clamp_alt(alt)
         try:
             self.navigator.goto(*HOME, alt)
         except TimeoutError:
@@ -696,7 +725,7 @@ class Mission:
         error = (target[0] - centre[0], target[1] - centre[1])
         return (pose.x + dx, pose.y + dy), error
 
-    def _pulse(self, fwd_m: float, right_m: float) -> None:
+    def _pulse(self, fwd_m: float, right_m: float, fraction: float) -> None:
         """One short body-frame push (independent of the heading estimate), then neutral."""
         distance = math.hypot(fwd_m, right_m)
         seconds = min(MAX_PULSE_S, max(MIN_PULSE_S, distance * PULSE_S_PER_M))
@@ -708,8 +737,8 @@ class Mission:
                 self.navigator.guard(epoch)
                 self.navigator.send(
                     epoch,
-                    fwd=APPROACH_FRACTION * fwd_m / distance,
-                    right=APPROACH_FRACTION * right_m / distance,
+                    fwd=fraction * fwd_m / distance,
+                    right=fraction * right_m / distance,
                 )
                 self.drone.sleep(TICK_S, epoch)
         finally:
@@ -847,13 +876,16 @@ def _check_config(config: MissionConfig, navigator: Navigator) -> None:
         raise ValueError(f'"frame" must be one of {", ".join(FRAMES)}')
     if config.strategy not in STRATEGIES:
         raise ValueError(f'"strategy" must be one of {", ".join(STRATEGIES)}')
+    if config.approach not in APPROACHES:
+        raise ValueError(f'"approach" must be one of {", ".join(APPROACHES)}')
     uses_waypoints = config.patrol is None and config.strategy == STRATEGY_WAYPOINTS
     if uses_waypoints and not config.waypoints:
         raise ValueError('strategy "waypoints" needs at least one waypoint')
     if config.frame != FRAME_DRONE and config.align_m <= 0 and uses_waypoints:
         raise ValueError(f'waypoints in frame "{config.frame}" need align_m > 0')
     for alt in (config.patrol_alt_m, config.orbit_alt_m):
-        limits.check_target(0.0, 0.0, alt)
+        if alt is not None:
+            limits.check_target(0.0, 0.0, alt)
     if uses_waypoints and config.frame == FRAME_DRONE:
         for waypoint in config.waypoints:
             alt = config.patrol_alt_m if waypoint.alt is None else waypoint.alt

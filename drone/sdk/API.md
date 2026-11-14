@@ -97,11 +97,15 @@ detector, `miss` = fraction of frames it misses, 0.2).
 for the button takeoff; enters MANUAL itself if needed) → **climbing** (to `patrol_alt_m`, camera
 to `patrol_tilt_deg`) → **aligning** (flies `align_m` straight ahead: the odometry displacement
 is the robot's forward axis in the drone frame; the drone must be launched facing the robot's
-forward) → **patrolling** → **approaching** (stops the patrol, flies over the detection, camera to
-`approach_tilt_deg`, then stop-and-correct visual servo until the bbox centre is at the image
-centre; no detection for `lost_timeout_s` or over `approach_timeout_s` → back to patrolling) →
+forward) → **patrolling** → **approaching** (stops the patrol and closes in at the patrol altitude, never descending, with
+horizontal sticks up to `approach_speed`. `approach` `"fly_over"`: flies over the detection,
+camera to `approach_tilt_deg`, then stop-and-correct visual servo until the bbox centre is at the
+image centre. `"track"` (drone/sdk/approach_track.py): the gimbal follows the child the whole
+way, the drone turns toward it and creeps forward, and it is overhead when the camera reaches
+-90; the position is the median of 4 fixes there. No detection for `lost_timeout_s` or over
+`approach_timeout_s` → back to patrolling) →
 **reporting** (the child's position is in `child`, a photo is saved, hovers 3 s) → **orbiting**
-(down to `orbit_alt_m`, `orbit_turns` circles of `orbit_radius_m` facing the child, camera at
+(at `orbit_alt_m`, default the current altitude, `orbit_turns` circles of `orbit_radius_m` facing the child, camera at
 atan(height / radius) down) → **returning** (to the takeoff point) → **landed**. Other ends:
 **stopped** (any STOP, LAND or flight key: the drone hovers, `stopped_in` says where), **aborted**
 (`/mission/abort`: back to the takeoff point and land), **failed** (`message`; lands at the
@@ -123,8 +127,9 @@ mission hovers under the safety rules and accepts `/move` from an outside patrol
 `drone.patrol.dvd --sdk`; when the approach starts `/move` answers `409 "stopped: the mission
 flies the drone now"`, which ends that patrol); `loops` (0 = until found), `dwell_s` (1), `scan`
 (false), `patrol_alt_m` (2.0, above the takeoff point), `patrol_tilt_deg` (-40; null = leave it),
-`align_m` (1.5; 0 = no leg, then only frame "drone"), `approach_tilt_deg` (-90), `orbit_alt_m`
-(1.2), `orbit_radius_m` (1.5), `orbit_turns` (2; 0 = none), `standoff_m` (0.8), `launch_height_m`
+`align_m` (1.5; 0 = no leg, then only frame "drone"), `approach` (`"fly_over"` or `"track"`),
+`approach_speed` (0.2, stick fraction 0.05..1), `approach_tilt_deg` (-90), `orbit_alt_m`
+(null: the current altitude), `orbit_radius_m` (1.5), `orbit_turns` (2; 0 = none), `standoff_m` (0.8), `launch_height_m`
 (0: the takeoff point above the floor, the robot's top), `target_height_m` (0.5: the detected
 point above the floor), `min_confidence` (0.5), `takeoff_timeout_s` (120), `patrol_timeout_s`
 (600), `approach_timeout_s` (90), `lost_timeout_s` (10).

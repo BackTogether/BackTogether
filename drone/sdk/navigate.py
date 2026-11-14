@@ -82,12 +82,14 @@ class Navigator:
         alt: float | None = None,
         tolerance_m: float = POSITION_TOLERANCE_M,
         timeout_s: float = GOTO_TIMEOUT_S,
+        max_fraction: float = CRUISE_MAX,
     ) -> Pose:
-        """Fly to (x, y) in the takeoff frame at `alt` (default: the current altitude)."""
+        """Fly to (x, y) in the takeoff frame at `alt` (default: the current altitude), with
+        horizontal sticks up to `max_fraction` (lower it for a slow approach)."""
         epoch = self._begin()
         alt = self.drone.pose().alt if alt is None else alt
         self.limits.check_target(x, y, alt)
-        return self._fly_to(epoch, (x, y), alt, tolerance_m, timeout_s)
+        return self._fly_to(epoch, (x, y), alt, tolerance_m, timeout_s, max_fraction)
 
     def climb_to(self, alt: float, timeout_s: float = GOTO_TIMEOUT_S) -> Pose:
         """Change altitude; also holds the horizontal position."""
@@ -205,6 +207,7 @@ class Navigator:
         alt: float,
         tolerance_m: float,
         timeout_s: float,
+        max_fraction: float = CRUISE_MAX,
     ) -> Pose:
         self.target = (*xy, alt)
         deadline = time.monotonic() + timeout_s
@@ -214,31 +217,36 @@ class Navigator:
                 self.guard(epoch)
                 pose = self.drone.pose()
                 if math.hypot(xy[0] - pose.x, xy[1] - pose.y) > APPROACH_RADIUS_M:
-                    self._cruise(epoch, pose, xy, alt)
+                    self._cruise(epoch, pose, xy, alt, max_fraction)
                     self.drone.sleep(TICK_S, epoch)
                     continue
                 pose = self._settle(epoch)
                 distance = math.hypot(xy[0] - pose.x, xy[1] - pose.y)
                 if distance <= tolerance_m and abs(alt - pose.alt) <= ALT_TOLERANCE_M:
                     return pose
-                self._pulse(epoch, pose, xy, alt)
+                self._pulse(epoch, pose, xy, alt, max_fraction)
         finally:
             self.target = None
             self.drone.neutral()
 
-    def _cruise(self, epoch: int, pose: Pose, xy: tuple[float, float], alt: float) -> None:
+    def _cruise(
+        self, epoch: int, pose: Pose, xy: tuple[float, float], alt: float, max_fraction: float
+    ) -> None:
         fwd, right, distance = _body_direction(pose, xy)
-        fraction = min(CRUISE_MAX, CRUISE_GAIN * distance)
+        fraction = min(max_fraction, CRUISE_GAIN * distance)
         up = _vertical(alt - pose.alt)
         self.send(epoch, fwd=fwd * fraction, right=right * fraction, up=up)
 
-    def _pulse(self, epoch: int, pose: Pose, xy: tuple[float, float], alt: float) -> None:
+    def _pulse(
+        self, epoch: int, pose: Pose, xy: tuple[float, float], alt: float, max_fraction: float
+    ) -> None:
         """One short push toward the target, then neutral."""
         fwd, right, distance = _body_direction(pose, xy)
         alt_error = alt - pose.alt
         seconds = max(distance, abs(alt_error)) * PULSE_S_PER_M
         seconds = min(MAX_PULSE_S, max(MIN_PULSE_S, seconds))
-        fraction = APPROACH_FRACTION if distance > POSITION_TOLERANCE_M / 2 else 0.0
+        fraction = min(APPROACH_FRACTION, max_fraction)
+        fraction = fraction if distance > POSITION_TOLERANCE_M / 2 else 0.0
         up = _vertical(alt_error)
         deadline = time.monotonic() + seconds
         while time.monotonic() < deadline:
