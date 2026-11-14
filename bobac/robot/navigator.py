@@ -16,12 +16,15 @@ import math
 
 import actionlib
 import rospy
+import tf
 from actionlib_msgs.msg import GoalStatus
 from geometry_msgs.msg import Quaternion
 from move_base_msgs.msg import MoveBaseAction, MoveBaseGoal
 from std_srvs.srv import Empty
 
 MAP_FRAME = "map"
+BASE_FRAME = "base_footprint"
+TF_WAIT_S = 2.0
 SERVER_WAIT_S = 10.0
 GOAL_TIMEOUT_S = 120.0
 ATTEMPTS = 2  # one retry after clearing the costmaps
@@ -37,6 +40,7 @@ FAILURES = {
 }
 
 _client = None
+_tf = None
 
 
 def _result(success: bool, message: str) -> dict:
@@ -87,6 +91,23 @@ def go_to_pose(x: float, y: float, yaw: float = 0.0, timeout_s: float = GOAL_TIM
     return _result(False, FAILURES.get(state, f"move_base ended with state {state}"))
 
 
+def stop() -> None:
+    """Cancel the goal in progress, if any: move_base then brakes the robot itself."""
+    if _client is not None:
+        _client.cancel_all_goals()
+
+
+def current_pose() -> dict:
+    """Where the robot is in the map (works with amcl and while mapping): x, y in m, yaw in rad."""
+    global _tf
+    if _tf is None:
+        _tf = tf.TransformListener()
+    _tf.waitForTransform(MAP_FRAME, BASE_FRAME, rospy.Time(0), rospy.Duration(TF_WAIT_S))
+    (x, y, _), rotation = _tf.lookupTransform(MAP_FRAME, BASE_FRAME, rospy.Time(0))
+    yaw = tf.transformations.euler_from_quaternion(rotation)[2]
+    return {"x": x, "y": y, "yaw": yaw}
+
+
 def _clear_costmaps() -> None:
     try:
         rospy.wait_for_service(CLEAR_COSTMAPS_SERVICE, timeout=CLEAR_COSTMAPS_WAIT_S)
@@ -103,7 +124,9 @@ def main() -> None:
     parser.add_argument("--timeout", type=float, default=GOAL_TIMEOUT_S, help="seconds")
     args = parser.parse_args()
     rospy.init_node("navigator_cli", anonymous=True)
+    print("from", current_pose())
     print(go_to_pose(args.x, args.y, args.yaw, args.timeout))
+    print("now at", current_pose())
 
 
 if __name__ == "__main__":
