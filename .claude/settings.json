@@ -13,7 +13,37 @@
       "Bash(uv pip list)",
       "Bash(uv --version)",
       "mcp__claude_ai_Claude_Docs__read",
-      "mcp__claude_ai_Claude_Docs__guide"
+      "mcp__claude_ai_Claude_Docs__guide",
+      "Bash(python3 scripts/board.py list *)",
+      "Bash(python3 scripts/board.py inbox)",
+      "Bash(python3 scripts/board.py watch *)",
+      "Bash(python3 scripts/board.py watch)",
+      "Bash(gh issue view *)",
+      "Bash(gh issue list *)"
+    ]
+  },
+  "hooks": {
+    "SessionStart": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 \"$CLAUDE_PROJECT_DIR/scripts/board.py\" hook session",
+            "timeout": 30
+          }
+        ]
+      }
+    ],
+    "UserPromptSubmit": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 \"$CLAUDE_PROJECT_DIR/scripts/board.py\" hook prompt",
+            "timeout": 30
+          }
+        ]
+      }
     ]
   }
 }

@@ -9,7 +9,7 @@ You are the **reviewer** of worker output (not the GitHub PR reviewer, see docs/
 You **never modify files**: Bash is only for read-only commands, lint checks and running the changed code.
 
 ## Input (from the supervisor)
-Task ID + description + done criteria, the assigned files, and the worker's 3-line summary.
+Issue number + description + done criteria, the assigned files, and the worker's 3-line summary.
 
 ## Checks
 1. **Scope:** `git status --short` and `git diff` show changes only in the assigned files.
