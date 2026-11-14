@@ -55,9 +55,17 @@ class VideoReceiver:
         self._thread = threading.Thread(target=self._run, name="video", daemon=True)
 
     def start(self) -> None:
+        """Start receiving on a background thread."""
         self._thread.start()
 
+    def restart_decoder(self) -> None:
+        """Restart the decoder (if any) at the next parameter set: call it after the drone
+        was asked for another resolution."""
+        if self.decoder:
+            self.decoder.restart()
+
     def stop(self) -> None:
+        """Stop receiving, close the dump and the decoder."""
         self._stop.set()
         self._thread.join()
         self._socket.close()
@@ -65,7 +73,10 @@ class VideoReceiver:
             self.decoder.close()
 
     def stats(self) -> dict:
+        """Counters, rates and decoder state, JSON-ready. `width`/`height` are the decoded frame
+        size (None until a frame is out), `fps` the decoded frame rate."""
         now = time.monotonic()
+        size = self.decoder.size if self.decoder and self.decoder.size else (None, None)
         recent = [(t, n) for t, n in list(self._recent) if now - t <= RATE_WINDOW_S]
         return {
             "port": self.port,
@@ -77,6 +88,9 @@ class VideoReceiver:
             "kind": self.extractor.kind,
             "codec": self.decoder.codec if self.decoder else None,
             "frames": self.decoder.frames if self.decoder else 0,
+            "width": size[0],
+            "height": size[1],
+            "fps": round(self.decoder.fps, 1) if self.decoder else 0.0,
             "dump": str(self.dump_path) if self.dump_path else None,
             "previews": self.previews,
         }

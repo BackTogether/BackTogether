@@ -4,6 +4,7 @@ Like protocol.py this avoids the protobuf runtime. Field numbers come from drone
 Decoders ignore unknown fields. Fields that are absent are proto3 defaults (0, empty).
 """
 
+import math
 import socket
 import struct
 import urllib.request
@@ -35,6 +36,8 @@ REQ_SET_FLIGHT_MODE_TO_MANUAL = 46  # bool
 REQ_HEARTBEAT_INFO = 70  # Empty, the app sends it at 1 Hz over Wi-Fi
 REQ_GET_BLE_ENCRY_LIST = 71
 REQ_CONNECT_TYPE = 75  # ConnectTypeRequest: tells the drone an app is the controller
+REQ_SET_PREVIEW_RESOLUTION = 148  # PreviewResolutionParams; the app never sends it
+REQ_GET_PREVIEW_RESOLUTION = 149  # FlightModeConfig
 REQ_CAMERA_START_PREVIEW = 240  # StartPreviewParams
 REQ_SET_UDP_SERVER_IP = 245  # string: where the drone pushes video
 REQ_SWITCH_TO_MANUAL_CAPTURE = 249  # bool
@@ -49,6 +52,7 @@ RESP_CHARGER_STATE = 38
 RESP_GET_FLIGHT_MODE = 48
 RESP_GET_FLIGHT_STATUS = 49
 RESP_GET_STORAGE_CAPACITY = 51
+RESP_GET_PREVIEW_RESOLUTION = 159
 RESP_ERROR_RESPONSE = 220
 
 # ErrorResponse
@@ -63,6 +67,7 @@ EVENT_FLIGHT_STATUS_CHANGE = 4
 EVENT_FLIGHT_EXCEPTION = 5
 EVENT_BATTERY_STATUS = 8
 EVENT_FLIGHT_ENGINEERING_INFO = 16
+EVENT_FLIGHT_ANALYTICS_LOG = 31  # the app's only live gimbal angle; the X1 never sent it to us
 
 # BleEncryListRequest
 _HANDSHAKE_PHONE_ID = 1
@@ -95,6 +100,20 @@ _START_PREVIEW_ENABLE = 1
 _START_PREVIEW_CODEC = 3
 VIDEO_CODEC_AVC = 1
 VIDEO_CODEC_HEVC = 2
+# FlightModeConfig.type, and PreviewResolutionParams {flight_mode = 1, res = 2}
+_FLIGHT_MODE_TYPE = 1
+_PREVIEW_RES_FLIGHT_MODE = 1
+_PREVIEW_RES = 2
+PREVIEW_RESOLUTION_LOW = 1
+PREVIEW_RESOLUTION_MEDIUM = 2
+# Preview quality as hoverctl offers it. "sd" sends nothing extra, like the app (1280x720 AVC
+# 30 fps on our X1). "hd" asks for PREVIEW_RESOLUTION_MEDIUM, which the app never does.
+VIDEO_QUALITY_SD = "sd"
+VIDEO_QUALITY_HD = "hd"
+VIDEO_QUALITIES = (VIDEO_QUALITY_SD, VIDEO_QUALITY_HD)
+# FlightAnalyticsLog { repeated FlightRealtimeLog realtime = 1 }, FlightRealtimeLog.gimbal_pitch = 8
+_ANALYTICS_REALTIME = 1
+_REALTIME_GIMBAL_PITCH = 8
 
 # The Wi-Fi RPC the app uses for everything but Bluetooth: raw RpcRequest in an HTTP POST
 WIFI_RPC_URL = f"http://{DRONE_HOST}:1234/rpc"
@@ -385,6 +404,23 @@ def encode_switch_to_manual_capture_request(request_id: int) -> bytes:
     return _int_field(REQUEST_ID, request_id) + _int_field(REQ_SWITCH_TO_MANUAL_CAPTURE, 1)
 
 
+def _manual_mode_config() -> bytes:
+    return _int_field(_FLIGHT_MODE_TYPE, FlightMode.MANUAL)
+
+
+def encode_get_preview_resolution_request(request_id: int) -> bytes:
+    """get_preview_resolution_request for MANUAL (the drone answers PreviewResolutionParams)."""
+    return encode_rpc_request(request_id, REQ_GET_PREVIEW_RESOLUTION, _manual_mode_config())
+
+
+def encode_set_preview_resolution_request(request_id: int, resolution: int) -> bytes:
+    """set_preview_resolution_request {flight_mode MANUAL, res} (PREVIEW_RESOLUTION_*)."""
+    body = _bytes_field(_PREVIEW_RES_FLIGHT_MODE, _manual_mode_config()) + _int_field(
+        _PREVIEW_RES, resolution
+    )
+    return encode_rpc_request(request_id, REQ_SET_PREVIEW_RESOLUTION, body)
+
+
 def encode_stop_preview_request(request_id: int, codec: int) -> bytes:
     """First half of stopping video (the app then sends exit_preview_mode_request)."""
     return encode_rpc_request(request_id, REQ_CAMERA_START_PREVIEW, _preview_params(False, codec))
@@ -517,6 +553,22 @@ class Storage:
 def decode_storage(body: bytes) -> Storage:
     f = parse(body)
     return Storage(_int64(f, _STORAGE_AVAILABLE), _int64(f, _STORAGE_TOTAL))
+
+
+def decode_preview_resolution(body: bytes) -> int:
+    """PreviewResolutionParams.res (0 = unset)."""
+    return _int64(parse(body), _PREVIEW_RES)
+
+
+def decode_camera_tilt(body: bytes) -> float | None:
+    """Gimbal pitch in degrees from a FlightAnalyticsLog (the last sample, like the app)."""
+    samples = parse(body).get(_ANALYTICS_REALTIME, [])
+    if not samples or not isinstance(samples[-1], bytes):
+        return None
+    fields = parse(samples[-1])
+    if _REALTIME_GIMBAL_PITCH not in fields:
+        return None
+    return math.degrees(_float(fields, _REALTIME_GIMBAL_PITCH))  # the drone sends radians
 
 
 def decode_flight_mode(body: bytes) -> int:

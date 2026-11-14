@@ -65,6 +65,7 @@ class StickSender:
     neutral is sent all the time (the app streams neutral on its joystick screen, and the drone
     may need that stream to stay in MANUAL) and values only while `gate` passes. In dry-run
     packets are still printed. `stick_log` appends every packet sent as one JSON line.
+    `sport` (off by default, `set_sport`) sets is_sport_mode in every packet; untested on the X1.
     """
 
     def __init__(
@@ -80,6 +81,7 @@ class StickSender:
     ) -> None:
         self.address = (host, port)
         self.control_source = control_source
+        self.sport = False
         self.max_magnitude = min(abs(max_magnitude), AXIS_LIMIT)
         self.dry_run = dry_run
         self.locked = False
@@ -123,6 +125,10 @@ class StickSender:
         """Change the speed cap while flying; values are clamped to 0..AXIS_LIMIT."""
         with self._lock:
             self.max_magnitude = min(max(max_magnitude, 0.0), AXIS_LIMIT)
+
+    def set_sport(self, on: bool) -> None:
+        """Set is_sport_mode in the packets from the next tick on (the app never sets it)."""
+        self.sport = on
 
     def set_input(self, axes: Axes) -> None:
         with self._lock:
@@ -201,19 +207,20 @@ class StickSender:
         seq_num = self._seq_num
         self._seq_num += 1  # like the app: a failed send still uses up its number
         now = time.time()
-        packet = encode_rocker_command(seq_num, int(now * 1000), axes, self.control_source)
+        sport = self.sport
+        packet = encode_rocker_command(seq_num, int(now * 1000), axes, self.control_source, sport)
         if self.dry_run:
             values = " ".join(f"{k}={v:+4.0f}" for k, v in asdict(to_packet(axes)).items())
-            print(f"seq={seq_num:<6} packet {values}  {packet.hex()}", flush=True)
+            print(f"seq={seq_num:<6} packet {values} sport={sport:d}  {packet.hex()}", flush=True)
         else:
             try:
                 self._socket.sendto(packet, self.address)
             except OSError as error:  # e.g. not on the drone's Wi-Fi yet: keep trying
                 self._note_error(error)
                 return
-        self._record(seq_num, now, axes, packet)
+        self._record(seq_num, now, axes, packet, sport)
 
-    def _record(self, seq_num: int, now: float, axes: Axes, packet: bytes) -> None:
+    def _record(self, seq_num: int, now: float, axes: Axes, packet: bytes, sport: bool) -> None:
         self.sent += 1
         if not axes.is_neutral():
             self.non_neutral_sent += 1
@@ -223,6 +230,7 @@ class StickSender:
             "axes": asdict(axes),
             "packet": asdict(to_packet(axes)),
             "control_source": self.control_source,
+            "sport": sport,
             "hex": packet.hex(),
         }
         if self._log:

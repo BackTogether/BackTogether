@@ -60,6 +60,12 @@
   body.mini .no-video .mono, body.mini .video .tr { display: none; }
   .stall { position: absolute; left: 50%; top: 8px; transform: translateX(-50%); padding: 4px 10px;
     border: 1px solid var(--red); background: var(--panel); color: var(--red); }
+  .takeoff { position: absolute; left: 50%; bottom: 16px; transform: translateX(-50%); z-index: 1;
+    display: grid; gap: 4px; padding: 10px 18px; text-align: center; background: var(--ink); color: var(--bg); }
+  .takeoff b { font: 600 22px var(--mono); letter-spacing: .16em; }
+  body.mini .takeoff { bottom: 8px; padding: 4px 8px; }
+  body.mini .takeoff b { font-size: 13px; }
+  body.mini .takeoff span { display: none; }
   [hidden] { display: none !important; }
 
   .controls { container-type: size; display: grid; grid-template-columns: 1fr minmax(200px, 260px) 1fr;
@@ -141,12 +147,21 @@
   .btn:hover { background: var(--rule); }
   .btn.armed { background: var(--red); border-color: var(--red); color: #fff; }
   .btn:disabled, .btn.off { opacity: .35; cursor: default; pointer-events: none; }
-  .speed { display: grid; grid-template-columns: auto repeat(5, 1fr); align-items: center;
+  .speed { display: grid; grid-template-columns: auto repeat(5, 1fr) auto; align-items: center;
     padding: 10px 16px; border-bottom: 1px solid var(--rule); }
   .speed label { color: var(--muted); font-size: 11px; letter-spacing: .08em; text-transform: uppercase;
     padding-right: 12px; }
   .speed .btn { height: 28px; padding: 0; margin-left: -1px; font: 12px var(--mono); }
   .speed .btn.on { background: var(--ink); color: var(--bg); }
+  .speed #sport { margin-left: 10px; padding: 0 10px; letter-spacing: .1em; }
+  .speed #sport.on, .cell.sport { background: var(--red); border-color: var(--red); color: #fff; }
+  .cell.sport b { color: #fff; }
+  .quality { display: grid; grid-template-columns: auto 1fr 1fr; align-items: center; gap: 0;
+    padding: 10px 16px; border-bottom: 1px solid var(--rule); }
+  .quality label { color: var(--muted); font-size: 11px; letter-spacing: .08em; text-transform: uppercase;
+    padding-right: 12px; }
+  .quality .btn { height: 28px; padding: 0; margin-left: -1px; }
+  .quality .btn.on { background: var(--ink); color: var(--bg); }
   input[type=password], input[type=text] { all: unset; box-sizing: border-box; height: 34px; padding: 0 10px;
     border: 1px solid var(--faint); font: 13px var(--mono); user-select: text; -webkit-user-select: text; min-width: 0; }
   input:focus { border-color: var(--line); }
@@ -178,6 +193,8 @@
     <div class="brand"><b>hoverctl</b><span>HoverAir X1</span></div>
     <div class="status">
       <span class="cell mono" id="drone-mode">mode <b>—</b></span>
+      <span class="cell mono" id="flight-state">state <b>—</b></span>
+      <span class="cell mono" id="sport-cell" title="is_sport_mode in the stick packets">sport <b>off</b></span>
       <span class="cell mono" id="battery">bat <b>—</b></span>
       <span class="cell mono" id="mode">—</span>
       <span class="cell mono" id="keys-held" title="lit while this page holds a flight key">keys <b>—</b></span>
@@ -198,6 +215,7 @@
           <div class="mono" id="no-video-detail">waiting for the server</div>
         </div>
         <span class="stall mono" id="stall" hidden></span>
+        <div class="takeoff" id="takeoff" hidden><b id="takeoff-title"></b><span class="mono" id="takeoff-hint"></span></div>
       </div>
 
       <div class="controls">
@@ -251,6 +269,7 @@
           <div><label class="mono">errors</label><output id="s-errors">—</output></div>
           <div><label class="mono">target</label><output id="s-target">—</output></div>
           <div><label class="mono">control source</label><output id="s-source">—</output></div>
+          <div><label class="mono">sport (is_sport_mode)</label><output id="s-sport">—</output></div>
           <div class="wide"><label class="mono">last packet sent · our signs</label><output id="s-last-axes">—</output></div>
           <div class="wide"><label class="mono">last packet · packet values</label><output class="wrap" id="s-last-packet">—</output></div>
           <div class="wide"><label class="mono">last packet · hex</label><output class="wrap" id="s-last-hex">—</output></div>
@@ -259,7 +278,15 @@
       </section>
       <section>
         <h2 class="mono"><span>Video</span><span id="v-port"></span></h2>
+        <div class="quality" id="quality" title="SD: what the app gets. HD: also asks the drone for its MEDIUM preview resolution (untested)">
+          <label class="mono">preview</label>
+          <button class="btn" type="button" data-quality="sd">SD</button>
+          <button class="btn" type="button" data-quality="hd">HD (try)</button>
+        </div>
         <div class="kv">
+          <div><label class="mono">decoded size</label><output id="v-size">—</output></div>
+          <div><label class="mono">decoded fps</label><output id="v-fps">—</output></div>
+          <div class="wide"><label class="mono">quality · asked / drone</label><output class="wrap" id="v-quality">—</output></div>
           <div><label class="mono">packets</label><output id="v-packets">—</output></div>
           <div><label class="mono">pkt/s</label><output id="v-pps">—</output></div>
           <div><label class="mono">KB/s</label><output id="v-kbps">—</output></div>
@@ -301,6 +328,12 @@ const DRONE_NETWORK_PREFIX = "<DRONE_SUBNET>.";  // the laptop's address here me
 const KIB_PER_GIB = 1024 ** 2;  // the drone's storage fields are named bytes but read as KiB (32 GB card = 33554432)
 const STOP_KEY = " ";
 const VIDEO_KEY = "v";
+const SPORT_KEY_CODES = ["Backslash", "Tab"];  // toggle is_sport_mode; Tab would move the focus
+// Takeoff states, shown large over the video: the drone flies these on its own.
+const TAKEOFF_STATES = {
+  pre_takeoff: ["PRE-TAKEOFF", "rotors starting · hands clear"],
+  taking_off: ["TAKING OFF", "the drone's own climb (~2 s), it may move by itself · sticks after FLYING MANUAL"],
+};
 
 const $ = (id) => document.getElementById(id);
 const clamp = (v) => Math.max(-1, Math.min(1, v));
@@ -388,6 +421,7 @@ $("legend").innerHTML =
   `<span class="caps"><kbd>space</kbd></span><span class="hint">stop, all neutral</span>` +
   `<span class="caps gate"></span><span class="hint gate" id="gate-hint">keys fly the drone</span>` +
   `<span class="caps"><kbd>-</kbd><kbd>=</kbd></span><span class="hint">speed down / up</span>` +
+  `<span class="caps"><kbd>\\</kbd><kbd>tab</kbd></span><span class="hint">sport on / off</span>` +
   `<span class="caps"><kbd>${VIDEO_KEY}</kbd></span><span class="hint">minimize / restore video</span>`;
 
 // ---- sending ----
@@ -488,8 +522,37 @@ for (const preset of SPEED_PRESETS) {
   $("speed").append(button);
 }
 
+// ---- sport: is_sport_mode in every stick packet. The server holds it; off by default. ----
+let sport = false;
+const sportButton = document.createElement("button");
+sportButton.className = "btn";
+sportButton.id = "sport";
+sportButton.type = "button";
+sportButton.title = "is_sport_mode in the stick packets (the app never sets it). Keys \\ or Tab";
+sportButton.addEventListener("mousedown", (event) => event.preventDefault());
+sportButton.addEventListener("click", () => setSport(!sport));
+$("speed").append(sportButton);
+
+function setSport(on) {
+  renderSport(on);
+  post("/api/sport", { on });
+}
+
+function renderSport(on) {
+  sport = on;
+  sportButton.textContent = on ? "sport on" : "sport off";
+  sportButton.classList.toggle("on", on);
+  setCell("sport-cell", "sport", on ? "on" : "off", on ? "sport" : "");
+}
+
 window.addEventListener("keydown", (event) => {
-  if (typing() || event.repeat || event.metaKey || event.ctrlKey || event.altKey) return;
+  if (typing() || event.metaKey || event.ctrlKey || event.altKey) return;
+  if (SPORT_KEY_CODES.includes(event.code)) {
+    event.preventDefault();
+    if (!event.repeat) setSport(!sport);
+    return;
+  }
+  if (event.repeat) return;
   if (event.code === "Minus") stepSpeed(-1);
   if (event.code === "Equal") stepSpeed(1);
 });
@@ -549,6 +612,8 @@ function renderSticks(sticks) {
   setText("s-errors", String(sticks.errors), sticks.errors > 0);
   setText("s-target", sticks.target);
   setText("s-source", CONTROL_SOURCE_NAMES[sticks.control_source] ?? String(sticks.control_source));
+  setText("s-sport", sticks.sport ? "on · field 2 = 1" : "off · like the app", sticks.sport);
+  renderSport(sticks.sport);
   renderLastPacket(sticks.last_packet);
   setText("s-last-error", sticks.last_error || "—", Boolean(sticks.last_error));
 }
@@ -560,7 +625,7 @@ function renderLastPacket(packet) {
   }
   const moving = AXES.filter((axis) => packet.axes[axis]);
   const axes = moving.map((axis) => describe(axis, packet.axes[axis], 0)).join(" · ") || "neutral";
-  setText("s-last-axes", `seq ${packet.seq} · ${axes}`);
+  setText("s-last-axes", `seq ${packet.seq} · ${axes}${packet.sport ? " · sport" : ""}`);
   setText("s-last-packet", AXES.map((axis) => `${axis} ${signed(packet.packet[axis], 0)}`).join("  "));
   setText("s-last-hex", packet.hex);
 }
@@ -586,7 +651,10 @@ function renderVideo(stats) {
   $("no-video").hidden = decoding;
   $("no-video-detail").textContent = noVideoReason(stats);
   $("cam-port").textContent = `cam · udp ${stats.port}`;
-  $("cam-format").textContent = decoding ? `${stats.codec} · ${video.fps.toFixed(0)} fps` : "";
+  const size = stats.width ? `${stats.width}×${stats.height}` : "";
+  $("cam-format").textContent = decoding ? [stats.codec, size, `${stats.fps.toFixed(0)} fps`].filter(Boolean).join(" · ") : "";
+  setText("v-size", size || "—");
+  setText("v-fps", stats.decoding ? stats.fps.toFixed(1) : "—");
   $("v-port").textContent = `udp ${stats.port}`;
   setText("v-packets", stats.packets.toLocaleString());
   setText("v-pps", stats.pps.toFixed(1));
@@ -625,6 +693,9 @@ const DRONE_GROUPS = [
     ["velocity x y z", "wide", (d) => xyz(d.odometry.velocity)],
     ["motor rpm", "wide", (d) => (d.odometry.motors_rpm || []).join("  ") || "—"],
     ["total current", "", (d) => num(d.odometry.total_current)]] },
+  { id: "camera", title: "Camera", ts: (d) => d.camera_tilt.ts, rows: [
+    ["camera tilt °", "wide", (d) => (d.camera_tilt.degrees === null
+      ? "not reported (the X1 never sent it)" : `${d.camera_tilt.degrees.toFixed(0)}°`)]] },
   { id: "storage", title: "Storage", ts: (d) => d.storage.ts, rows: [
     ["free", "", (d) => `${gigabytes(d.storage.available_bytes)} GB`],
     ["total", "", (d) => `${gigabytes(d.storage.total_bytes)} GB`]] },
@@ -691,6 +762,8 @@ function renderDrone(state) {
     (present && connected ? ` · last message ${ageText(drone.connection.last_message_age_s)}` : "");
   $("d-link-age").textContent = present ? (connected ? "connected" : "no link") : "off";
   setCell("drone-mode", "mode", mode ?? "—", mode === "MANUAL" ? "tag" : "");
+  renderTakeoff(present ? drone : null, state.now);
+  renderQuality(present ? drone.video_quality : null);
   if (present) {
     renderGroups(drone, state.now);
     const soc = drone.battery.soc;
@@ -700,6 +773,27 @@ function renderDrone(state) {
     setCell("battery", "bat", "—");
   }
   renderLock(sticks, present);
+}
+
+// Flight state in the top bar, and a banner over the video while the drone takes off by itself.
+function renderTakeoff(drone, now) {
+  const fresh = drone && drone.flight_state.value && !isStale(age(now, drone.flight_state.ts));
+  const value = fresh ? drone.flight_state.value : null;
+  const takeoff = TAKEOFF_STATES[value];
+  setCell("flight-state", "state", value ?? "—", takeoff ? "tag" : "");
+  $("takeoff").hidden = !takeoff;
+  if (takeoff) [$("takeoff-title").textContent, $("takeoff-hint").textContent] = takeoff;
+}
+
+function renderQuality(quality) {
+  for (const button of $("quality").querySelectorAll("button")) {
+    button.classList.toggle("on", Boolean(quality) && button.dataset.quality === quality.wanted);
+    button.classList.toggle("off", !quality);
+  }
+  if (!quality) { setText("v-quality", "needs the bluetooth link"); return; }
+  const drone = quality.applied ? `set to ${quality.applied}` : "untouched (the app's preview)";
+  const error = quality.error ? ` · ${quality.error}` : "";
+  setText("v-quality", `${quality.wanted} / ${drone}${error}`, Boolean(quality.error));
 }
 
 function renderLock(sticks, present) {
@@ -782,6 +876,11 @@ $("d-land").addEventListener("click", () => {
 });
 $("d-video").addEventListener("click", () => droneAction("video", "/api/drone/video"));
 $("d-video-stop").addEventListener("click", () => droneAction("video stop", "/api/drone/video-stop"));
+for (const button of $("quality").querySelectorAll("button")) {
+  button.addEventListener("mousedown", (event) => event.preventDefault());
+  button.addEventListener("click", () =>
+    droneAction(`video ${button.dataset.quality}`, "/api/drone/video-quality", { quality: button.dataset.quality }));
+}
 // Once: on the drone's Wi-Fi with no video packets yet, ask the drone to push video to us.
 let videoAutoStarted = false;
 function autoStartVideo(state) {

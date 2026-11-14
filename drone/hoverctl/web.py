@@ -17,7 +17,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any
 from urllib.parse import parse_qs, urlsplit
 
-from .pbwire import drone_network_ip
+from .pbwire import VIDEO_QUALITIES, drone_network_ip
 from .protocol import AXIS_DIRECTIONS, AXIS_NAMES, NEUTRAL, Axes
 from .sticks import StickSender
 from .teleop import KEY_BINDINGS
@@ -38,6 +38,7 @@ DRONE_PATHS = (
     "/api/drone/wifi",
     "/api/drone/video",
     "/api/drone/video-stop",
+    "/api/drone/video-quality",
 )
 MIN_WIFI_PASSWORD = 8
 PILOT_HOLD_S = 0.5  # ignore other tabs' neutral posts this long after the pilot's last values
@@ -78,6 +79,8 @@ class _Handler(BaseHTTPRequestHandler):
                 self.server.sender.set_input(axes)
         elif self.path == "/api/max":
             self.server.sender.set_max(self._read_max())
+        elif self.path == "/api/sport":
+            self.server.sender.set_sport(self._read_json().get("on") is True)
         elif self.path == "/api/stop":
             self.server.sender.set_input(NEUTRAL)
         else:
@@ -95,13 +98,28 @@ class _Handler(BaseHTTPRequestHandler):
             "/api/drone/wifi": lambda: self._start_wifi(link),
             "/api/drone/video": link.start_video,
             "/api/drone/video-stop": link.stop_video,
+            "/api/drone/video-quality": lambda: self._set_video_quality(link),
         }
 
-    def _start_wifi(self, link: "DroneLink") -> dict[str, Any]:
+    def _set_video_quality(self, link: "DroneLink") -> dict[str, Any]:
+        quality = str(self._read_json().get("quality", ""))
+        if quality not in VIDEO_QUALITIES:
+            return {"ok": False, "error": f"quality must be one of {', '.join(VIDEO_QUALITIES)}"}
+        result = link.set_video_quality(quality)
+        if result["ok"]:
+            self.server.receiver.restart_decoder()  # the frame size may change
+        return result
+
+    def _read_json(self) -> dict[str, Any]:
+        """The request body as a JSON object; anything else reads as {}."""
         try:
-            password = str(json.loads(self._read_body() or b"{}").get("password", ""))
-        except (ValueError, AttributeError):
-            password = ""
+            body = json.loads(self._read_body() or b"{}")
+        except ValueError:
+            return {}
+        return body if isinstance(body, dict) else {}
+
+    def _start_wifi(self, link: "DroneLink") -> dict[str, Any]:
+        password = str(self._read_json().get("password", ""))
         if len(password) < MIN_WIFI_PASSWORD:
             return {"ok": False, "error": f"password needs {MIN_WIFI_PASSWORD}+ characters"}
         return link.start_wifi(password)
@@ -118,7 +136,7 @@ class _Handler(BaseHTTPRequestHandler):
     def _read_max(self) -> float:
         """The new speed cap; a bad body keeps the current one."""
         try:
-            value = float(json.loads(self._read_body() or b"{}")["max"])
+            value = float(self._read_json()["max"])
         except (ValueError, TypeError, KeyError):
             return self.server.sender.max_magnitude
         return value if math.isfinite(value) else self.server.sender.max_magnitude
@@ -153,6 +171,7 @@ class _Handler(BaseHTTPRequestHandler):
                 "last_packet": sender.last_packet,
                 "gate": sender.gate_state,
                 "control_source": sender.control_source,
+                "sport": sender.sport,
                 "errors": sender.errors,
                 "last_error": sender.last_error,
                 "target": f"{sender.address[0]}:{sender.address[1]}",

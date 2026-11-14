@@ -27,6 +27,8 @@ _FIELD_TIMESTAMP = 2
 _FIELD_COMMAND = 3
 # RawManualControlCommand (roll=3, pitch=4, thrust=5, yaw=6, gimbal=7, in Axes field order)
 _FIELD_CONTROL_SOURCE = 1
+# is_sport_mode: the app never sets it (its builder has no setter), so its packets leave it out
+_FIELD_SPORT = 2
 _FIRST_AXIS_FIELD = 3
 
 
@@ -97,18 +99,27 @@ def _key(field: int, wire_type: int) -> bytes:
     return _varint(field << 3 | wire_type)
 
 
-def _encode_manual_control(axes: Axes, control_source: int) -> bytes:
+def _encode_manual_control(axes: Axes, control_source: int, sport: bool) -> bytes:
     out = _key(_FIELD_CONTROL_SOURCE, _WIRE_VARINT) + _varint(control_source)
+    if sport:
+        out += _key(_FIELD_SPORT, _WIRE_VARINT) + _varint(1)
     for field, value in enumerate(astuple(to_packet(axes)), start=_FIRST_AXIS_FIELD):
         out += _key(field, _WIRE_FIXED32) + struct.pack("<f", value)
     return out
 
 
 def encode_rocker_command(
-    seq_num: int, timestamp_ms: int, axes: Axes, control_source: int = CONTROL_SOURCE_CROSS_KEY
+    seq_num: int,
+    timestamp_ms: int,
+    axes: Axes,
+    control_source: int = CONTROL_SOURCE_CROSS_KEY,
+    sport: bool = False,
 ) -> bytes:
-    """One UDP payload for <DRONE_IP>:19091. `axes` are in -100..100, with our signs."""
-    command = _encode_manual_control(axes, control_source)
+    """One UDP payload for <DRONE_IP>:19091. `axes` are in -100..100, with our signs.
+
+    `sport` sets RawManualControlCommand.is_sport_mode; off, the packet is the app's byte for byte.
+    """
+    command = _encode_manual_control(axes, control_source, sport)
     return (
         _key(_FIELD_SEQ_NUM, _WIRE_VARINT)
         + _varint(seq_num)

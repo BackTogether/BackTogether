@@ -11,6 +11,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 from .decoder import MjpegDecoder
+from .pbwire import VIDEO_QUALITIES, VIDEO_QUALITY_SD
 from .protocol import CONTROL_SOURCES, DEFAULT_CONTROL_SOURCE
 from .sticks import DEFAULT_MAX_MAGNITUDE, DRONE_HOST, STICK_PORT, StickSender
 from .teleop import run_teleop
@@ -144,7 +145,7 @@ def _start_link(args: argparse.Namespace) -> tuple["DroneLink | None", str]:
         from .ble import DroneLink
     except ImportError:  # bleak is not installed
         return None, NO_BLEAK_NOTE
-    link = DroneLink(**_wifi_options(args))
+    link = DroneLink(**_wifi_options(args), video_quality=args.video_quality)
     link.start()
     return link, ""
 
@@ -252,6 +253,14 @@ def main() -> None:
         help="no Bluetooth link: sticks are sent without the MANUAL-mode interlock",
     )
     _add_wifi_options(web)
+    web.add_argument(
+        "--video-quality",
+        choices=VIDEO_QUALITIES,
+        default=VIDEO_QUALITY_SD,
+        help="live preview: sd = what the app gets (1280x720), hd = also ask the drone for its "
+        "MEDIUM preview resolution (untested, the app never does); switchable in the page "
+        "(default %(default)s)",
+    )
     web.add_argument("--no-browser", action="store_true", help="don't open a browser tab")
     web.set_defaults(run=cmd_web)
 

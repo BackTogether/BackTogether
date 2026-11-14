@@ -17,6 +17,7 @@ from bleak import BleakClient, BleakScanner
 from bleak.exc import BleakError
 
 from . import adgp, macwifi, pbwire
+from .pbwire import VIDEO_QUALITIES, VIDEO_QUALITY_HD, VIDEO_QUALITY_SD
 
 SERVICE_UUID = "0000fe45-0000-1000-8000-00805f9b34fb"
 NOTIFY_UUID = "6e400003-b5a3-f393-e0a9-e50e24dcca9e"  # drone -> laptop
@@ -66,7 +67,12 @@ class DroneLink:
         ssid: str = WIFI_SSID,
         country: str = WIFI_COUNTRY,
         wifi_password: str | None = DEFAULT_WIFI_PASSWORD,
+        video_quality: str = VIDEO_QUALITY_SD,
     ) -> None:
+        """Nothing runs until start(). `wifi_password` None leaves the drone's Wi-Fi alone;
+        `video_quality` (pbwire.VIDEO_QUALITIES) is used by the next enter_manual() or
+        start_video(); "hd" is a guess (the app never asks for it), a failure keeps the video."""
+        _check_quality(video_quality)
         self._name_prefix = name_prefix
         self._phone_id = phone_id
         self._ssid = ssid
@@ -79,6 +85,14 @@ class DroneLink:
         self._manual_session = False  # neutral sticks may flow; see in_manual_session()
         self._manual_steps: list[str] = []
         self._manual_error: str | None = None
+        # wanted: what the user asked; applied: what the drone accepted (None = untouched);
+        # drone_default: the drone's own preview resolution, read before the first change
+        self._video_quality: dict[str, Any] = {
+            "wanted": video_quality,
+            "applied": None,
+            "drone_default": None,
+            "error": None,
+        }
         self._thread = threading.Thread(target=self._run_thread, name="drone-ble", daemon=True)
         self._ready = threading.Event()
         self._loop: asyncio.AbstractEventLoop | None = None
@@ -113,17 +127,20 @@ class DroneLink:
                 pbwire.EVENT_FLIGHT_STATUS_CHANGE: ("flight_state", pbwire.decode_flight_state),
                 pbwire.EVENT_FLIGHT_EXCEPTION: ("exception", pbwire.decode_flight_exception),
                 pbwire.EVENT_FLIGHT_ENGINEERING_INFO: ("odometry", pbwire.decode_engineering),
+                pbwire.EVENT_FLIGHT_ANALYTICS_LOG: ("camera_tilt", pbwire.decode_camera_tilt),
             }
         )
 
     # --- public, any thread -----------------------------------------------------------------
 
     def start(self) -> None:
+        """Start the Bluetooth thread: it scans, connects and reconnects on its own."""
         self._thread.start()
         if not self._ready.wait(THREAD_START_TIMEOUT_S):
             raise RuntimeError("Bluetooth thread did not start")
 
     def stop(self) -> None:
+        """Disconnect and end the Bluetooth thread."""
         if self._loop and self._main_task:
             self._loop.call_soon_threadsafe(self._main_task.cancel)
         self._thread.join()
@@ -135,6 +152,7 @@ class DroneLink:
             values = dict(self._values)
             wifi = {**self._wifi, "password": self._wifi_password}  # local UI only
             app_announced = dict(self._app_announced)
+            video_quality = dict(self._video_quality)
             manual_entry = {
                 "session": self._manual_session,
                 "steps": list(self._manual_steps),
@@ -157,6 +175,7 @@ class DroneLink:
         storage, storage_ts = get("storage")
         odometry, odometry_ts = get("odometry")
         exception, exception_ts = get("exception")
+        tilt, tilt_ts = get("camera_tilt")
         return {
             "connection": {
                 "connected": since is not None,
@@ -167,6 +186,7 @@ class DroneLink:
             "wifi": wifi,
             "app_announced": app_announced,
             "manual_entry": manual_entry,
+            "video_quality": video_quality,
             "mode": {
                 "value": mode,
                 "name": None if mode is None else pbwire.mode_name(mode),
@@ -206,6 +226,8 @@ class DroneLink:
                 "event": exception.event if exception else None,
                 "ts": exception_ts,
             },
+            # flight_analytics_log_event, the app's only live source; the X1 never sent it
+            "camera_tilt": {"degrees": tilt, "ts": tilt_ts},
         }
 
     def is_manual(self) -> bool:
@@ -276,6 +298,7 @@ class DroneLink:
         address = pbwire.drone_network_ip()
         if address is None:
             return {"ok": False, "error": "laptop is not on the drone's Wi-Fi"}
+        self._apply_video_quality()
         result = _wifi_rpc(
             lambda rid: pbwire.encode_enter_preview_request(rid, address, pbwire.VIDEO_CODEC_AVC)
         )
@@ -283,7 +306,27 @@ class DroneLink:
             self._start_heartbeat()
         return result
 
+    def set_video_quality(self, quality: str) -> dict[str, Any]:
+        """Switch the preview quality (pbwire.VIDEO_QUALITIES).
+
+        With video running it applies now and re-sends camera_start_preview_request; otherwise
+        at the next video start. The outcome is in snapshot()["video_quality"]. Restart the
+        video decoder after a change (VideoReceiver.restart_decoder): the frame size may change.
+        """
+        _check_quality(quality)
+        with self._lock:
+            self._video_quality["wanted"] = quality
+        if self._heartbeat_stop is None:
+            return {"ok": True, "error": None}  # no video yet: used by the next start
+        result = self._apply_video_quality()
+        if not result["ok"]:
+            return result
+        return _wifi_rpc(
+            lambda rid: pbwire.encode_camera_start_preview_request(rid, pbwire.VIDEO_CODEC_AVC)
+        )
+
     def stop_video(self) -> dict[str, Any]:
+        """Stop the video push and the heartbeat; this also ends the manual session."""
         self._stop_heartbeat()
         self._set_manual_session(False)
         stopped = _wifi_rpc(
@@ -312,6 +355,8 @@ class DroneLink:
             (STEP_VIDEO, (lambda rid: pbwire.encode_camera_start_preview_request(rid, codec),)),
         )
         for step, requests in plan:
+            if step == STEP_VIDEO:
+                self._apply_video_quality()  # not fatal: the video then starts as before
             for build in requests:
                 result = _wifi_rpc(build)
                 if not result["ok"]:
@@ -327,6 +372,37 @@ class DroneLink:
                 f"requests accepted but the drone reports {mode}, not MANUAL"
             )
         return {"ok": True, "error": None}
+
+    def _apply_video_quality(self) -> dict[str, Any]:
+        """Bring the drone's preview resolution to the wanted quality. "sd" changes nothing
+        unless we set "hd" before, then it restores the drone's own value. Errors are kept in
+        the snapshot."""
+        with self._lock:
+            state = dict(self._video_quality)
+        if state["wanted"] == (state["applied"] or VIDEO_QUALITY_SD):
+            return {"ok": True, "error": None}
+        if state["drone_default"] is None:
+            state["drone_default"] = self._read_preview_resolution()
+        if state["wanted"] == VIDEO_QUALITY_HD:
+            resolution = pbwire.PREVIEW_RESOLUTION_MEDIUM
+        else:
+            resolution = state["drone_default"] or pbwire.PREVIEW_RESOLUTION_LOW
+        result = _wifi_rpc(
+            lambda rid: pbwire.encode_set_preview_resolution_request(rid, resolution)
+        )
+        with self._lock:
+            self._video_quality["drone_default"] = state["drone_default"]
+            self._video_quality["error"] = result["error"]
+            if result["ok"]:
+                self._video_quality["applied"] = state["wanted"]
+        return result
+
+    def _read_preview_resolution(self) -> int | None:
+        """The drone's PreviewResolutionParams.res for MANUAL; None if it does not answer."""
+        result = _wifi_rpc(pbwire.encode_get_preview_resolution_request)
+        if not result["ok"] or result["response"] != pbwire.RESP_GET_PREVIEW_RESOLUTION:
+            return None
+        return pbwire.decode_preview_resolution(result["body"]) or None
 
     def _send_connect_type(self) -> None:
         """Not fatal, like in the app: Bluetooth sent it on connect too. The error stays shown."""
@@ -562,7 +638,12 @@ class DroneLink:
         self, table: dict[int, tuple[str, Callable[[bytes], Any]]]
     ) -> dict[int, Callable[[bytes], None]]:
         def make(name: str, decode: Callable[[bytes], Any]) -> Callable[[bytes], None]:
-            return lambda body: self._store(name, decode(body))
+            def handle(body: bytes) -> None:
+                value = decode(body)
+                if value is not None:  # None: the message did not carry the value
+                    self._store(name, value)
+
+            return handle
 
         return {number: make(name, decode) for number, (name, decode) in table.items()}
 
@@ -580,7 +661,17 @@ def _wifi_rpc(build: Callable[[int], bytes]) -> dict[str, Any]:
         response = pbwire.post_wifi_rpc(build(pbwire.WIFI_REQUEST_ID))
     except OSError as exc:
         return {"ok": False, "error": f"{type(exc).__name__}: {exc}"}
-    return {"ok": response.error is None, "response": response.kind, "error": response.error}
+    return {
+        "ok": response.error is None,
+        "response": response.kind,
+        "body": response.body,
+        "error": response.error,
+    }
+
+
+def _check_quality(quality: str) -> None:
+    if quality not in VIDEO_QUALITIES:
+        raise ValueError(f"video quality must be one of {VIDEO_QUALITIES}, not {quality!r}")
 
 
 def _heartbeat(stop: threading.Event, on_lost: Callable[[], None]) -> None:

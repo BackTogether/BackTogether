@@ -2,10 +2,12 @@
 
 import os
 import shutil
+import struct
 import subprocess
 import sys
 import threading
 import time
+from collections import deque
 
 from .video_payload import detect_codec
 
@@ -16,6 +18,10 @@ READ_CHUNK = 1 << 16
 MAX_PENDING_BYTES = 4 << 20  # stream kept while waiting for the first parameter set
 RESTART_DELAY_S = 2.0
 CLOSE_TIMEOUT_S = 1.0
+FPS_WINDOW_S = 2.0
+# JPEG start-of-frame markers (baseline, extended, progressive) hold the frame size
+JPEG_SOF_MARKERS = (b"\xff\xc0", b"\xff\xc1", b"\xff\xc2")
+JPEG_SOF_SIZE = struct.Struct(">xxxHH")  # length (2), precision (1), height, width
 
 
 def _ffmpeg_command(codec: str) -> list[str]:
@@ -56,8 +62,11 @@ class MjpegDecoder:
     def __init__(self, codec: str | None = None) -> None:
         if not shutil.which("ffmpeg"):
             raise SystemExit("ffmpeg not found: brew install ffmpeg (or use --no-decode)")
+        self._configured_codec = codec
         self.codec = codec
         self.frames = 0
+        self.size: tuple[int, int] | None = None  # (width, height) of the last frame
+        self._frame_times: deque[float] = deque()
         self._pending = bytearray()
         self._process: subprocess.Popen | None = None
         self._last_start = 0.0
@@ -72,11 +81,29 @@ class MjpegDecoder:
             return
         if not self._running() and not self._start():
             return
+        process = self._process  # restart() may clear it from another thread
+        if process is None:
+            return
         try:
-            self._process.stdin.write(data)
-            self._process.stdin.flush()
-        except (BrokenPipeError, ValueError):
+            process.stdin.write(data)
+            process.stdin.flush()
+        except (OSError, ValueError):  # broken pipe, or stdin closed by restart()
             self._process = None
+
+    @property
+    def fps(self) -> float:
+        """Decoded frames per second over the last FPS_WINDOW_S."""
+        with self._frame_ready:
+            self._drop_old_frame_times(time.monotonic())
+            return len(self._frame_times) / FPS_WINDOW_S
+
+    def restart(self) -> None:
+        """Start over at the next parameter set, e.g. after the drone changed resolution: one
+        ffmpeg process keeps the frame size it started with."""
+        self.close()
+        self.codec = self._configured_codec
+        self._pending = bytearray()
+        self._last_start = 0.0
 
     def wait_frame(self, after: int, timeout: float) -> tuple[int, bytes]:
         """Block until a frame newer than number `after` exists (or timeout)."""
@@ -132,7 +159,25 @@ class MjpegDecoder:
                 buffer = buffer[-1:]  # a marker may be split across reads
 
     def _publish(self, jpeg: bytes) -> None:
+        now = time.monotonic()
         with self._frame_ready:
             self._frame = jpeg
             self.frames += 1
+            self.size = _jpeg_size(jpeg) or self.size
+            self._frame_times.append(now)
+            self._drop_old_frame_times(now)
             self._frame_ready.notify_all()
+
+    def _drop_old_frame_times(self, now: float) -> None:
+        while self._frame_times and now - self._frame_times[0] > FPS_WINDOW_S:
+            self._frame_times.popleft()
+
+
+def _jpeg_size(jpeg: bytes) -> tuple[int, int] | None:
+    """(width, height) from the JPEG start-of-frame header."""
+    for marker in JPEG_SOF_MARKERS:
+        offset = jpeg.find(marker)
+        if offset >= 0 and offset + 2 + JPEG_SOF_SIZE.size <= len(jpeg):
+            height, width = JPEG_SOF_SIZE.unpack_from(jpeg, offset + 2)
+            return width, height
+    return None
