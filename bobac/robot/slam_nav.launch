@@ -12,6 +12,9 @@
   <arg name="mode" default="slam" doc="slam: build the map while navigating; nav: saved map + amcl"/>
   <arg name="map" default="demo" doc="nav mode: map name in map_directory (without .yaml)"/>
   <arg name="map_directory" default="$(env MAP_DIRECTORY)"/>
+  <arg name="max_vel" default="0.3" doc="m/s, forward, backward and sideways (team limit: 0.4)"/>
+  <arg name="max_vel_theta" default="0.8" doc="rad/s (team limit: 0.8)"/>
+  <arg name="nav_params" value="$(find bobac3_navigation)/param"/>
   <arg name="joy" default="true" doc="joystick teleop (it only publishes while enabled on the pad)"/>
   <arg name="slam" value="$(eval arg('mode') == 'slam')"/>
 
@@ -47,4 +50,34 @@
       <param name="map_file" value="$(arg map_directory)/$(arg map).yaml"/>
     </node>
   </group>
+
+  <!-- move_base: vendor params (TEB local planner, navfn), same node name as the vendor
+       move_base.launch. Goals: action /move_base or "2D Nav Goal" in rviz. -->
+  <node pkg="move_base" type="move_base" name="move_base_node" respawn="false" output="screen">
+    <rosparam file="$(arg nav_params)/costmap_common_params_global.yaml" command="load" ns="global_costmap"/>
+    <rosparam file="$(arg nav_params)/costmap_common_params.yaml" command="load" ns="local_costmap"/>
+    <rosparam file="$(arg nav_params)/local_costmap_params.yaml" command="load"/>
+    <rosparam file="$(arg nav_params)/global_costmap_params.yaml" command="load"/>
+    <rosparam file="$(arg nav_params)/teb_local_planner_params.yaml" command="load"/>
+    <rosparam file="$(arg nav_params)/move_base_params.yaml" command="load"/>
+    <rosparam file="$(arg nav_params)/navfn_global_planner_params.yaml" command="load"/>
+
+    <!-- Team speed limits (vendor: 0.5 m/s, 1.0 rad/s). -->
+    <param name="TebLocalPlannerROS/max_vel_x" value="$(arg max_vel)"/>
+    <param name="TebLocalPlannerROS/max_vel_x_backwards" value="$(arg max_vel)"/>
+    <param name="TebLocalPlannerROS/max_vel_y" value="$(arg max_vel)"/>
+    <param name="TebLocalPlannerROS/max_vel_theta" value="$(arg max_vel_theta)"/>
+
+    <!-- slam mode has no virtual walls: the vendor virtual_wall_layer would block move_base
+         forever waiting for /virtual_wall_map, so load the costmaps without it. -->
+    <rosparam if="$(arg slam)" param="global_costmap/plugins">
+      - {name: static_layer, type: "costmap_2d::StaticLayer"}
+      - {name: obstacle_layer, type: "costmap_2d::VoxelLayer"}
+      - {name: inflation_layer, type: "costmap_2d::InflationLayer"}
+    </rosparam>
+    <rosparam if="$(arg slam)" param="local_costmap/plugins">
+      - {name: obstacle_layer, type: "costmap_2d::VoxelLayer"}
+      - {name: inflation_layer, type: "costmap_2d::InflationLayer"}
+    </rosparam>
+  </node>
 </launch>
