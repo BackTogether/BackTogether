@@ -352,11 +352,10 @@
         </div>
         <div class="row vid seg" id="d-video-row">
           <span class="label mono">video</span>
-          <button class="btn" id="d-video" type="button">start</button>
+          <button class="btn" id="d-video" type="button" title="Restarts the drone's preview: press it if the video stalls">start</button>
           <button class="btn" id="d-video-stop" type="button">stop</button>
-          <span class="gap"></span>
-          <button class="btn" type="button" data-quality="sd" title="SD: what the app gets">SD</button>
-          <button class="btn" type="button" data-quality="hd" title="HD: also asks the drone for its MEDIUM preview resolution (untested)">HD</button>
+          <!-- No SD/HD switch: the X1 only streams 1280x720, and asking for HD stopped its
+               preview for minutes (2026-11-14 23:47, recordings/hover_video_20261114-233542). -->
         </div>
         <form class="row wifi" id="d-wifi" autocomplete="off" hidden>
           <input type="password" id="d-wifi-pw" placeholder="drone wi-fi password (8+)" autocomplete="off">
