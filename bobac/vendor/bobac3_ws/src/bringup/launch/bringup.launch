@@ -1,0 +1,20 @@
+<launch>
+  <!-- Starts every block of the demo. Add one include / node per new block.
+
+       Run it with:  roslaunch bringup bringup.launch
+       The chassis driver is started here too: kill the boot-time instance
+       first (rosnode kill /rei_base). -->
+
+  <arg name="open_rviz" default="true"/>
+
+  <!-- Block: SLAM + navigation (base, lidars, gmapping, move_base) -->
+  <include file="$(find bobac3_navigation)/launch/bobac3_slam_nav.launch">
+    <arg name="open_rviz" value="$(arg open_rviz)"/>
+  </include>
+
+  <!-- Block: head camera + face recognition -> /face_results -->
+  <include file="$(find face_rec)/launch/face_rec_topic.launch"/>
+
+  <!-- Block: react to the recognised person -->
+  <node name="face_check" pkg="bringup" type="face_check.py" output="screen"/>
+</launch>
