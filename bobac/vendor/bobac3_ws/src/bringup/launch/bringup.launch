@@ -8,7 +8,7 @@
   <arg name="open_rviz" default="true"/>
 
   <!-- Block: SLAM + navigation (base, lidars, gmapping, move_base) -->
-  <include file="$(find bobac3_navigation)/launch/bobac3_slam_nav.launch">
+  <include file="$(find bringup)/launch/slam_nav.launch">
     <arg name="open_rviz" value="$(arg open_rviz)"/>
   </include>
 
