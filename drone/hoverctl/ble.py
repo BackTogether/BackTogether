@@ -16,7 +16,7 @@ from typing import Any
 from bleak import BleakClient, BleakScanner
 from bleak.exc import BleakError
 
-from . import adgp, pbwire
+from . import adgp, macwifi, pbwire
 
 SERVICE_UUID = "0000fe45-0000-1000-8000-00805f9b34fb"
 NOTIFY_UUID = "6e400003-b5a3-f393-e0a9-e50e24dcca9e"  # drone -> laptop
@@ -240,8 +240,12 @@ class DroneLink:
         """
         address = pbwire.drone_network_ip()
         if address is None:
+            # The access point is up once the Bluetooth link sent wifi_start; join it ourselves.
             password = self._wifi_password or DEFAULT_WIFI_PASSWORD
-            return self._manual_failed(f"join {self._ssid} (password {password}) first")
+            error = macwifi.join(self._ssid, password)
+            address = pbwire.drone_network_ip()
+            if address is None:
+                return self._manual_failed(error or f"join {self._ssid} (password {password})")
         if not self._entering_manual.acquire(blocking=False):
             return {"ok": False, "error": "manual entry is already running"}
         try:

@@ -719,7 +719,7 @@ function renderManualSteps(state, present) {
   const ssid = state.drone.wifi.ssid ?? "the drone's Wi-Fi";
   const mode = state.drone.mode.name ?? "—";
   const marks = MANUAL_STEPS.map((step) => `${step} ${entry.steps.includes(step) ? "✓" : "·"}`).join(" / ");
-  const hint = onDroneWifi ? "" : ` · laptop is not on the drone's Wi-Fi: join ${ssid} first`;
+  const hint = onDroneWifi ? "" : ` · not on ${ssid} yet: Manual control joins it`;
   const error = entry.error ? ` · ${entry.error}` : "";
   element.textContent = `${marks} / mode: ${mode}${entry.session ? " · session on" : ""}${error}${hint}`;
   element.classList.toggle("warn", Boolean(entry.error) || !onDroneWifi);
