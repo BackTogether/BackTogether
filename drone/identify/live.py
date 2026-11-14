@@ -11,7 +11,7 @@ matching frames. With no match for `timeout_s` the search fails.
 
 import logging
 import time
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from pathlib import Path
 
 import cv2
@@ -99,3 +99,32 @@ def watch(
             return best
     log.info("timeout after looking at %d frames", looked)
     return None
+
+
+def recognise_all(
+    root: Path,
+    embedder: FaceEmbedder,
+    people: People,
+    on_recognised: Callable[[str, Sighting], None],
+    timeout_s: float = SEARCH_TIMEOUT_S,
+) -> dict:
+    """Check every face of the live frames against the whole database. Calls
+    on_recognised(name, sighting) the first time each person is confirmed; returns
+    {name: best sighting} when the timeout passes."""
+    in_a_row = {}  # name -> consecutive frames where that person was seen
+    best = {}
+    for frame, image in live_frames(root, timeout_s):
+        seen = {}
+        for name, sighting in classified_faces(frame, image, embedder, people):
+            if name and (name not in seen or sighting.similarity > seen[name].similarity):
+                seen[name] = sighting
+        in_a_row = {name: in_a_row.get(name, 0) + 1 for name in seen}
+        for name, sighting in seen.items():
+            if in_a_row[name] < CONFIRM_FRAMES:
+                continue
+            if name not in best:
+                log.info("recognised %s (%.2f) in %s", name, sighting.similarity, frame.name)
+                on_recognised(name, sighting)
+            if name not in best or sighting.similarity > best[name].similarity:
+                best[name] = sighting
+    return best
