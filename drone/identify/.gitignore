@@ -1,3 +1,5 @@
-# Photos of people are personal data and model weights are large: never commit them
-people/
+# Photos of people are personal data and model weights are large: never commit them.
+# The people/ folder itself is in git (via .gitkeep) so it exists after a clone.
+people/*
+!people/.gitkeep
 models/
