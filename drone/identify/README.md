@@ -23,6 +23,18 @@ uv run --with opencv-python-headless python -m drone.identify leo      # only Le
 - One person: stops at the first **POSITIVE** (exit code 0), or **FAILED** with one low beep
   (exit code 1) after `--timeout` seconds.
 
+## Feeding the lost-child mission
+`feed` reads the drone SDK server's frames (`GET /frame.jpg`) and posts the child to the mission
+(`POST /mission/target`, drone/sdk/API.md) with each frame's time. It recognises the child by
+face, then keeps tracking the head with an OpenCV tracker, because the approach ends with the
+camera straight down where no face is visible:
+```bash
+uv run --with opencv-contrib-python-headless python -m drone.identify.feed leo --url http://<mac>:8077
+```
+The posted box is the head: start the mission with `target_height_m` = the child's head height
+(about 1.0 standing, 0.6 sitting). Plain `opencv-python-headless` also works (MIL tracker, worse
+than contrib's CSRT).
+
 ## On recorded flights
 ```bash
 uv run --with opencv-python-headless python -m drone.identify.survey recordings/frames
