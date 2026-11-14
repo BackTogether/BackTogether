@@ -10,6 +10,9 @@
   <arg name="person" default="jorge"/>
   <!-- true: start turning right away, without waiting for a navigation goal (to test it) -->
   <arg name="search_on_start" default="false"/>
+  <!-- following: face box to keep in px^2 (0 = its size when found) and top speed in m/s -->
+  <arg name="target_area" default="0"/>
+  <arg name="max_linear" default="0.15"/>
 
   <!-- Block: SLAM + navigation (base, lidars, gmapping, move_base) -->
   <include file="$(find bringup)/launch/slam_nav.launch">
@@ -20,10 +23,13 @@
   <include file="$(find face_rec)/launch/face_rec_topic.launch"/>
 
   <!-- Block: on arrival at a goal, turn on the spot until the person is recognised, then
-       stop facing them (publishes the name on /face_check/found) -->
+       follow them: turn to keep the face centred, back up / move forward to keep its size
+       (publishes the name on /face_check/found when found) -->
   <node name="face_check" pkg="bringup" type="face_check.py" output="screen">
     <param name="person" value="$(arg person)"/>
     <param name="turn_speed" value="0.3"/>
     <param name="search_on_start" value="$(arg search_on_start)"/>
+    <param name="target_area" value="$(arg target_area)"/>
+    <param name="max_linear" value="$(arg max_linear)"/>
   </node>
 </launch>
