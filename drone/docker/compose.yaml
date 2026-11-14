@@ -1,0 +1,63 @@
+# Drone web app + bounce patrol. Run from drone/docker/ (details in README.md here):
+#   docker compose --profile sim up --build      simulator + patrol, any OS, http://localhost:8077
+#   docker compose --profile drone up --build    real drone, Linux host only (Bluetooth + Wi-Fi)
+#   docker compose --profile patrol up --build   patrol against an SDK running elsewhere (SDK_URL)
+name: drone
+
+x-app: &app
+  image: leukerbad/drone-app
+  build: {context: .., dockerfile: docker/Dockerfile, target: app}
+
+x-patrol: &patrol
+  image: leukerbad/drone-patrol
+  build: {context: .., dockerfile: docker/Dockerfile, target: patrol}
+
+services:
+  sim:
+    <<: *app
+    profiles: [sim]
+    command: [python, -m, drone.sdk, sim, --bind, 0.0.0.0, --http-port, "8077", --no-browser, --room, "4"]
+    ports: ["8077:8077"]
+    healthcheck:
+      test: [CMD, python, -c, "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8077/api/state')"]
+      interval: 2s
+      retries: 15
+
+  # Bounce against the simulator: enters MANUAL, presses the sim takeoff button, then patrols
+  # with the simulator's true wall distance (--fake-depth), so no camera is needed.
+  patrol-sim:
+    <<: *patrol
+    profiles: [sim]
+    depends_on: {sim: {condition: service_healthy}}
+    command:
+      - sh
+      - -c
+      - >-
+        python -c "import urllib.request as u;
+        [u.urlopen(u.Request('http://sim:8077' + p, data=b'{}')) for p in ('/api/drone/manual', '/sim/button')]"
+        && python -m drone.patrol.bounce --sdk http://sim:8077 --fake-depth
+
+  # Real drone. Only on a Linux host: Bluetooth goes through the host's BlueZ (D-Bus) and the
+  # drone's Wi-Fi, UDP video (7078) and sticks (19091) need the host network. On macOS and
+  # Windows, Docker runs in a VM without Bluetooth: run `drone/fly` natively there instead.
+  drone:
+    <<: *app
+    profiles: [drone]
+    network_mode: host
+    volumes:
+      - /var/run/dbus:/var/run/dbus
+      - ../../recordings:/app/recordings
+    command: [python, -m, drone.sdk, serve, --http-port, "8077", --no-browser, --max, "60"]
+
+  # Bounce with the camera's depth model against an SDK that runs natively on the Mac/Windows
+  # host (`drone/fly`, `drone/patrol/winfly web`), which Docker Desktop names host.docker.internal.
+  # PATROL_ARGS defaults to --dry-run (decide and print, send no sticks).
+  # On a Linux host with the `drone` service: `docker compose run --rm --network host patrol
+  # python -m drone.patrol.bounce --sdk http://127.0.0.1:8077 --dry-run`.
+  patrol:
+    <<: *patrol
+    profiles: [patrol]
+    environment:
+      SDK_URL: ${SDK_URL:-http://host.docker.internal:8077}
+      PATROL_ARGS: ${PATROL_ARGS:---dry-run}
+    command: [sh, -c, 'python -m drone.patrol.bounce --sdk "$$SDK_URL" $$PATROL_ARGS']
