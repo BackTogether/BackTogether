@@ -19,10 +19,15 @@ import rospy
 from actionlib_msgs.msg import GoalStatus
 from geometry_msgs.msg import Quaternion
 from move_base_msgs.msg import MoveBaseAction, MoveBaseGoal
+from std_srvs.srv import Empty
 
 MAP_FRAME = "map"
 SERVER_WAIT_S = 10.0
 GOAL_TIMEOUT_S = 120.0
+ATTEMPTS = 2  # one retry after clearing the costmaps
+# The vendor launch names the node move_base_node, so its services live under that name.
+CLEAR_COSTMAPS_SERVICE = "/move_base_node/clear_costmaps"
+CLEAR_COSTMAPS_WAIT_S = 2.0
 # Why move_base ended a goal without reaching it, in words a person can act on.
 FAILURES = {
     GoalStatus.ABORTED: "no path to the goal, or the robot got stuck",
@@ -61,19 +66,33 @@ def go_to_pose(x: float, y: float, yaw: float = 0.0, timeout_s: float = GOAL_TIM
 
     goal = MoveBaseGoal()
     goal.target_pose.header.frame_id = MAP_FRAME
-    goal.target_pose.header.stamp = rospy.Time.now()
     goal.target_pose.pose.position.x = x
     goal.target_pose.pose.position.y = y
     goal.target_pose.pose.orientation = _yaw_to_quaternion(yaw)
-    client.send_goal(goal)
-
-    if not client.wait_for_result(rospy.Duration(timeout_s)):
-        client.cancel_goal()
-        return _result(False, "timeout")
-    state = client.get_state()
-    if state == GoalStatus.SUCCEEDED:
-        return _result(True, "arrived")
+    deadline = rospy.Time.now() + rospy.Duration(timeout_s)
+    for attempt in range(1, ATTEMPTS + 1):
+        goal.target_pose.header.stamp = rospy.Time.now()
+        client.send_goal(goal)
+        if not client.wait_for_result(deadline - rospy.Time.now()):
+            client.cancel_goal()
+            return _result(False, "timeout")
+        state = client.get_state()
+        if state == GoalStatus.SUCCEEDED:
+            return _result(True, "arrived")
+        if state != GoalStatus.ABORTED or attempt == ATTEMPTS:
+            break
+        # Aborted is often a stale obstacle left in the costmap: wipe it and plan again.
+        rospy.logwarn("navigator: goal aborted, clearing costmaps and retrying")
+        _clear_costmaps()
     return _result(False, FAILURES.get(state, f"move_base ended with state {state}"))
+
+
+def _clear_costmaps() -> None:
+    try:
+        rospy.wait_for_service(CLEAR_COSTMAPS_SERVICE, timeout=CLEAR_COSTMAPS_WAIT_S)
+        rospy.ServiceProxy(CLEAR_COSTMAPS_SERVICE, Empty)()
+    except (rospy.ROSException, rospy.ServiceException) as error:
+        rospy.logwarn("navigator: could not clear costmaps: %s", error)
 
 
 def main() -> None:
