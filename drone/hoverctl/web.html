@@ -120,6 +120,7 @@
     white-space: nowrap; font-variant-numeric: tabular-nums; }
   .kv output.warn { color: var(--red); }
   .kv output.wrap { white-space: normal; word-break: break-all; }
+  .kv output.dim { color: var(--faint); }
   .kv .alt output { font: 500 28px/1.15 var(--sans); letter-spacing: -.02em; }
   #hex { margin: 4px 0 0; color: var(--muted); font: 10.5px/1.6 var(--mono); white-space: pre-wrap;
     word-break: break-all; }
@@ -173,6 +174,7 @@
       <span class="cell mono" id="drone-mode">mode <b>—</b></span>
       <span class="cell mono" id="battery">bat <b>—</b></span>
       <span class="cell mono" id="mode">—</span>
+      <span class="cell mono" id="keys-held" title="lit while this page holds a flight key">keys <b>—</b></span>
       <span class="cell mono" id="link">link <b>—</b></span>
       <span class="cell mono" id="video-status">video <b>—</b></span>
       <button class="cell mono" id="toggle-video" type="button"><kbd>V</kbd><span id="toggle-label">minimize video</span></button>
@@ -235,8 +237,14 @@
         <div class="kv">
           <div><label class="mono">max cap</label><output id="s-max">—</output></div>
           <div><label class="mono">packets sent</label><output id="s-sent">—</output></div>
+          <div><label class="mono">non-neutral sent</label><output id="s-non-neutral">—</output></div>
+          <div><label class="mono">gate</label><output id="s-gate">—</output></div>
           <div><label class="mono">errors</label><output id="s-errors">—</output></div>
           <div><label class="mono">target</label><output id="s-target">—</output></div>
+          <div><label class="mono">control source</label><output id="s-source">—</output></div>
+          <div class="wide"><label class="mono">last packet sent · our signs</label><output id="s-last-axes">—</output></div>
+          <div class="wide"><label class="mono">last packet · packet values</label><output class="wrap" id="s-last-packet">—</output></div>
+          <div class="wide"><label class="mono">last packet · hex</label><output class="wrap" id="s-last-hex">—</output></div>
           <div class="wide"><label class="mono">last error</label><output class="wrap" id="s-last-error">—</output></div>
         </div>
       </section>
@@ -277,7 +285,9 @@ const DATA_STALE_S = 5;       // drone data older than this is greyed out
 const LAND_ARM_MS = 3000;     // LAND needs a second click within this time
 const STATUS_MS = 6000;       // how long an action result stays on screen
 const MIN_WIFI_PASSWORD = 8;
-const MANUAL_STEPS = ["wifi", "preview", "manual", "video"];  // the order enter_manual() runs them
+const MANUAL_STEPS = ["connect", "wifi", "preview", "manual", "video"];  // the order enter_manual() runs them
+const CONTROL_SOURCE_NAMES = { 1: "app (1)", 6: "cross-key (6)" };  // packet control_source_type
+const GATE_LIVE = "live";
 const DRONE_NETWORK_PREFIX = "<DRONE_SUBNET>.";  // the laptop's address here means it is on the drone's Wi-Fi
 const KIB_PER_GIB = 1024 ** 2;  // the drone's storage fields are named bytes but read as KiB (32 GB card = 33554432)
 const STOP_KEY = " ";
@@ -349,6 +359,8 @@ function drawInput() {
   for (const cap of document.querySelectorAll("kbd[data-key]")) {
     cap.classList.toggle("held", keys.has(cap.dataset.key));
   }
+  const held = [...keys].join(" ").toUpperCase();
+  setCell("keys-held", "keys", held || "—", held ? "tag" : "");
 }
 
 // ---- key legend, built from the server's bindings ----
@@ -473,9 +485,26 @@ function renderSticks(sticks) {
   $("mode").className = `cell mono ${sticks.dry_run ? "tag" : ""}`;
   setText("s-max", `${sticks.max} / ${AXIS_LIMIT}`);
   setText("s-sent", sticks.sent.toLocaleString());
+  setText("s-non-neutral", sticks.non_neutral_sent.toLocaleString());
+  // Red when a key is held but the gate holds the sticks: the drone is not the problem then.
+  setText("s-gate", sticks.gate, keys.size > 0 && sticks.gate !== GATE_LIVE);
   setText("s-errors", String(sticks.errors), sticks.errors > 0);
   setText("s-target", sticks.target);
+  setText("s-source", CONTROL_SOURCE_NAMES[sticks.control_source] ?? String(sticks.control_source));
+  renderLastPacket(sticks.last_packet);
   setText("s-last-error", sticks.last_error || "—", Boolean(sticks.last_error));
+}
+
+function renderLastPacket(packet) {
+  if (!packet) {
+    for (const id of ["s-last-axes", "s-last-packet", "s-last-hex"]) setText(id, "—");
+    return;
+  }
+  const moving = AXES.filter((axis) => packet.axes[axis]);
+  const axes = moving.map((axis) => describe(axis, packet.axes[axis], 0)).join(" · ") || "neutral";
+  setText("s-last-axes", `seq ${packet.seq} · ${axes}`);
+  setText("s-last-packet", AXES.map((axis) => `${axis} ${signed(packet.packet[axis], 0)}`).join("  "));
+  setText("s-last-hex", packet.hex);
 }
 
 const video = { last: null, samples: [], frameChangedAt: 0, fps: 0 };
@@ -518,6 +547,8 @@ function renderVideo(stats) {
 const num = (value, digits = 0) => (value === null || value === undefined ? "—" : Number(value).toFixed(digits));
 const xyz = (v) => (v ? `${signed(v.x, 2)} ${signed(v.y, 2)} ${signed(v.z, 2)}` : "—");
 const altitude = (v) => (v ? `${(-v.z).toFixed(2)} m` : "—");  // the drone frame has z down
+// Position is only meaningful in flight: its origin resets at takeoff (issue #13).
+const onGround = (d) => !d.flight_state.in_flight;
 const gigabytes = (kib) => (kib === null ? "—" : (kib / KIB_PER_GIB).toFixed(1));
 
 // One block per message group: its age (from the server clock) and its rows.
@@ -530,8 +561,9 @@ const DRONE_GROUPS = [
     ["voltage", "", (d) => num(d.battery.voltage)], ["current", "", (d) => num(d.battery.current)],
     ["temp", "", (d) => num(d.battery.temp)]] },
   { id: "odometry", title: "Odometry", ts: (d) => d.odometry.ts, rows: [
-    ["altitude (−z)", "wide alt", (d) => altitude(d.odometry.position)],
-    ["position x y z (z down)", "wide", (d) => xyz(d.odometry.position)],
+    ["altitude (−z) · zeroed at takeoff", "wide alt",
+      (d) => (onGround(d) ? "on ground" : altitude(d.odometry.position))],
+    ["position x y z (z down) · frame resets at takeoff", "wide", (d) => xyz(d.odometry.position), onGround],
     ["velocity x y z", "wide", (d) => xyz(d.odometry.velocity)],
     ["motor rpm", "wide", (d) => (d.odometry.motors_rpm || []).join("  ") || "—"],
     ["total current", "", (d) => num(d.odometry.total_current)]] },
@@ -562,7 +594,11 @@ function renderGroups(drone, now) {
     const element = $(`d-${group.id}`);
     element.classList.toggle("stale", isStale(seconds));
     element.querySelector("h3 span:last-child").textContent = ageText(seconds);
-    group.rows.forEach((row, i) => { $(`d-${group.id}-${i}`).textContent = row[2](drone); });
+    group.rows.forEach(([, , value, dim], i) => {
+      const output = $(`d-${group.id}-${i}`);
+      output.textContent = value(drone);
+      output.classList.toggle("dim", Boolean(dim && dim(drone)));
+    });
   }
   const soc = drone.battery.soc ?? 0;
   $("d-battery").querySelector(".bar i").style.width = `${Math.max(0, Math.min(100, soc))}%`;
@@ -581,7 +617,8 @@ function renderDrone(state) {
     element.hidden = !present;
   }
   $("d-manual").classList.toggle("off", !present);
-  $("d-wifi-note").textContent = wifiText(present ? drone.wifi : null);
+  $("d-wifi-note").textContent = [wifiText(present ? drone.wifi : null),
+    announceText(present ? drone.app_announced : null)].filter(Boolean).join(" · ");
   autoStartVideo(state);
   renderManualSteps(state, present);
   const connected = present && drone.connection.connected;
@@ -628,6 +665,13 @@ function renderManualSteps(state, present) {
   const error = entry.error ? ` · ${entry.error}` : "";
   element.textContent = `${marks} / mode: ${mode}${entry.session ? " · session on" : ""}${error}${hint}`;
   element.classList.toggle("warn", Boolean(entry.error) || !onDroneWifi);
+}
+
+// connect_type_request(APP) + clock, sent over Bluetooth on every connect like the app does
+function announceText(announced) {
+  if (!announced) return "";
+  if (announced.ok) return "app announced ✓";
+  return announced.error ? `app announce: ${announced.error}` : "";
 }
 
 function wifiText(wifi) {

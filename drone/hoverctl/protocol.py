@@ -1,15 +1,21 @@
 """Stick datagram: a hand-encoded `h130.RockerControlCommand` protobuf.
 
-Only three tiny messages are needed, so we write the protobuf wire format directly instead of
+Only two tiny messages are needed, so we write the protobuf wire format directly instead of
 pulling in protoc and the protobuf runtime. Field numbers come from drone/proto/h130.proto.
-Zero values are left out, like every proto3 encoder does.
+The schema is proto2 (the app's generated code tracks field presence), and the app sets every
+axis on every tick, so zero axes go on the wire too: the packet matches the app's byte for byte.
 """
 
 import struct
 from dataclasses import astuple, dataclass, fields
 
 AXIS_LIMIT = 100.0
-CONTROL_SOURCE_APP = 1  # CONNECT_TYPE_APP
+# RawManualControlCommand.control_source_type (enum ConnectType). The app's button pad sends
+# CROSS_KEY with the 28 / +3 ramp we copy (session1 logs); its analog joystick sends APP.
+CONTROL_SOURCE_APP = 1
+CONTROL_SOURCE_CROSS_KEY = 6
+CONTROL_SOURCES = {"cross-key": CONTROL_SOURCE_CROSS_KEY, "app": CONTROL_SOURCE_APP}
+DEFAULT_CONTROL_SOURCE = "cross-key"
 
 _WIRE_VARINT = 0
 _WIRE_LEN = 2
@@ -91,17 +97,18 @@ def _key(field: int, wire_type: int) -> bytes:
     return _varint(field << 3 | wire_type)
 
 
-def _encode_manual_control(axes: Axes) -> bytes:
-    out = _key(_FIELD_CONTROL_SOURCE, _WIRE_VARINT) + _varint(CONTROL_SOURCE_APP)
+def _encode_manual_control(axes: Axes, control_source: int) -> bytes:
+    out = _key(_FIELD_CONTROL_SOURCE, _WIRE_VARINT) + _varint(control_source)
     for field, value in enumerate(astuple(to_packet(axes)), start=_FIRST_AXIS_FIELD):
-        if value:
-            out += _key(field, _WIRE_FIXED32) + struct.pack("<f", value)
+        out += _key(field, _WIRE_FIXED32) + struct.pack("<f", value)
     return out
 
 
-def encode_rocker_command(seq_num: int, timestamp_ms: int, axes: Axes) -> bytes:
+def encode_rocker_command(
+    seq_num: int, timestamp_ms: int, axes: Axes, control_source: int = CONTROL_SOURCE_CROSS_KEY
+) -> bytes:
     """One UDP payload for <DRONE_IP>:19091. `axes` are in -100..100, with our signs."""
-    command = _encode_manual_control(axes)
+    command = _encode_manual_control(axes, control_source)
     return (
         _key(_FIELD_SEQ_NUM, _WIRE_VARINT)
         + _varint(seq_num)

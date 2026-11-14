@@ -41,7 +41,13 @@ HEARTBEAT_PERIOD_S = 1.0  # the app keeps sending this over Wi-Fi while the prev
 MAX_MISSED_HEARTBEATS = 5  # the app calls the drone disconnected after this many in a row
 MANUAL_CONFIRM_TIMEOUT_S = 3.0  # the app sees the mode push about 0.5 s after the request
 MANUAL_CONFIRM_POLL_S = 0.1
-MANUAL_STEPS = ("wifi", "preview", "manual", "video")
+SECONDS_PER_HOUR = 3600
+STEP_CONNECT = "connect"  # connect_type_request(APP): the drone's controller is an app
+STEP_WIFI = "wifi"  # first heartbeat answered
+STEP_PREVIEW = "preview"
+STEP_MANUAL = "manual"
+STEP_VIDEO = "video"
+MANUAL_STEPS = (STEP_CONNECT, STEP_WIFI, STEP_PREVIEW, STEP_MANUAL, STEP_VIDEO)
 
 _POLL_REQUESTS = (
     pbwire.REQ_BATTERY_STATUS,
@@ -67,6 +73,7 @@ class DroneLink:
         self._country = country
         self._wifi_password = wifi_password  # None: leave the drone's Wi-Fi alone on connect
         self._wifi: dict[str, Any] = {"state": "off" if wifi_password is None else "pending"}
+        self._app_announced: dict[str, Any] = {"ok": False, "error": None}
         self._heartbeat_stop: threading.Event | None = None
         self._entering_manual = threading.Lock()
         self._manual_session = False  # neutral sticks may flow; see in_manual_session()
@@ -127,6 +134,7 @@ class DroneLink:
         with self._lock:
             values = dict(self._values)
             wifi = dict(self._wifi)
+            app_announced = dict(self._app_announced)
             manual_entry = {
                 "session": self._manual_session,
                 "steps": list(self._manual_steps),
@@ -157,13 +165,18 @@ class DroneLink:
                 "error": error,
             },
             "wifi": wifi,
+            "app_announced": app_announced,
             "manual_entry": manual_entry,
             "mode": {
                 "value": mode,
                 "name": None if mode is None else pbwire.mode_name(mode),
                 "ts": mode_ts,
             },
-            "flight_state": {"value": state, "ts": state_ts},
+            "flight_state": {
+                "value": state,
+                "in_flight": state in pbwire.IN_FLIGHT_STATES,
+                "ts": state_ts,
+            },
             "battery": {
                 "soc": battery.soc if battery else None,
                 "voltage": battery.voltage if battery else None,
@@ -217,6 +230,7 @@ class DroneLink:
     def enter_manual(self) -> dict[str, Any]:
         """What the app does when the user taps Manual Control, in the same order, over Wi-Fi.
 
+        0. connect_type_request(APP), which the app sends on every Wi-Fi connect (not fatal)
         1. heartbeat_info_request, then every second (the app's "drone connected"; its stick
            stream, neutral until moved, starts here: this opens the manual session)
         2. switch_to_manual_capture_request(true), set_udp_server_ipaddress_request(our ip)
@@ -279,24 +293,19 @@ class DroneLink:
         with self._lock:
             self._manual_steps = []
             self._manual_error = None
+        self._send_connect_type()
         codec = pbwire.VIDEO_CODEC_AVC
         plan = (
+            (STEP_WIFI, (lambda rid: pbwire.encode_rpc_request(rid, pbwire.REQ_HEARTBEAT_INFO),)),
             (
-                MANUAL_STEPS[0],
-                (lambda rid: pbwire.encode_rpc_request(rid, pbwire.REQ_HEARTBEAT_INFO),),
-            ),
-            (
-                MANUAL_STEPS[1],
+                STEP_PREVIEW,
                 (
                     pbwire.encode_switch_to_manual_capture_request,
                     lambda rid: pbwire.encode_set_udp_server_request(rid, address),
                 ),
             ),
-            (MANUAL_STEPS[2], (pbwire.encode_set_manual_request,)),
-            (
-                MANUAL_STEPS[3],
-                (lambda rid: pbwire.encode_camera_start_preview_request(rid, codec),),
-            ),
+            (STEP_MANUAL, (pbwire.encode_set_manual_request,)),
+            (STEP_VIDEO, (lambda rid: pbwire.encode_camera_start_preview_request(rid, codec),)),
         )
         for step, requests in plan:
             for build in requests:
@@ -305,7 +314,7 @@ class DroneLink:
                     return self._manual_failed(f"{step}: {result['error']}")
             with self._lock:
                 self._manual_steps.append(step)
-            if step == MANUAL_STEPS[0]:
+            if step == STEP_WIFI:
                 self._start_heartbeat()
                 self._set_manual_session(True)
         if not self._wait_for_manual():
@@ -314,6 +323,15 @@ class DroneLink:
                 f"requests accepted but the drone reports {mode}, not MANUAL"
             )
         return {"ok": True, "error": None}
+
+    def _send_connect_type(self) -> None:
+        """Not fatal, like in the app: Bluetooth sent it on connect too. The error stays shown."""
+        result = _wifi_rpc(pbwire.encode_connect_type_request)
+        with self._lock:
+            if result["ok"]:
+                self._manual_steps.append(STEP_CONNECT)
+            else:
+                self._manual_error = f"{STEP_CONNECT}: {result['error']} (continuing)"
 
     def _wait_for_manual(self) -> bool:
         deadline = time.monotonic() + MANUAL_CONFIRM_TIMEOUT_S
@@ -416,9 +434,34 @@ class DroneLink:
             with self._lock:
                 self._connected_since = time.time()
                 self._last_error = None
+            await self._announce_app()
             await self._autostart_wifi()
             await self._poll_until(dropped)
         self._client = None
+
+    async def _announce_app(self) -> None:
+        """What the app sends right after every Bluetooth connect: its clock, then that the
+        controller is an app (connect_type_request). Without the latter the drone may ignore our
+        stick packets. A failure is shown in the snapshot, not fatal."""
+        zone_hours = int(-time.timezone / SECONDS_PER_HOUR)  # like Java's getRawOffset(): no DST
+        requests = (
+            (
+                "set_time",
+                lambda rid: pbwire.encode_set_time_request(rid, int(time.time()), zone_hours),
+            ),
+            ("connect_type", pbwire.encode_connect_type_request),
+        )
+        errors = []
+        for name, build in requests:
+            try:
+                response = await self._call(build, RPC_TIMEOUT_S)
+                error = response.error
+            except TimeoutError:
+                error = "no answer"
+            if error:
+                errors.append(f"{name}: {error}")
+        with self._lock:
+            self._app_announced = {"ok": not errors, "error": "; ".join(errors) or None}
 
     async def _autostart_wifi(self) -> None:
         """The drone's Wi-Fi is off after a restart, so switch it on after every handshake."""

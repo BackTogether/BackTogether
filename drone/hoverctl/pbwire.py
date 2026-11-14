@@ -19,10 +19,12 @@ _WIRE_FIXED32 = 5
 _INT32_BITS = 32
 _INT32_SIGN = 1 << (_INT32_BITS - 1)
 _MASK32 = (1 << _INT32_BITS) - 1
+_MASK64 = (1 << 64) - 1  # negative ints go on the wire as 64-bit two's complement varints
 
 # RpcRequest: id plus one request in the `request` oneof
 REQUEST_ID = 6
 REQ_WIFI_START = 25
+REQ_SET_TIME_UTC = 37  # RealTimeMessage
 REQ_BATTERY_STATUS = 27
 REQ_CHARGER_STATE = 28
 REQ_GET_FLIGHT_MODE = 38
@@ -32,6 +34,7 @@ REQ_GET_STORAGE_CAPACITY = 41
 REQ_SET_FLIGHT_MODE_TO_MANUAL = 46  # bool
 REQ_HEARTBEAT_INFO = 70  # Empty, the app sends it at 1 Hz over Wi-Fi
 REQ_GET_BLE_ENCRY_LIST = 71
+REQ_CONNECT_TYPE = 75  # ConnectTypeRequest: tells the drone an app is the controller
 REQ_CAMERA_START_PREVIEW = 240  # StartPreviewParams
 REQ_SET_UDP_SERVER_IP = 245  # string: where the drone pushes video
 REQ_SWITCH_TO_MANUAL_CAPTURE = 249  # bool
@@ -82,6 +85,11 @@ _PREVIEW_UDP_SERVER_IP = 1
 _PREVIEW_CAMERA_START = 3
 _PREVIEW_CONNECT_TYPE = 4
 CONNECT_TYPE_APP = 1
+# ConnectTypeRequest
+_CONNECT_TYPE = 1
+# RealTimeMessage (time_zone: whole hours, the app's raw offset without daylight saving)
+_TIME_UTC = 1
+_TIME_ZONE = 2
 # StartPreviewParams
 _START_PREVIEW_ENABLE = 1
 _START_PREVIEW_CODEC = 3
@@ -179,6 +187,12 @@ FLIGHT_STATES = {
     10: "no_flying_traj",
 }
 
+# States where the drone is in the air. Position is only meaningful here: its origin resets
+# during taking_off, and after landing -> idle the values jump to another frame (issue #13).
+IN_FLIGHT_STATES = frozenset(
+    {"taking_off", "flying_manual", "flying_traj", "no_flying_traj", "fly_back", "landing"}
+)
+
 Fields = dict[int, list[int | bytes]]
 
 
@@ -198,7 +212,7 @@ def _key(number: int, wire_type: int) -> bytes:
 
 
 def _int_field(number: int, value: int) -> bytes:
-    return _key(number, _WIRE_VARINT) + _varint(value)
+    return _key(number, _WIRE_VARINT) + _varint(value & _MASK64)
 
 
 def _bytes_field(number: int, value: bytes) -> bytes:
@@ -327,6 +341,18 @@ def encode_wifi_start_request(request_id: int, ssid: str, password: str, country
         + _int_field(_WIFI_RATE_STRATEGY, WIFI_RATE_DOWNLOAD)
     )
     return encode_rpc_request(request_id, REQ_WIFI_START, body)
+
+
+def encode_connect_type_request(request_id: int) -> bytes:
+    """connect_type_request(APP): the app sends it after every Bluetooth and Wi-Fi connect."""
+    body = _int_field(_CONNECT_TYPE, CONNECT_TYPE_APP)
+    return encode_rpc_request(request_id, REQ_CONNECT_TYPE, body)
+
+
+def encode_set_time_request(request_id: int, utc_s: int, zone_hours: int) -> bytes:
+    """set_time_utc_request, as the app sends it after every Bluetooth connect."""
+    body = _int_field(_TIME_UTC, utc_s) + _int_field(_TIME_ZONE, zone_hours)
+    return encode_rpc_request(request_id, REQ_SET_TIME_UTC, body)
 
 
 def _preview_params(enable: bool, codec: int) -> bytes:

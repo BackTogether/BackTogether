@@ -1,13 +1,23 @@
 """30 Hz stick sender with the app's ramp and a neutral-on-silence watchdog."""
 
+import json
 import socket
 import sys
 import threading
 import time
 from collections.abc import Callable
 from dataclasses import asdict, astuple
+from pathlib import Path
+from typing import Any
 
-from .protocol import AXIS_LIMIT, NEUTRAL, Axes, encode_rocker_command, to_packet
+from .protocol import (
+    AXIS_LIMIT,
+    CONTROL_SOURCE_CROSS_KEY,
+    NEUTRAL,
+    Axes,
+    encode_rocker_command,
+    to_packet,
+)
 
 DRONE_HOST = "<DRONE_IP>"
 STICK_PORT = 19091
@@ -18,6 +28,11 @@ RAMP_START = 28.0
 RAMP_STEP = 3.0
 INPUT_TIMEOUT_S = 0.3  # no fresh input for this long -> neutral
 EXIT_NEUTRAL_S = 0.5
+FIRST_SEQ_NUM = 2  # the app's counter starts at 1 and is incremented before the first packet
+# Interlock state, as the UI shows it
+GATE_NO_SESSION = "no session"  # nothing goes out
+GATE_SESSION_NEUTRAL = "session-neutral"  # neutral packets only
+GATE_LIVE = "live"  # stick values go out
 
 
 def ramp_axis(current: float, target: float) -> float:
@@ -44,11 +59,12 @@ class StickSender:
     converts them to the packet's signs. If no input arrives for INPUT_TIMEOUT_S the target
     becomes neutral. `stop()` sends EXIT_NEUTRAL_S of neutral.
     `gate` is the stick interlock: while it returns False (or raises) the sticks are neutral and
-    `locked` is set. Without a session gate nothing is sent at all while locked, not even neutral.
+    `locked` is set; `gate_state` names the result. Without a session gate nothing is sent at
+    all while locked, not even neutral.
     With one (`set_session_gate`) the rule is: no open session, nothing is sent; session open,
     neutral is sent all the time (the app streams neutral on its joystick screen, and the drone
     may need that stream to stay in MANUAL) and values only while `gate` passes. In dry-run
-    packets are still printed.
+    packets are still printed. `stick_log` appends every packet sent as one JSON line.
     """
 
     def __init__(
@@ -59,8 +75,11 @@ class StickSender:
         max_magnitude: float = DEFAULT_MAX_MAGNITUDE,
         dry_run: bool = False,
         gate: Callable[[], bool] | None = None,
+        control_source: int = CONTROL_SOURCE_CROSS_KEY,
+        stick_log: Path | None = None,
     ) -> None:
         self.address = (host, port)
+        self.control_source = control_source
         self.max_magnitude = min(abs(max_magnitude), AXIS_LIMIT)
         self.dry_run = dry_run
         self.locked = False
@@ -70,6 +89,9 @@ class StickSender:
         self._session: Callable[[], bool] | None = None
         self.output = NEUTRAL
         self.sent = 0
+        self.non_neutral_sent = 0
+        self.last_packet: dict[str, Any] | None = None  # the last packet that went out
+        self._seq_num = FIRST_SEQ_NUM
         self.errors = 0
         self.last_error = ""
         self._input = NEUTRAL
@@ -78,6 +100,7 @@ class StickSender:
         self._stop = threading.Event()
         self._thread = threading.Thread(target=self._run, name="sticks", daemon=True)
         self._socket: socket.socket | None = None
+        self._log = stick_log.open("a", buffering=1) if stick_log else None  # line-buffered
         if not dry_run:
             self._socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
             self._socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
@@ -85,6 +108,12 @@ class StickSender:
 
     def start(self) -> None:
         self._thread.start()
+
+    @property
+    def gate_state(self) -> str:
+        if self.silent:
+            return GATE_NO_SESSION
+        return GATE_SESSION_NEUTRAL if self.locked else GATE_LIVE
 
     def set_session_gate(self, session: Callable[[], bool]) -> None:
         """While `session()` is True a locked sender still sends neutral packets."""
@@ -103,6 +132,9 @@ class StickSender:
         if self._socket:
             self._socket.close()
             self._socket = None
+        if self._log:
+            self._log.close()
+            self._log = None
 
     def _target(self) -> Axes:
         with self._lock:
@@ -161,17 +193,35 @@ class StickSender:
     def _send(self, axes: Axes) -> None:
         if self.silent and not self.dry_run:
             return
-        packet = encode_rocker_command(self.sent, int(time.time() * 1000), axes)
-        self.sent += 1
+        seq_num = self._seq_num
+        self._seq_num += 1  # like the app: a failed send still uses up its number
+        now = time.time()
+        packet = encode_rocker_command(seq_num, int(now * 1000), axes, self.control_source)
         if self.dry_run:
-            wire = asdict(to_packet(axes))
-            values = " ".join(f"{name}={value:+4.0f}" for name, value in wire.items())
-            print(f"seq={self.sent - 1:<6} packet {values}  {packet.hex()}", flush=True)
-            return
-        try:
-            self._socket.sendto(packet, self.address)
-        except OSError as error:  # e.g. not on the drone's Wi-Fi yet: keep trying
-            self._note_error(error)
+            values = " ".join(f"{k}={v:+4.0f}" for k, v in asdict(to_packet(axes)).items())
+            print(f"seq={seq_num:<6} packet {values}  {packet.hex()}", flush=True)
+        else:
+            try:
+                self._socket.sendto(packet, self.address)
+            except OSError as error:  # e.g. not on the drone's Wi-Fi yet: keep trying
+                self._note_error(error)
+                return
+        self._record(seq_num, now, axes, packet)
+
+    def _record(self, seq_num: int, now: float, axes: Axes, packet: bytes) -> None:
+        self.sent += 1
+        if not axes.is_neutral():
+            self.non_neutral_sent += 1
+        self.last_packet = {
+            "seq": seq_num,
+            "time": now,
+            "axes": asdict(axes),
+            "packet": asdict(to_packet(axes)),
+            "control_source": self.control_source,
+            "hex": packet.hex(),
+        }
+        if self._log:
+            self._log.write(json.dumps(self.last_packet) + "\n")
 
     def _note_error(self, error: Exception) -> None:
         self.errors += 1

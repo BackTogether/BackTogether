@@ -11,6 +11,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 from .decoder import MjpegDecoder
+from .protocol import CONTROL_SOURCES, DEFAULT_CONTROL_SOURCE
 from .sticks import DEFAULT_MAX_MAGNITUDE, DRONE_HOST, STICK_PORT, StickSender
 from .teleop import run_teleop
 from .video import VIDEO_PORT, VideoReceiver, default_dump_path
@@ -43,6 +44,16 @@ def _add_stick_options(parser: argparse.ArgumentParser) -> None:
         help="largest stick value sent, 0-100 (default %(default)s)",
     )
     parser.add_argument("--dry-run", action="store_true", help="print packets, send nothing")
+    parser.add_argument(
+        "--control-source",
+        choices=sorted(CONTROL_SOURCES),
+        default=DEFAULT_CONTROL_SOURCE,
+        help="control_source_type in each packet: cross-key (6, the app's button pad, the default) "
+        "or app (1, the app's analog joystick); try app if the drone ignores the sticks",
+    )
+    parser.add_argument(
+        "--stick-log", type=Path, metavar="PATH", help="append every packet sent as JSONL"
+    )
 
 
 def _add_video_options(parser: argparse.ArgumentParser) -> None:
@@ -55,7 +66,16 @@ def _add_video_options(parser: argparse.ArgumentParser) -> None:
 
 
 def _make_sender(args: argparse.Namespace, gate: Callable[[], bool] | None = None) -> StickSender:
-    return StickSender(args.host, args.port, args.local_port, args.max, args.dry_run, gate)
+    return StickSender(
+        args.host,
+        args.port,
+        args.local_port,
+        args.max,
+        args.dry_run,
+        gate,
+        CONTROL_SOURCES[args.control_source],
+        args.stick_log,
+    )
 
 
 def _make_receiver(args: argparse.Namespace) -> VideoReceiver:
