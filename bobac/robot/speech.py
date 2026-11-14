@@ -23,9 +23,7 @@ PHRASES = {
     "did_you_get_hurt": "Did you get hurt? Say yes or no, or press a button.",
     "sorry_hurt": "I am sorry you got hurt. I will tell your family right away.",
     "stay_here": "Please stay here with me. Do not walk away.",
-    "still_here": "I am still here with you. You are not alone.",
-    "count_intro": "Let us count to five together. Show me your fingers!",
-    "count_done": "Well done! You are doing great.",
+    "family_here": "Your family is here. Bye bye!",
 }
 LANGUAGE = "en"
 SPEECH_RATE = -20  # spd-say scale -100..100; slower than default, easier to follow

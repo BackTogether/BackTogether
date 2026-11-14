@@ -54,15 +54,15 @@ CALL_PROFILE_LOCKS = ("lock", ".parentlock")  # left behind when Firefox is kill
 CALL_CLOSE_TIMEOUT_S = 3
 CALL_MARIONETTE_PORT = 2829  # localhost only: lets this program press Join in the call window
 CALL_JOIN_TIMEOUT_S = 300  # the call page can take minutes to load on the robot's connection
-CALL_JOIN_POLL_S = 1
-# Runs in the call page: press Join on the name screen once it can be pressed.
-CALL_JOIN_SCRIPT = """
+CALL_WATCH_POLL_S = 1
+# Runs in the call page: once in the call, the number of people in it (robot included);
+# before that, press Join on the name screen when it can be pressed and return -1.
+CALL_WATCH_SCRIPT = """
 const page = window.wrappedJSObject || window;
-try { if (page.APP.conference.isJoined()) return "joined"; } catch (error) {}
+try { if (page.APP.conference.isJoined()) return page.APP.conference.membersCount; } catch (e) {}
 const join = document.querySelector('[data-testid="prejoin.joinMeeting"]');
-if (!join || join.disabled || join.getAttribute("aria-disabled") === "true") return "loading";
-join.click();
-return "pressed";
+if (join && !join.disabled && join.getAttribute("aria-disabled") !== "true") join.click();
+return -1;
 """
 # The call window must use the camera and microphone with nobody there to tap "Allow".
 CALL_FIREFOX_PREFS = (
@@ -121,6 +121,11 @@ class CallWindow:
     def __init__(self):
         self._process = None
         self._lock = threading.Lock()
+        self._members = None  # people in the call, robot included; None until it is in
+
+    def members(self):
+        """People in the call counting the robot, or None while it is not (yet) in a call."""
+        return self._members
 
     def show(self, url) -> None:
         with self._lock:
@@ -142,32 +147,33 @@ class CallWindow:
         with open(str(CALL_LOG_PATH), "ab") as output:
             self._process = subprocess.Popen(command, env=env, stdout=output, stderr=output)
         log.info("video call window opened: %s (firefox log: %s)", url, CALL_LOG_PATH)
-        threading.Thread(target=self._press_join, args=(self._process,), daemon=True).start()
+        threading.Thread(target=self._watch, args=(self._process,), daemon=True).start()
 
-    def _press_join(self, process) -> None:
-        """The call server only turns the camera and microphone on when Join is pressed on its
+    def _watch(self, process) -> None:
+        """Press Join for the child, then keep counting the people in the call.
+
+        The call server only turns the camera and microphone on when Join is pressed on its
         name screen (skipping that screen by URL joins muted, without camera), and a lost child
-        will not press it: do it for them, as soon as the page lets us."""
+        will not press it. Firefox allows one control connection, so this one thread does both."""
         browser = marionette.Marionette(CALL_MARIONETTE_PORT)
         deadline = time.time() + CALL_JOIN_TIMEOUT_S
-        pressed = False
         try:
-            while process.poll() is None and time.time() < deadline:
+            while process.poll() is None:
                 try:
-                    state = browser.run_script(CALL_JOIN_SCRIPT)
-                except OSError:
-                    state = "starting"  # Firefox is not up yet
-                if state == "joined":
+                    members = int(browser.run_script(CALL_WATCH_SCRIPT))
+                except (OSError, TypeError, ValueError):
+                    members = -1  # Firefox is starting, or the page is changing
+                if members >= 0 and self._members is None:
                     log.info("call window: the robot is in the call")
-                    return
-                if state == "pressed" and not pressed:
-                    pressed = True
-                    log.info("call window: Join pressed")
-                time.sleep(CALL_JOIN_POLL_S)
-            if process.poll() is None:
-                log.warning("call window: not in the call after %d s", CALL_JOIN_TIMEOUT_S)
+                if members < 0 and self._members is None and time.time() > deadline:
+                    log.warning("call window: not in the call after %d s", CALL_JOIN_TIMEOUT_S)
+                    deadline = float("inf")  # say it once
+                if members >= 0:
+                    self._members = members
+                time.sleep(CALL_WATCH_POLL_S)
         finally:
             browser.close()
+            self._members = None
 
     def _close(self) -> None:
         if self._process and self._process.poll() is None:
@@ -179,6 +185,7 @@ class CallWindow:
                 self._process.wait()
             log.info("video call window closed")
         self._process = None
+        self._members = None
 
     def _free_profile(self) -> None:
         """A call Firefox left by an earlier run (server killed or restarted during a call) still
@@ -226,6 +233,7 @@ class CareServer(ThreadingHTTPServer):
                 self.ears,
                 self.call_base,
                 self.call_window.show,
+                self.call_window.members,
             )
             self.session_thread = threading.Thread(target=self.session.run, daemon=True)
             self.session_thread.start()

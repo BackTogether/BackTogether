@@ -22,17 +22,13 @@ import urllib.parse
 import uuid
 
 ASK_QUESTIONS = False  # ask "are you okay?" / "did you get hurt?" before calling the parents
-ROBOT_KEEPS_COMPANY = True  # calm phrases + counting game; turn off when a voice agent talks
 NOTIFY_ATTEMPTS = 3  # the parents must get the message: retry on a flaky connection
 NOTIFY_RETRY_S = 5
 ASK_ATTEMPTS = 2
 ANSWER_WAIT_S = 20
 HURT_WAIT_S = 15
-POLL_S = 2  # how long one wait for parent events lasts
-CALM_EVERY_S = 40
-COUNT_TO = 5
-COUNT_STEP_S = 1.5  # one number every 1.5 s: slow enough for a child to follow
-MAX_SPOKEN_MESSAGE_CHARS = 300
+CALL_CHECK_S = 1  # how often the robot looks at who is in the call
+PARENT_LEFT_GRACE_S = 4  # a parent who drops and comes back within this time has not hung up
 TIMELINE_IN_SNAPSHOT = 8
 # Public Jitsi server that lets anyone open a room without logging in (meet.jit.si no longer
 # does). The robot and the parent both open the same room URL.
@@ -80,12 +76,14 @@ class CareSession:
         listen=None,
         call_base="",
         show_call=None,
+        call_members=None,
     ):
         """`child`: profile dict (config/child.json). `speech`: module with say / say_text /
         play_file. `telegram`: caregiver.Telegram (one chat per parent) or None. `take_photo(path)
         -> bool` and `buzz() -> None` reach the robot hardware. `listen`: module with wait_word
         (listen.py) to also accept spoken answers, or None. `call_base`: Jitsi server URL.
-        `show_call(url or None)`: opens / closes the video call on the robot screen, or None."""
+        `show_call(url or None)`: opens / closes the video call on the robot screen, or None.
+        `call_members() -> int or None`: people in that call counting the robot (None: unknown)."""
         self._child = child
         self._name = child["name"].split()[0]
         self._parent = child["parents"][0]["called"]
@@ -97,6 +95,7 @@ class CareSession:
         self._buzz = buzz
         self._listen = listen
         self._show_call = show_call
+        self._call_members = call_members
         room = f"find-{self._name.lower()}-{uuid.uuid4().hex[:8]}"
         self._call_url = "{}/{}".format((call_base or DEFAULT_CALL_BASE_URL).rstrip("/"), room)
         robot_name = urllib.parse.quote(json.dumps(self._name))
@@ -114,13 +113,14 @@ class CareSession:
         self._how_are_you = None
         self._hurt = None
         self._call_active = False
-        self._count = None
+        self._parent_in_call = False  # True while a parent is in the video call with the child
         self._timeline = []
 
     # ---------------------------------------------------------------- called by the bridge
 
     def run(self) -> None:
-        """The whole episode; blocks until stop() is called."""
+        """The whole episode: call the parents, wait until one joins and then hangs up (we take
+        that as "the parent has arrived"), then back to idle. Blocks until then or stop()."""
         self._note(f"robot is with {self._name} in the {self._zone}")
         self._speech.say_text(
             f"Hi {self._name}! I am a friendly robot. Your {self._parent} sent me to find you."
@@ -139,7 +139,14 @@ class CareSession:
         has_photo = self._take_photo(photo_path)
         self._start_call()
         self._tell_parents(photo_path if has_photo else None)
-        self._keep_company_until_stopped()
+        self._wait_for_parent()
+
+    @property
+    def parent_in_call(self) -> bool:
+        """True while a parent is in the video call: a voice agent talking to the child while
+        they wait must stay quiet then."""
+        with self._lock:
+            return self._parent_in_call
 
     def answer(self, value: str) -> bool:
         """A button was pressed on the screen. False if that answer is not expected now."""
@@ -170,7 +177,7 @@ class CareSession:
                     "how_are_you": self._how_are_you,
                     "hurt": self._hurt,
                     "call_url": self._call_url if self._call_active else None,
-                    "count": self._count,
+                    "parent_in_call": self._parent_in_call,
                     "listening": self._listen is not None and bool(self._options),
                     "timeline": self._timeline[-TIMELINE_IN_SNAPSHOT:],
                     "child": self._child,
@@ -244,60 +251,43 @@ class CareSession:
         self._note("video call open on the screen: " + self._call_url)
         self._speech.say_text(f"I am calling your {self._parent}. Look at my screen!")
 
-    def _keep_company_until_stopped(self) -> None:
-        next_calm_at = time.time() + CALM_EVERY_S
-        count_next = False
-        while not self._stopped.is_set():
-            if self._telegram:
-                events = self._telegram.events(POLL_S)
-            else:
-                self._stopped.wait(POLL_S)
-                events = []
-            for event in events:
-                self._play_parent_message(event)
-            if ROBOT_KEEPS_COMPANY and time.time() >= next_calm_at:
-                if count_next:
-                    self._counting_game()
-                else:
-                    self._speech.say("still_here")
-                count_next = not count_next
-                next_calm_at = time.time() + CALM_EVERY_S
+    def _wait_for_parent(self) -> None:
+        """Follow who is in the call. When a parent who joined leaves again, the episode is over."""
+        parent_was_here = False
+        left_at = None
+        while not self._stopped.wait(CALL_CHECK_S):
+            members = self._call_members() if self._call_members else None
+            if members is None:
+                continue  # the call window cannot tell right now: change nothing
+            in_call = members >= 2
+            self._set_parent_in_call(in_call)
+            if in_call:
+                parent_was_here, left_at = True, None
+            elif parent_was_here:
+                left_at = left_at or time.time()
+                if time.time() - left_at >= PARENT_LEFT_GRACE_S:
+                    self._parent_arrived()
+                    return
+
+    def _set_parent_in_call(self, in_call: bool) -> None:
+        with self._lock:
+            changed, self._parent_in_call = self._parent_in_call != in_call, in_call
+        if changed:
+            self._note("parent joined the call" if in_call else "parent left the call")
+
+    def _parent_arrived(self) -> None:
+        """The parent hung up: they are with the child now. Back to how the robot was before."""
+        self._end_call()
+        self._set_parent_in_call(False)
+        self._note("parent hung up: taken as arrived, back to idle")
+        self._speech.say("family_here")
+        self._set_state("idle")
 
     def _end_call(self) -> None:
         with self._lock:
             was_active, self._call_active = self._call_active, False
         if was_active and self._show_call:
             self._show_call(None)
-
-    # ---------------------------------------------------------------- parents
-
-    def _play_parent_message(self, event: dict) -> None:
-        name = event["name"]
-        if event["kind"] == "text":
-            self._note("message from {}: {}".format(name, event["text"]))
-            spoken = event["text"][:MAX_SPOKEN_MESSAGE_CHARS]
-            self._speech.say_text(f"Message from {name}: {spoken}")
-        elif event["kind"] == "voice":
-            self._note(f"voice message from {name}")
-            voice_path = os.path.join(tempfile.gettempdir(), "bobac_care_voice.oga")
-            if self._telegram.download(event["file_id"], voice_path):
-                self._speech.say_text(f"Voice message from {name}.")
-                self._speech.play_file(voice_path)
-
-    # ---------------------------------------------------------------- comforting
-
-    def _counting_game(self) -> None:
-        """Count to five together, one finger at a time: simple, and it keeps them busy."""
-        self._speech.say("count_intro")
-        for number in range(1, COUNT_TO + 1):
-            self._set_count(number)
-            started = time.time()
-            self._speech.say_text(str(number))
-            if self._stopped.wait(max(0.0, COUNT_STEP_S - (time.time() - started))):
-                break
-        self._set_count(None)
-        if not self._stopped.is_set():
-            self._speech.say("count_done")
 
     # ---------------------------------------------------------------- helpers
 
@@ -331,10 +321,6 @@ class CareSession:
         with self._lock:
             self._state = state
             self._updated_at = time.time()
-
-    def _set_count(self, number) -> None:
-        with self._lock:
-            self._count = number
 
     def _note(self, event: str) -> None:
         log.info(event)

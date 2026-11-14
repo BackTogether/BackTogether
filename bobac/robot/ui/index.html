@@ -65,11 +65,6 @@
   #buttons button:active { transform: translateY(8px); box-shadow: 0 2px 0 var(--shadow); }
 
   .bubble { background: var(--card); border-radius: 40px; padding: 18px 40px; box-shadow: 0 10px 30px #2b3a5514; }
-  #countdown { font-size: 96px; font-weight: 800; color: var(--face-dark); font-variant-numeric: tabular-nums; line-height: 1; }
-  #count { display: none; width: 220px; height: 220px; border-radius: 50%; background: var(--sun); color: var(--ink); font-size: 150px; font-weight: 800; line-height: 220px; box-shadow: 0 14px 0 #f2b84b; }
-  #count.on { display: block; animation: pop .5s ease-out; }
-  #count-fingers { font-size: 56px; letter-spacing: 6px; min-height: 1.2em; }
-  @keyframes pop { from { transform: scale(.6); } }
   .dots span { display: inline-block; animation: hop 1.2s infinite; } .dots span:nth-child(2) { animation-delay: .2s; } .dots span:nth-child(3) { animation-delay: .4s; }
   @keyframes hop { 50% { transform: translateY(-10px); } }
 
@@ -102,9 +97,7 @@
 
 <section id="call">
   <h1 id="call-title"></h1>
-  <div class="bubble" id="call-status"><p class="sub" id="parent-status"></p><div id="countdown"></div></div>
-  <div id="count"></div>
-  <div id="count-fingers"></div>
+  <div class="bubble" id="call-status"><p class="sub" id="parent-status"></p></div>
 </section>
 
 <footer id="adults"></footer>
@@ -117,11 +110,6 @@ const BUTTONS = {
 };
 const $ = (id) => document.getElementById(id);
 let shownOptions = "";
-
-const minSec = (seconds) => {
-  const s = Math.max(0, Math.round(seconds));
-  return String(Math.floor(s / 60)).padStart(2, "0") + ":" + String(s % 60).padStart(2, "0");
-};
 
 function showButtons(options) {
   const key = options.join(",");
@@ -167,23 +155,15 @@ function render(status) {
     return;
   }
   document.body.className = "call";
-  $("robot").className = care.count ? "robot small" : "robot";
-  const eta = care.eta_at ? care.eta_at - Date.now() / 1000 : null;
-  $("call-title").textContent = care.count ? "Let's count together!"
-    : care.parent_coming ? "Your family is coming, " + first + "!" : "Calling your " + parent;
+  $("robot").className = "robot";
+  $("call-title").textContent = care.parent_in_call ? "Look, " + first + "! It's your family 💛" : "Calling your " + parent;
   $("parent-status").replaceChildren();
-  if (care.parent_coming) {
-    $("parent-status").textContent = eta === null ? care.parent_coming + " is on the way" : care.parent_coming + " will be here in";
-  } else {
+  if (!care.parent_in_call) {
     const dots = document.createElement("span"); dots.className = "dots";
     dots.innerHTML = "<span>•</span><span>•</span><span>•</span>";
     $("parent-status").append("Please wait with me ", dots);
   }
-  $("countdown").textContent = eta === null ? "" : (eta > 0 ? minSec(eta) : "any moment");
-  $("call-status").style.display = care.count ? "none" : "";
-  $("count").className = care.count ? "on" : "";
-  if ($("count").textContent !== String(care.count || "")) $("count").textContent = care.count || "";
-  $("count-fingers").textContent = care.count ? "⭐".repeat(care.count) : "";  // one star per finger
+  $("call-status").style.display = care.parent_in_call ? "none" : "";
   $("adults").replaceChildren("For adults nearby: this child was lost and their family is on the way. Please stay with them. Emergency: ");
   const number = document.createElement("b"); number.textContent = child.emergency_number;
   $("adults").append(number);
