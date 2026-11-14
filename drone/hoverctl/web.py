@@ -16,7 +16,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from .pbwire import drone_network_ip
-from .protocol import AXIS_NAMES, NEUTRAL, Axes
+from .protocol import AXIS_DIRECTIONS, AXIS_NAMES, NEUTRAL, Axes
 from .sticks import StickSender
 from .teleop import KEY_BINDINGS
 from .video import VideoReceiver
@@ -26,6 +26,7 @@ if TYPE_CHECKING:
 
 PAGE_TEMPLATE = Path(__file__).with_name("web.html")
 BINDINGS_PLACEHOLDER = "/*KEY_BINDINGS*/{}"
+DIRECTIONS_PLACEHOLDER = "/*AXIS_DIRECTIONS*/{}"
 MJPEG_BOUNDARY = "frame"
 FRAME_WAIT_S = 1.0
 MAX_BODY_BYTES = 1024
@@ -193,4 +194,5 @@ class WebServer(ThreadingHTTPServer):
         self.ble_note = ble_note
         bindings = {key: list(value) for key, value in KEY_BINDINGS.items()}
         page = PAGE_TEMPLATE.read_text().replace(BINDINGS_PLACEHOLDER, json.dumps(bindings))
+        page = page.replace(DIRECTIONS_PLACEHOLDER, json.dumps(AXIS_DIRECTIONS))
         self.page = page.encode()

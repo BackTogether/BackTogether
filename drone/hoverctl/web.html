@@ -101,7 +101,7 @@
   .side section + section { border-top: 1px solid var(--line); }
   .side h2 { margin: 0; padding: 12px 16px; border-bottom: 1px solid var(--rule); color: var(--muted);
     font-weight: 500; display: flex; justify-content: space-between; }
-  .meters { display: grid; grid-template-columns: 56px 1fr 40px; align-items: center; gap: 12px 12px;
+  .meters { display: grid; grid-template-columns: max-content 1fr 72px; align-items: center; gap: 12px 12px;
     padding: 14px 16px; border-bottom: 1px solid var(--rule); }
   .meters span { color: var(--muted); }
   .meters output { font: 500 13px var(--mono); text-align: right; font-variant-numeric: tabular-nums; }
@@ -120,6 +120,7 @@
     white-space: nowrap; font-variant-numeric: tabular-nums; }
   .kv output.warn { color: var(--red); }
   .kv output.wrap { white-space: normal; word-break: break-all; }
+  .kv .alt output { font: 500 28px/1.15 var(--sans); letter-spacing: -.02em; }
   #hex { margin: 4px 0 0; color: var(--muted); font: 10.5px/1.6 var(--mono); white-space: pre-wrap;
     word-break: break-all; }
 
@@ -259,6 +260,7 @@
 
 <script>
 const BINDINGS = /*KEY_BINDINGS*/{};
+const DIRECTIONS = /*AXIS_DIRECTIONS*/{};  // axis -> [name of +, name of -], e.g. pitch: fwd / back
 const AXES = ["roll", "pitch", "thrust", "yaw", "gimbal"];
 const AXIS_LIMIT = 100;       // wire range of every axis, -100..100
 const SEND_MS = 50;           // the server turns sticks neutral 300 ms after the last post
@@ -285,6 +287,10 @@ const $ = (id) => document.getElementById(id);
 const clamp = (v) => Math.max(-1, Math.min(1, v));
 const signed = (v, digits) => (v < 0 ? "-" : "+") + Math.abs(v).toFixed(digits);
 const keys = new Set();
+// Readouts say "fwd 28" or "back 28", never a sign: the packet's signs differ from ours.
+const axisLabel = (axis) => DIRECTIONS[axis].join("/");
+const describe = (axis, value, digits) =>
+  `${DIRECTIONS[axis][value > 0 ? 0 : 1]} ${Math.abs(value).toFixed(digits)}`;
 
 // ---- input: pointer pads + keyboard, merged into one set of axes ----
 
@@ -292,7 +298,7 @@ function makePad(element) {
   const pad = { element, xAxis: element.dataset.x, yAxis: element.dataset.y, x: 0, y: 0, pointer: null };
   pad.knob = element.querySelector(".knob");
   element.insertAdjacentHTML("beforebegin",
-    `<div class="caption mono"><span>${pad.yAxis} <b></b></span><span>${pad.xAxis} <b></b></span></div>`);
+    `<div class="caption mono"><span><b></b></span><span><b></b></span></div>`);
   [pad.yValue, pad.xValue] = element.previousElementSibling.querySelectorAll("b");
   const move = (event) => {
     const rect = element.getBoundingClientRect();
@@ -337,8 +343,8 @@ function drawInput() {
     pad.knob.style.left = `${50 + x * KNOB_TRAVEL * 100}%`;
     pad.knob.style.top = `${50 - y * KNOB_TRAVEL * 100}%`;
     pad.element.parentElement.classList.toggle("live", x !== 0 || y !== 0);
-    pad.xValue.textContent = signed(x, 2);
-    pad.yValue.textContent = signed(y, 2);
+    pad.xValue.textContent = x ? describe(pad.xAxis, x, 2) : axisLabel(pad.xAxis);
+    pad.yValue.textContent = y ? describe(pad.yAxis, y, 2) : axisLabel(pad.yAxis);
   }
   for (const cap of document.querySelectorAll("kbd[data-key]")) {
     cap.classList.toggle("held", keys.has(cap.dataset.key));
@@ -357,7 +363,7 @@ for (const [pad, id] of [[pads[0], "keys-left"], [pads[1], "keys-right"]]) {
 }
 $("legend").innerHTML =
   `<span class="caps">${keyCap(keyFor("gimbal", 1))}${keyCap(keyFor("gimbal", -1))}</span>` +
-  `<span class="hint">gimbal up / down</span>` +
+  `<span class="hint">camera up / down</span>` +
   `<span class="caps"><kbd>space</kbd></span><span class="hint">stop, all neutral</span>` +
   `<span class="caps gate"></span><span class="hint gate" id="gate-hint">keys fly the drone</span>` +
   `<span class="caps"><kbd>${VIDEO_KEY}</kbd></span><span class="hint">minimize / restore video</span>`;
@@ -432,8 +438,8 @@ drawInput();
 const meters = {};
 for (const axis of AXES) {
   $("meters").insertAdjacentHTML("beforeend",
-    `<span class="mono">${axis}</span><div class="meter"><b class="cap"></b><b class="cap"></b><i></i></div>` +
-    `<output>+0</output>`);
+    `<span class="mono">${axisLabel(axis)}</span>` +
+    `<div class="meter"><b class="cap"></b><b class="cap"></b><i></i></div><output>0</output>`);
   const row = $("meters").lastElementChild;
   meters[axis] = { meter: row.previousElementSibling, value: row };
 }
@@ -460,7 +466,7 @@ function renderSticks(sticks) {
     high.style.left = `${50 + capPercent}%`;
     meter.lastElementChild.style.left = `${value < 0 ? 50 - width : 50}%`;
     meter.lastElementChild.style.width = `${width}%`;
-    output.textContent = signed(value, 0);
+    output.textContent = value ? describe(axis, value, 0) : "0";
   }
   $("max-label").textContent = `±${AXIS_LIMIT} · cap ${sticks.max}`;
   $("mode").textContent = sticks.dry_run ? "dry run" : "live";
@@ -511,6 +517,7 @@ function renderVideo(stats) {
 
 const num = (value, digits = 0) => (value === null || value === undefined ? "—" : Number(value).toFixed(digits));
 const xyz = (v) => (v ? `${signed(v.x, 2)} ${signed(v.y, 2)} ${signed(v.z, 2)}` : "—");
+const altitude = (v) => (v ? `${(-v.z).toFixed(2)} m` : "—");  // the drone frame has z down
 const gigabytes = (kib) => (kib === null ? "—" : (kib / KIB_PER_GIB).toFixed(1));
 
 // One block per message group: its age (from the server clock) and its rows.
@@ -523,7 +530,8 @@ const DRONE_GROUPS = [
     ["voltage", "", (d) => num(d.battery.voltage)], ["current", "", (d) => num(d.battery.current)],
     ["temp", "", (d) => num(d.battery.temp)]] },
   { id: "odometry", title: "Odometry", ts: (d) => d.odometry.ts, rows: [
-    ["position x y z", "wide", (d) => xyz(d.odometry.position)],
+    ["altitude (−z)", "wide alt", (d) => altitude(d.odometry.position)],
+    ["position x y z (z down)", "wide", (d) => xyz(d.odometry.position)],
     ["velocity x y z", "wide", (d) => xyz(d.odometry.velocity)],
     ["motor rpm", "wide", (d) => (d.odometry.motors_rpm || []).join("  ") || "—"],
     ["total current", "", (d) => num(d.odometry.total_current)]] },

@@ -12,12 +12,13 @@ import sys
 import termios
 import time
 import tty
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass
 
-from .protocol import AXIS_NAMES, Axes
+from .protocol import AXIS_DIRECTIONS, AXIS_NAMES, Axes
 from .sticks import StickSender
 
-# key -> (axis, direction). Also used by the web UI.
+# key -> (axis, direction), with the signs of `Axes` (+ = fwd, right, up, turn right, camera up).
+# Also used by the web UI.
 KEY_BINDINGS: dict[str, tuple[str, int]] = {
     "w": ("pitch", 1),
     "s": ("pitch", -1),
@@ -37,7 +38,8 @@ FIRST_PRESS_HOLD_S = 0.55
 POLL_S = 0.01
 STATUS_PERIOD_S = 0.1
 HELP = (
-    "W/S pitch  A/D roll  I/K thrust  J/L yaw  U/O gimbal  SPACE neutral  Q quit (Ctrl-C works too)"
+    "W/S fwd/back  A/D left/right  I/K up/down  J/L turn left/right  U/O camera up/down\n"
+    "SPACE neutral  Q quit (Ctrl-C works too)"
 )
 
 
@@ -75,12 +77,10 @@ class HeldKeys:
 
 
 def _status_line(sender: StickSender) -> str:
-    out = sender.output
-    return (
-        f"\rpitch {out.pitch:+5.0f}  roll {out.roll:+5.0f}  thrust {out.thrust:+5.0f}  "
-        f"yaw {out.yaw:+5.0f}  gimbal {out.gimbal:+5.0f}  sent {sender.sent}  "
-        f"errors {sender.errors} "
+    axes = "  ".join(
+        f"{AXIS_DIRECTIONS[name][0]} {value:+5.0f}" for name, value in asdict(sender.output).items()
     )
+    return f"\r{axes}  sent {sender.sent}  errors {sender.errors} "
 
 
 def _read_keys(fd: int) -> str:

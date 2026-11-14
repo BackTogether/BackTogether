@@ -7,7 +7,7 @@ import time
 from collections.abc import Callable
 from dataclasses import asdict, astuple
 
-from .protocol import AXIS_LIMIT, NEUTRAL, Axes, encode_rocker_command
+from .protocol import AXIS_LIMIT, NEUTRAL, Axes, encode_rocker_command, to_packet
 
 DRONE_HOST = "<DRONE_IP>"
 STICK_PORT = 19091
@@ -40,8 +40,9 @@ def ramp(current: Axes, target: Axes) -> Axes:
 class StickSender:
     """Sends `RockerControlCommand` packets every tick from a background thread.
 
-    Inputs are -1..1 per axis and are scaled to `max_magnitude`. If no input arrives for
-    INPUT_TIMEOUT_S the target becomes neutral. `stop()` sends EXIT_NEUTRAL_S of neutral.
+    Inputs are -1..1 per axis with our signs (`Axes`), scaled to `max_magnitude`; the encoder
+    converts them to the packet's signs. If no input arrives for INPUT_TIMEOUT_S the target
+    becomes neutral. `stop()` sends EXIT_NEUTRAL_S of neutral.
     `gate` is the stick interlock: while it returns False (or raises) the sticks are neutral and
     `locked` is set. Without a session gate nothing is sent at all while locked, not even neutral.
     With one (`set_session_gate`) the rule is: no open session, nothing is sent; session open,
@@ -163,8 +164,9 @@ class StickSender:
         packet = encode_rocker_command(self.sent, int(time.time() * 1000), axes)
         self.sent += 1
         if self.dry_run:
-            values = " ".join(f"{name}={value:+4.0f}" for name, value in asdict(axes).items())
-            print(f"seq={self.sent - 1:<6} {values}  {packet.hex()}", flush=True)
+            wire = asdict(to_packet(axes))
+            values = " ".join(f"{name}={value:+4.0f}" for name, value in wire.items())
+            print(f"seq={self.sent - 1:<6} packet {values}  {packet.hex()}", flush=True)
             return
         try:
             self._socket.sendto(packet, self.address)

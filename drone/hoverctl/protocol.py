@@ -26,10 +26,11 @@ _FIRST_AXIS_FIELD = 3
 
 @dataclass(frozen=True)
 class Axes:
-    """Stick values. On the wire they are -100..100; inputs use the same type in -1..1.
+    """A stick command: -1..1 from inputs, -100..100 once scaled.
 
-    pitch = forward(+)/back(-), roll = right(+)/left(-), thrust = up(+)/down(-),
-    yaw = turn right(+)/left(-), gimbal = camera tilt.
+    Signs are ours, relative to the camera: pitch = forward(+)/back(-), roll = right(+)/left(-),
+    thrust = up(+)/down(-), yaw = turn right(+)/left(-), gimbal = camera up(+)/down(-).
+    The packet uses other signs; `to_packet` converts.
     """
 
     roll: float = 0.0
@@ -49,6 +50,31 @@ class Axes:
 NEUTRAL = Axes()
 AXIS_NAMES = tuple(field.name for field in fields(Axes))
 
+# Packet sign of each + direction above. The drone's body frame has z down (like NED), so
+# forward and up are negative. Evidence in drone/README.md, "Stick signs".
+PITCH_FORWARD = -1.0
+ROLL_RIGHT = 1.0
+THRUST_UP = -1.0
+YAW_RIGHT = 1.0
+GIMBAL_UP = -1.0
+PACKET_SIGNS = Axes(
+    roll=ROLL_RIGHT, pitch=PITCH_FORWARD, thrust=THRUST_UP, yaw=YAW_RIGHT, gimbal=GIMBAL_UP
+)
+# Names of the + and - direction of each axis, for help text and readouts.
+AXIS_DIRECTIONS = {
+    "roll": ("right", "left"),
+    "pitch": ("fwd", "back"),
+    "thrust": ("up", "down"),
+    "yaw": ("turn r", "turn l"),
+    "gimbal": ("cam up", "cam down"),
+}
+
+
+def to_packet(axes: Axes) -> Axes:
+    """Our signs to the packet's signs (and back: it is its own inverse)."""
+    pairs = zip(astuple(PACKET_SIGNS), astuple(axes), strict=True)
+    return Axes(*(sign * value or 0.0 for sign, value in pairs))  # `or 0.0`: no -0.0 printed
+
 
 def _varint(value: int) -> bytes:
     out = bytearray()
@@ -67,14 +93,14 @@ def _key(field: int, wire_type: int) -> bytes:
 
 def _encode_manual_control(axes: Axes) -> bytes:
     out = _key(_FIELD_CONTROL_SOURCE, _WIRE_VARINT) + _varint(CONTROL_SOURCE_APP)
-    for field, value in enumerate(astuple(axes), start=_FIRST_AXIS_FIELD):
+    for field, value in enumerate(astuple(to_packet(axes)), start=_FIRST_AXIS_FIELD):
         if value:
             out += _key(field, _WIRE_FIXED32) + struct.pack("<f", value)
     return out
 
 
 def encode_rocker_command(seq_num: int, timestamp_ms: int, axes: Axes) -> bytes:
-    """One UDP payload for <DRONE_IP>:19091. `axes` are in -100..100."""
+    """One UDP payload for <DRONE_IP>:19091. `axes` are in -100..100, with our signs."""
     command = _encode_manual_control(axes)
     return (
         _key(_FIELD_SEQ_NUM, _WIRE_VARINT)
