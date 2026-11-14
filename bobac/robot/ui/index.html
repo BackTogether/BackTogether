@@ -3,11 +3,11 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Care robot</title>
+<title>Helper robot</title>
 <style>
   :root {
     --ink: #14232e; --muted: #5b6b76; --page: #f3f6f8; --card: #ffffff; --line: #d5dde3;
-    --ok: #1f8a4c; --help: #c62f2f; --calm: #2a6f97; --alert-bg: #fdecec;
+    --ok: #1f8a4c; --no: #c62f2f; --calm: #2a6f97; --found-bg: #e8f3ec;
   }
   * { box-sizing: border-box; }
   html, body { height: 100%; margin: 0; }
@@ -22,10 +22,10 @@
   }
   header h1 { margin: 0; font-size: 34px; }
   header .side { color: var(--muted); font-variant-numeric: tabular-nums; text-align: right; }
-  body.escalated header { background: var(--alert-bg); border-color: var(--help); }
-  main { flex: 1; padding: 28px 32px; display: none; min-height: 0; }
+  body.call header { background: var(--found-bg); border-color: var(--ok); }
+  main { flex: 1; padding: 24px 32px; display: none; min-height: 0; }
   body.idle #idle, body.asking #asking { display: flex; }
-  body.escalated #helping { display: grid; }
+  body.call #call { display: grid; }
 
   #idle, #asking { flex-direction: column; align-items: center; justify-content: center; text-align: center; }
   #idle .clock { font-size: 120px; font-weight: 600; font-variant-numeric: tabular-nums; }
@@ -37,42 +37,46 @@
     min-width: 380px; padding: 56px 40px; cursor: pointer;
   }
   #buttons button.positive { background: var(--ok); }
-  #buttons button.negative { background: var(--help); }
+  #buttons button.negative { background: var(--no); }
   #buttons button:active { transform: scale(0.97); }
 
-  #helping { grid-template-columns: 1.1fr 1fr; gap: 28px; align-items: start; }
-  .card { background: var(--card); border: 2px solid var(--line); border-radius: 18px; padding: 22px 26px; }
-  .card h3 { margin: 0 0 10px; font-size: 20px; letter-spacing: .06em; text-transform: uppercase; color: var(--muted); }
-  #help-status { font-size: 44px; font-weight: 700; text-wrap: balance; }
-  #countdown { font-size: 84px; line-height: 1.1; font-weight: 700; font-variant-numeric: tabular-nums; color: var(--calm); }
-  #breathing { display: none; flex-direction: column; align-items: center; padding: 56px 0 6px; }
+  #call { grid-template-columns: 1.45fr 1fr; gap: 24px; align-items: stretch; }
+  .card { background: var(--card); border: 2px solid var(--line); border-radius: 18px; padding: 18px 22px; }
+  .card h3 { margin: 0 0 8px; font-size: 18px; letter-spacing: .06em; text-transform: uppercase; color: var(--muted); }
+  .video { display: flex; flex-direction: column; align-items: center; justify-content: center; text-align: center; gap: 18px; }
+  .video .icon { font-size: 120px; line-height: 1; }
+  #call-title { font-size: 40px; font-weight: 700; text-wrap: balance; }
+  #call-hint { color: var(--muted); font-size: 24px; }
+  .stack { display: flex; flex-direction: column; gap: 16px; min-height: 0; }
+  #parent-status { font-size: 30px; font-weight: 700; text-wrap: balance; }
+  #countdown { font-size: 64px; line-height: 1.1; font-weight: 700; font-variant-numeric: tabular-nums; color: var(--calm); }
+  #breathing { display: none; align-items: center; gap: 28px; padding: 14px 0 4px; }
   #breathing.on { display: flex; }
   #circle {
-    width: 120px; height: 120px; border-radius: 50%; background: var(--calm); opacity: .85;
+    width: 70px; height: 70px; border-radius: 50%; background: var(--calm); opacity: .85; flex: none;
     transition: transform 6s ease-in-out;
   }
   #circle.in { transform: scale(1.6); transition-duration: 4s; }
-  #breath-word { margin-top: 48px; font-size: 40px; font-weight: 600; color: var(--calm); }
-  .bystander { border-color: var(--help); }
-  .bystander p { margin: 0 0 6px; font-size: 26px; font-weight: 600; }
-  .bystander .number { color: var(--help); }
-  dl { margin: 0; display: grid; grid-template-columns: max-content 1fr; gap: 6px 18px; }
+  #breath-word { font-size: 30px; font-weight: 600; color: var(--calm); }
+  .bystander { border-color: var(--ok); }
+  .bystander p { margin: 0 0 4px; font-size: 22px; font-weight: 600; }
+  .bystander .number { color: var(--no); }
+  dl { margin: 0; display: grid; grid-template-columns: max-content 1fr; gap: 4px 16px; font-size: 20px; }
   dt { color: var(--muted); }
   dd { margin: 0; font-weight: 600; }
-  .stack { display: grid; gap: 20px; }
-  @media (max-width: 900px) { #helping { grid-template-columns: 1fr; } #asking h2 { font-size: 44px; } }
+  @media (max-width: 900px) { #call { grid-template-columns: 1fr; } #asking h2 { font-size: 44px; } }
   @media (prefers-reduced-motion: reduce) { #circle { transition: none; } }
 </style>
 </head>
 <body class="idle">
 <header>
-  <h1 id="title">Care robot</h1>
-  <div class="side"><span id="floor-time"></span> <span id="clock"></span></div>
+  <h1 id="title">Helper robot</h1>
+  <div class="side"><span id="found-time"></span> <span id="clock"></span></div>
 </header>
 
 <main id="idle">
   <div class="clock" id="big-clock"></div>
-  <p id="idle-note">Everything is fine.</p>
+  <p id="idle-note">I help lost children find their family.</p>
 </main>
 
 <main id="asking">
@@ -81,33 +85,38 @@
   <div id="buttons"></div>
 </main>
 
-<main id="helping">
+<main id="call">
+  <div class="card video">
+    <div class="icon" aria-hidden="true">📹</div>
+    <div id="call-title"></div>
+    <div id="call-hint">The video call opens on top of this page.</div>
+  </div>
   <div class="stack">
     <div class="card">
-      <div id="help-status"></div>
+      <div id="parent-status"></div>
       <div id="countdown"></div>
       <div id="breathing"><div id="circle"></div><div id="breath-word"></div></div>
     </div>
-    <div class="card" id="triage-card"><h3>What they told the robot</h3><dl id="triage"></dl></div>
-  </div>
-  <div class="stack">
     <div class="card bystander">
       <h3>If you are nearby</h3>
-      <p id="bystander-fall"></p>
-      <p>Do not lift them. Keep them warm and talk to them.</p>
+      <p id="bystander-found"></p>
+      <p>Their family knows and is coming. Please stay with them here.</p>
       <p>Emergency: call <span class="number" id="emergency-number"></span></p>
     </div>
-    <div class="card"><h3>Emergency card</h3><dl id="profile"></dl></div>
+    <div class="card"><h3>About this child</h3><dl id="child"></dl></div>
   </div>
 </main>
 
 <script>
 const POLL_MS = 1000;
 const BUTTONS = {
-  ok: ["I'm fine", "positive"], help: ["I need help", "negative"],
-  yes: ["Yes", "positive"], no: ["No", "negative"],
+  ok: ["I'm okay", "positive"], help: ["I'm not okay", "negative"],
+  yes: ["Yes", "negative"], no: ["No", "positive"],  // the only yes/no question is "did you get hurt?"
 };
-const TRIAGE_LABELS = { hit_head: "Hit their head", in_pain: "In pain", can_move_legs: "Can move legs" };
+const ANSWERS = {
+  how_are_you: { ok: "Says they are okay", help: "Says they are NOT okay" },
+  hurt: { yes: "Says they got hurt", no: "Not hurt" },
+};
 const $ = (id) => document.getElementById(id);
 let shownOptions = "";
 
@@ -128,7 +137,7 @@ function fillList(dl, pairs) {
 
 function showButtons(options) {
   const key = options.join(",");
-  if (key === shownOptions) return;  // do not rebuild under the user's finger
+  if (key === shownOptions) return;  // do not rebuild under the child's finger
   shownOptions = key;
   $("buttons").replaceChildren(...options.map((option) => {
     const [label, kind] = BUTTONS[option];
@@ -149,45 +158,46 @@ function render(status) {
   $("clock").textContent = nowText;
   $("big-clock").textContent = nowText;
 
-  const escalated = status.state === "escalated" && care;
-  const asking = !escalated && care && ["talking", "waiting_answer"].includes(status.state);
-  document.body.className = escalated ? "escalated" : asking ? "asking" : "idle";
-  $("floor-time").textContent = care && (escalated || asking)
-    ? "Since the fall: " + minSec(now - care.fall_time) + " ·" : "";
-
-  if (asking || (escalated && care.question)) {
-    document.body.className = "asking";
-    $("title").textContent = care.profile.name.split(" ")[0] + ", I am here with you";
+  const inCall = care && status.state === "video_call";
+  const asking = care && !inCall && ["talking", "waiting_answer"].includes(status.state);
+  document.body.className = inCall ? "call" : asking ? "asking" : "idle";
+  $("found-time").textContent = care && (inCall || asking) ? "Found at " + clock(care.found_time) + " ·" : "";
+  if (!care || (!inCall && !asking)) {
+    $("title").textContent = "Helper robot";
+    $("idle-note").textContent = "I help lost children find their family.";
+    shownOptions = ""; $("buttons").replaceChildren();
+    return;
+  }
+  const child = care.child;
+  const first = child.name.split(" ")[0];
+  const parent = child.parents[0].called;
+  if (asking) {
+    $("title").textContent = "Hi " + first + "! I am here with you";
     $("question").textContent = care.question || "Are you okay?";
     $("hint").textContent = !care.options.length ? "Listen to the robot…"
-      : care.listening ? "You can also answer out loud." : "";
+      : care.listening ? "You can also say it out loud." : "";
     showButtons(care.options);
-  } else if (escalated) {
-    $("title").textContent = "Help is coming";
-    const eta = care.eta_at ? care.eta_at - now : null;
-    $("help-status").textContent = care.caregiver
-      ? (eta === null ? care.caregiver + " is getting help" : care.caregiver + " arrives in")
-      : (care.alerts_sent ? "Calling your family…" : "Staying with you");
-    $("countdown").textContent = eta === null ? "" : (eta > 0 ? minSec(eta) : "any moment");
-    $("breathing").className = care.breath ? "on" : "";
-    $("circle").className = care.breath === "in" ? "in" : "";
-    $("breath-word").textContent = care.breath === "in" ? "Breathe in" : care.breath === "out" ? "Breathe out" : "";
-    const answers = Object.entries(care.triage);
-    $("triage-card").style.display = answers.length ? "" : "none";
-    fillList($("triage"), answers.map(([key, value]) => [TRIAGE_LABELS[key] || key, value]));
-    const p = care.profile;
-    $("bystander-fall").textContent = p.name + " fell at " + clock(care.fall_time) + ".";
-    $("emergency-number").textContent = p.emergency_number;
-    fillList($("profile"), [
-      ["Name", p.name + ", " + p.age], ["Conditions", p.conditions.join(", ")],
-      ["Medication", p.medication.join(", ")], ["Allergies", p.allergies.join(", ")],
-      ...p.contacts.map((c) => [c.relation, c.name + " · " + c.phone]),
-    ]);
-  } else {
-    $("title").textContent = "Care robot";
-    $("idle-note").textContent = "Everything is fine.";
-    shownOptions = ""; $("buttons").replaceChildren();
+    return;
   }
+  $("title").textContent = first + ", your family is coming";
+  $("call-title").textContent = care.parent_coming ? "Video call with your family" : "Calling your " + parent + "…";
+  const eta = care.eta_at ? care.eta_at - now : null;
+  $("parent-status").textContent = care.parent_coming
+    ? care.parent_coming + (eta === null ? " is coming" : " arrives in")
+    : "Telling your family where you are";
+  $("countdown").textContent = eta === null ? "" : (eta > 0 ? minSec(eta) : "any moment");
+  $("breathing").className = care.breath ? "on" : "";
+  $("circle").className = care.breath === "in" ? "in" : "";
+  $("breath-word").textContent = care.breath === "in" ? "Fill the balloon" : care.breath === "out" ? "Blow it out" : "";
+  $("bystander-found").textContent = child.name + " was lost and found here at " + clock(care.found_time) + ".";
+  $("emergency-number").textContent = child.emergency_number;
+  fillList($("child"), [
+    ["Name", child.name + ", " + child.age],
+    ["Wearing", child.description],
+    ["How", [ANSWERS.how_are_you[care.how_are_you] || "Did not answer", ANSWERS.hurt[care.hurt] || "Hurt: no answer"].join(" · ")],
+    ["Notes", child.notes.join(" · ")],
+    ...child.parents.map((p) => [p.relation, p.name + " · " + p.phone]),
+  ]);
 }
 
 async function poll() {
@@ -195,7 +205,7 @@ async function poll() {
     render(await (await fetch("/status", { cache: "no-store" })).json());
   } catch (error) {
     document.body.className = "idle";
-    $("title").textContent = "Care robot";
+    $("title").textContent = "Helper robot";
     $("idle-note").textContent = "No connection to the robot.";
   }
   setTimeout(poll, POLL_MS);

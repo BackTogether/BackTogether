@@ -1,10 +1,10 @@
-"""Talk to the caregivers through a Telegram bot: alerts with photo and buttons, and their replies.
+"""Talk to the parents through a Telegram bot: alerts with photo and buttons, and their replies.
 
 Standard library only (runs on the robot, Python 3.8). Configuration comes from the environment,
 never from the repo:
 
     TELEGRAM_BOT_TOKEN   token from @BotFather
-    TELEGRAM_CHAT_IDS    comma-separated chat ids, in the order they are alerted
+    TELEGRAM_CHAT_IDS    comma-separated chat ids, one per parent
     TELEGRAM_API_URL     optional, default https://api.telegram.org (override to test locally)
 """
 
@@ -30,10 +30,11 @@ class Telegram:
         self._next_update_id = None
 
     def send(self, chat_id: str, text: str, buttons=(), photo_path=None) -> bool:
-        """Send a message; `buttons` is a list of (label, callback_data), one per row."""
+        """Send a message; `buttons` is a list of (label, callback_data or https URL), one per
+        row. A URL becomes a link button (e.g. a video call), anything else a reply button."""
         fields = {"chat_id": chat_id}
         if buttons:
-            rows = [[{"text": label, "callback_data": data}] for label, data in buttons]
+            rows = [[_button(label, data)] for label, data in buttons]
             fields["reply_markup"] = json.dumps({"inline_keyboard": rows})
         if photo_path:
             fields["caption"] = text
@@ -51,7 +52,7 @@ class Telegram:
             self._next_update_id = reply[-1]["update_id"] + 1
 
     def events(self, wait_s: int) -> list:
-        """Wait up to wait_s for caregiver actions. Each event is a dict with `kind`
+        """Wait up to wait_s for parent actions. Each event is a dict with `kind`
         (`button`, `text` or `voice`), `chat_id`, `name` and `data` / `text` / `file_id`."""
         fields = {"timeout": wait_s}
         if self._next_update_id is not None:
@@ -87,14 +88,14 @@ class Telegram:
         if callback:
             self._call("answerCallbackQuery", {"callback_query_id": callback["id"]})
             chat_id = str(callback["message"]["chat"]["id"])
-            name = callback["from"].get("first_name", "Your caregiver")
+            name = callback["from"].get("first_name", "Your family")
             return {"kind": "button", "chat_id": chat_id, "name": name, "data": callback["data"]}
         message = update.get("message")
         if not message:
             return None
         event = {
             "chat_id": str(message["chat"]["id"]),
-            "name": message.get("from", {}).get("first_name", "Your caregiver"),
+            "name": message.get("from", {}).get("first_name", "Your family"),
         }
         voice = message.get("voice") or message.get("audio")
         if voice:
@@ -126,6 +127,12 @@ class Telegram:
         return reply["result"]
 
 
+def _button(label: str, data: str) -> dict:
+    if data.startswith("https://"):
+        return {"text": label, "url": data}
+    return {"text": label, "callback_data": data}
+
+
 def _multipart(fields: dict, photo: bytes):
     boundary = MULTIPART_BOUNDARY_PREFIX + uuid.uuid4().hex
     parts = []
@@ -148,6 +155,6 @@ def from_environment():
     token = os.environ.get("TELEGRAM_BOT_TOKEN", "")
     chat_ids = [c.strip() for c in os.environ.get("TELEGRAM_CHAT_IDS", "").split(",") if c.strip()]
     if not token or not chat_ids:
-        log.warning("TELEGRAM_BOT_TOKEN / TELEGRAM_CHAT_IDS not set: caregiver alerts are off")
+        log.warning("TELEGRAM_BOT_TOKEN / TELEGRAM_CHAT_IDS not set: parents will not be told")
         return None
     return Telegram(token, chat_ids, os.environ.get("TELEGRAM_API_URL", DEFAULT_API_URL))

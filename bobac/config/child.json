@@ -1,0 +1,11 @@
+{
+  "name": "Leo Martín",
+  "age": 7,
+  "description": "Blue raincoat, red backpack, short brown hair",
+  "notes": ["Allergic to peanuts", "Shy with strangers: speak slowly"],
+  "parents": [
+    {"name": "Laura Martín", "relation": "Mother", "called": "Mom", "phone": "+41 00 000 00 01"},
+    {"name": "Pablo Martín", "relation": "Father", "called": "Dad", "phone": "+41 00 000 00 02"}
+  ],
+  "emergency_number": "112"
+}

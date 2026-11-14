@@ -11,21 +11,21 @@ import subprocess
 import threading
 
 PHRASES = {
-    # ids fixed by the contract
-    "greeting": "Hello. I am your care robot. I am here with you.",
+    # ids fixed by the contract (interfaces/ROBOT_API.md)
+    "greeting": "Hi! I am a friendly robot. I am here to help you.",
     "are_you_ok": "Are you okay?",
-    "press_button": "Say yes, or press the green button, if you are fine. "
-    "Say help, or press the red button, if you need help.",
-    "all_good": "Good. I am glad you are fine.",
-    "calling_help": "I am calling for help now. Stay calm.",
-    "help_on_way": "Help is on the way. I am staying with you.",
-    # used by the care flow
-    "no_answer": "I did not get an answer, so I am calling for help.",
-    "do_not_get_up": "Please do not try to get up quickly. Stay where you are.",
+    "press_button": "Say yes, or press the green button, if you are okay. "
+    "Say no, or press the red button, if you are not.",
+    "all_good": "Great. You are very brave.",
+    "calling_help": "I am calling your family now.",
+    "help_on_way": "Your family is on the way. I am staying with you.",
+    # used by the care flow (care.py)
+    "did_you_get_hurt": "Did you get hurt? Say yes or no, or press a button.",
+    "sorry_hurt": "I am sorry you got hurt. I will tell your family right away.",
+    "stay_here": "Please stay here with me. Do not walk away.",
     "still_here": "I am still here with you. You are not alone.",
-    "breathe_in": "Breathe in slowly.",
-    "breathe_out": "And breathe out.",
-    "help_arrived": "Help has arrived. You are in good hands.",
+    "breathe_in": "Breathe in, and fill the balloon.",
+    "breathe_out": "And blow it out, slowly.",
 }
 LANGUAGE = "en"
 SPEECH_RATE = -20  # spd-say scale -100..100; slower than default, easier to follow

@@ -5,7 +5,8 @@ screen page works unchanged once the real bridge calls CareSession itself:
 
     GET  /ui/           screen page (bobac/robot/ui/)
     GET  /status        contract fields + "care" (extra details for the screen)
-    POST /care/start    {"zone": str, "fall_time": epoch seconds (optional)} -> the robot "arrived"
+    POST /care/start    {"zone": str, "found_time": epoch seconds (optional)} -> the robot
+                        reached the lost child in that zone
     POST /ui/answer     {"answer": "ok" | "help" | "yes" | "no"}
     POST /stop
 
@@ -14,14 +15,16 @@ On the robot (system Python 3.8) or on a laptop:
     python3 care_server.py            # then open http://localhost:8000/ui/
     curl -X POST localhost:8000/care/start -d '{"zone": "sofa"}'
 
-Caregiver alerts need TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_IDS (see caregiver.py). Spoken
-answers need Vosk and its model (see listen.py); without them only the buttons work.
+Messages to the parents need TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_IDS (see caregiver.py). Spoken
+answers need Vosk and its model (see listen.py); without them only the buttons work. The video
+call uses CALL_BASE_URL (a Jitsi server, default in care.py).
 """
 
 import argparse
 import json
 import logging
 import mimetypes
+import os
 import shutil
 import subprocess
 import threading
@@ -37,10 +40,20 @@ import speech
 DEFAULT_PORT = 8000
 HERE = Path(__file__).resolve().parent
 UI_DIR = HERE / "ui"
-PROFILE_PATH = HERE.parent / "config" / "patient.json"
+PROFILE_PATH = HERE.parent / "config" / "child.json"
 HEAD_CAMERA_DEVICE = "/dev/head_camera"
 CAMERA_WARMUP_FRAMES = 5  # the first frames of a USB camera are dark
 BUZZER_TIMEOUT_S = 5
+CALL_PROFILE_DIR = Path.home() / "leuk" / "call-firefox"
+# The call window must use the camera and microphone with nobody there to tap "Allow".
+CALL_FIREFOX_PREFS = (
+    'user_pref("media.navigator.permission.disabled", true);\n'
+    'user_pref("permissions.default.camera", 1);\n'
+    'user_pref("permissions.default.microphone", 1);\n'
+    'user_pref("media.autoplay.default", 0);\n'
+    'user_pref("browser.shell.checkDefaultBrowser", false);\n'
+    'user_pref("browser.sessionstore.resume_from_crash", false);\n'
+)
 IDLE_STATUS = {"state": "idle", "answer": None, "updated_at": 0.0, "care": None}
 
 log = logging.getLogger("care_server")
@@ -79,26 +92,71 @@ def buzz() -> None:
         log.warning("buzzer call timed out")
 
 
+class CallWindow:
+    """The video call, full screen on the robot display, in a Firefox of its own (Jitsi servers
+    do not allow being embedded in our page). Opens on top of the screen page, closes after."""
+
+    def __init__(self):
+        self._process = None
+        self._lock = threading.Lock()
+
+    def show(self, url) -> None:
+        with self._lock:
+            self._close()
+            if url:
+                self._open(url)
+
+    def _open(self, url: str) -> None:
+        if shutil.which("firefox") is None:
+            log.warning("firefox not installed: open the call yourself: %s", url)
+            return
+        CALL_PROFILE_DIR.mkdir(parents=True, exist_ok=True)
+        (CALL_PROFILE_DIR / "user.js").write_text(CALL_FIREFOX_PREFS)
+        env = dict(os.environ, DISPLAY=os.environ.get("DISPLAY", ":0"))
+        command = ["firefox", "--new-instance", "--profile", str(CALL_PROFILE_DIR), "--kiosk", url]
+        self._process = subprocess.Popen(
+            command, env=env, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL
+        )
+        log.info("video call window opened: %s", url)
+
+    def _close(self) -> None:
+        if self._process and self._process.poll() is None:
+            self._process.terminate()
+            log.info("video call window closed")
+        self._process = None
+
+
 class CareServer(ThreadingHTTPServer):
     daemon_threads = True
 
-    def __init__(self, address, profile, telegram, ears):
+    def __init__(self, address, profile, telegram, ears, call_base):
         super().__init__(address, Handler)
         self.profile = profile
         self.telegram = telegram
         self.ears = ears
+        self.call_base = call_base
+        self.call_window = CallWindow()
         self.session = None
         self.session_thread = None
         self.session_lock = threading.Lock()
 
-    def start_session(self, zone: str, fall_time: float) -> bool:
+    def start_session(self, zone: str, found_time: float) -> bool:
         with self.session_lock:
             if self.session_thread and self.session_thread.is_alive():
                 return False
             if self.telegram:
                 self.telegram.skip_backlog()
             self.session = care.CareSession(
-                self.profile, zone, fall_time, speech, self.telegram, take_photo, buzz, self.ears
+                self.profile,
+                zone,
+                found_time,
+                speech,
+                self.telegram,
+                take_photo,
+                buzz,
+                self.ears,
+                self.call_base,
+                self.call_window.show,
             )
             self.session_thread = threading.Thread(target=self.session.run, daemon=True)
             self.session_thread.start()
@@ -134,10 +192,10 @@ class Handler(BaseHTTPRequestHandler):
 
     def _start(self, body: dict) -> None:
         zone = body.get("zone")
-        fall_time = body.get("fall_time", time.time())
-        if not isinstance(zone, str) or not zone or not isinstance(fall_time, (int, float)):
-            self._send_json(400, {"error": "zone (str) required, fall_time must be a number"})
-        elif self.server.start_session(zone, float(fall_time)):
+        found_time = body.get("found_time", time.time())
+        if not isinstance(zone, str) or not zone or not isinstance(found_time, (int, float)):
+            self._send_json(400, {"error": "zone (str) required, found_time must be a number"})
+        elif self.server.start_session(zone, float(found_time)):
             self._send_json(202, {"accepted": True})
         else:
             self._send_json(409, {"error": "busy"})
@@ -157,7 +215,6 @@ class Handler(BaseHTTPRequestHandler):
             "state": care_status["state"],
             "place": care_status["care"]["zone"] if care_status["care"] else None,
             "person_found": session is not None,
-            "is_fallen": None,
             "answer": care_status["answer"],
             "battery_v": None,
             "estop_pressed": None,
@@ -214,7 +271,9 @@ def main() -> None:
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(name)s: %(message)s")
     profile = json.loads(PROFILE_PATH.read_text(encoding="utf-8"))
     ears = listen if listen.available() else None
-    server = CareServer(("0.0.0.0", args.port), profile, caregiver.from_environment(), ears)
+    call_base = os.environ.get("CALL_BASE_URL", "")
+    telegram = caregiver.from_environment()
+    server = CareServer(("0.0.0.0", args.port), profile, telegram, ears, call_base)
     log.info("care server on port %d, screen page at /ui/", args.port)
     try:
         server.serve_forever()
