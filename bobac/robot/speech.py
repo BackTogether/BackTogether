@@ -29,6 +29,7 @@ PHRASES = {
 }
 LANGUAGE = "en"
 SPEECH_RATE = -20  # spd-say scale -100..100; slower than default, easier to follow
+SPEECH_VOLUME = 100  # spd-say scale -100..100; the screen speaker is quiet, so always max
 SAY_TIMEOUT_S = 40
 PLAY_TIMEOUT_S = 120
 
@@ -51,7 +52,9 @@ def say_text(text: str) -> bool:
     if shutil.which("spd-say") is None:
         log.warning("spd-say not installed: nothing was spoken")
         return False
-    command = ["spd-say", "--wait", "-l", LANGUAGE, "-r", str(SPEECH_RATE), text]
+    command = [
+        "spd-say", "--wait", "-l", LANGUAGE, "-r", str(SPEECH_RATE), "-i", str(SPEECH_VOLUME), text
+    ]  # fmt: skip
     return _run_exclusive(command, SAY_TIMEOUT_S)
 
 
