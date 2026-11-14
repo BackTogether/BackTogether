@@ -22,6 +22,7 @@ call uses CALL_BASE_URL (a Jitsi server, default in care.py).
 """
 
 import argparse
+import contextlib
 import json
 import logging
 import mimetypes
@@ -47,6 +48,9 @@ HEAD_CAMERA_DEVICE = "/dev/head_camera"
 CAMERA_WARMUP_FRAMES = 5  # the first frames of a USB camera are dark
 BUZZER_TIMEOUT_S = 5
 CALL_PROFILE_DIR = Path.home() / "leuk" / "call-firefox"
+CALL_LOG_PATH = Path.home() / "leuk" / "call-firefox.log"
+CALL_PROFILE_LOCKS = ("lock", ".parentlock")  # left behind when Firefox is killed
+CALL_CLOSE_TIMEOUT_S = 3
 # The call window must use the camera and microphone with nobody there to tap "Allow".
 CALL_FIREFOX_PREFS = (
     'user_pref("media.navigator.permission.disabled", true);\n'
@@ -112,20 +116,40 @@ class CallWindow:
         if shutil.which("firefox") is None:
             log.warning("firefox not installed: open the call yourself: %s", url)
             return
+        self._free_profile()
         CALL_PROFILE_DIR.mkdir(parents=True, exist_ok=True)
         (CALL_PROFILE_DIR / "user.js").write_text(CALL_FIREFOX_PREFS)
         env = dict(os.environ, DISPLAY=os.environ.get("DISPLAY", ":0"))
         command = ["firefox", "--new-instance", "--profile", str(CALL_PROFILE_DIR), "--kiosk", url]
-        self._process = subprocess.Popen(
-            command, env=env, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL
-        )
-        log.info("video call window opened: %s", url)
+        # Firefox errors go to a file: when the window does not appear, the reason is there.
+        with open(str(CALL_LOG_PATH), "ab") as output:
+            self._process = subprocess.Popen(command, env=env, stdout=output, stderr=output)
+        log.info("video call window opened: %s (firefox log: %s)", url, CALL_LOG_PATH)
 
     def _close(self) -> None:
         if self._process and self._process.poll() is None:
             self._process.terminate()
+            try:
+                self._process.wait(CALL_CLOSE_TIMEOUT_S)
+            except subprocess.TimeoutExpired:
+                self._process.kill()
+                self._process.wait()
             log.info("video call window closed")
         self._process = None
+
+    def _free_profile(self) -> None:
+        """A call Firefox left by an earlier run (server killed or restarted during a call) still
+        holds the camera, the microphone and the profile, and the new call would hang: end it."""
+        if shutil.which("pkill") is not None:
+            leftover = subprocess.run(
+                ["pkill", "-f", str(CALL_PROFILE_DIR)], check=False, stdout=subprocess.DEVNULL
+            )
+            if leftover.returncode == 0:
+                log.warning("closed a call window left open by an earlier run")
+                time.sleep(CALL_CLOSE_TIMEOUT_S)
+        for lock in CALL_PROFILE_LOCKS:
+            with contextlib.suppress(OSError):  # no stale lock: nothing to remove
+                (CALL_PROFILE_DIR / lock).unlink()
 
 
 class CareServer(ThreadingHTTPServer):
@@ -283,6 +307,11 @@ def main() -> None:
         server.serve_forever()
     except KeyboardInterrupt:
         log.info("bye")
+    finally:
+        # never leave the call window open: it would keep the camera and block the next call
+        if server.session:
+            server.session.stop()
+        server.call_window.show(None)
 
 
 if __name__ == "__main__":
