@@ -79,7 +79,7 @@ class _Handler(BaseHTTPRequestHandler):
         if link is None:
             return {path: lambda: NO_LINK for path in DRONE_PATHS}
         return {
-            "/api/drone/manual": link.set_manual,
+            "/api/drone/manual": link.enter_manual,
             "/api/drone/land": link.land,
             "/api/drone/wifi": lambda: self._start_wifi(link),
             "/api/drone/video": link.start_video,
@@ -135,6 +135,7 @@ class _Handler(BaseHTTPRequestHandler):
                 "target": f"{sender.address[0]}:{sender.address[1]}",
                 "dry_run": sender.dry_run,
                 "locked": sender.locked,
+                "silent": sender.silent,
                 "interlock": sender.interlocked,
             },
             "now": time.time(),
@@ -187,6 +188,8 @@ class WebServer(ThreadingHTTPServer):
         self.sender = sender
         self.receiver = receiver
         self.link = link  # None: Bluetooth off or unavailable (`ble_note` says which)
+        if link:
+            sender.set_session_gate(link.in_manual_session)
         self.ble_note = ble_note
         bindings = {key: list(value) for key, value in KEY_BINDINGS.items()}
         page = PAGE_TEMPLATE.read_text().replace(BINDINGS_PLACEHOLDER, json.dumps(bindings))

@@ -142,6 +142,8 @@
   input[type=password], input[type=text] { all: unset; box-sizing: border-box; height: 34px; padding: 0 10px;
     border: 1px solid var(--faint); font: 13px var(--mono); user-select: text; -webkit-user-select: text; min-width: 0; }
   input:focus { border-color: var(--line); }
+  #d-manual-steps { padding: 8px 16px 0; color: var(--muted); }
+  #d-manual-steps.warn { color: var(--red); }
   #d-action-status { padding: 8px 16px 12px; min-height: 36px; color: var(--muted); }
   #d-action-status.warn { color: var(--red); }
   .lock { padding: 6px 10px; border: 1px solid var(--line); text-align: center; color: var(--ink); }
@@ -212,13 +214,14 @@
         <div class="dronemode"><div class="big" id="d-mode">—</div><div class="mono" id="d-note"></div><div class="mono" id="d-wifi-note"></div></div>
         <div id="d-groups"></div>
         <div class="actions">
-          <button class="btn" id="d-manual" type="button">Manual</button>
+          <button class="btn" id="d-manual" type="button" title="What the app does on Manual Control: Wi-Fi heartbeat, preview, manual flag, video">Manual control</button>
           <button class="btn" id="d-land" type="button">Land</button>
         </div>
         <div class="actions">
           <button class="btn" id="d-video" type="button">Video start</button>
           <button class="btn" id="d-video-stop" type="button">Video stop</button>
         </div>
+        <div class="mono" id="d-manual-steps"></div>
         <form class="actions wifi" id="d-wifi" autocomplete="off">
           <input type="password" id="d-wifi-pw" placeholder="wi-fi password (8+)" autocomplete="off">
           <button class="btn" id="d-wifi-set" type="submit">Set</button>
@@ -272,6 +275,7 @@ const DATA_STALE_S = 5;       // drone data older than this is greyed out
 const LAND_ARM_MS = 3000;     // LAND needs a second click within this time
 const STATUS_MS = 6000;       // how long an action result stays on screen
 const MIN_WIFI_PASSWORD = 8;
+const MANUAL_STEPS = ["wifi", "preview", "manual", "video"];  // the order enter_manual() runs them
 const DRONE_NETWORK_PREFIX = "<DRONE_SUBNET>.";  // the laptop's address here means it is on the drone's Wi-Fi
 const KIB_PER_GIB = 1024 ** 2;  // the drone's storage fields are named bytes but read as KiB (32 GB card = 33554432)
 const STOP_KEY = " ";
@@ -571,6 +575,7 @@ function renderDrone(state) {
   $("d-manual").classList.toggle("off", !present);
   $("d-wifi-note").textContent = wifiText(present ? drone.wifi : null);
   autoStartVideo(state);
+  renderManualSteps(state, present);
   const connected = present && drone.connection.connected;
   const mode = present && drone.mode.name && !isStale(age(state.now, drone.mode.ts)) ? drone.mode.name : null;
   $("d-mode").textContent = mode ?? "—";
@@ -594,13 +599,28 @@ function renderLock(sticks, present) {
   const locked = sticks.interlock && sticks.locked;
   const reason = present ? "not MANUAL" : "no bluetooth link";
   $("lock").hidden = !locked;
+  const sent = sticks.silent ? "nothing is sent" : "neutral is sent";
   $("lock").textContent = `LOCKED · ${reason}`;
   document.querySelector(".controls").classList.toggle("locked", locked);
   $("gate-hint").textContent = !sticks.interlock ? "keys fly the drone (interlock off)"
-    : locked ? `keys locked: ${reason}${sticks.dry_run ? " (dry run: still printed)" : ", nothing is sent"}` : "keys fly the drone (MANUAL)";
+    : locked ? `keys locked: ${reason}${sticks.dry_run ? " (dry run: still printed)" : `, ${sent}`}` : "keys fly the drone (MANUAL)";
 }
 
 // ---- drone buttons ----
+
+function renderManualSteps(state, present) {
+  const element = $("d-manual-steps");
+  const entry = present ? state.drone.manual_entry : null;
+  const onDroneWifi = (state.video.local_ip || "").startsWith(DRONE_NETWORK_PREFIX);
+  if (!present) { element.textContent = ""; return; }
+  const ssid = state.drone.wifi.ssid ?? "the drone's Wi-Fi";
+  const mode = state.drone.mode.name ?? "—";
+  const marks = MANUAL_STEPS.map((step) => `${step} ${entry.steps.includes(step) ? "✓" : "·"}`).join(" / ");
+  const hint = onDroneWifi ? "" : ` · laptop is not on the drone's Wi-Fi: join ${ssid} first`;
+  const error = entry.error ? ` · ${entry.error}` : "";
+  element.textContent = `${marks} / mode: ${mode}${entry.session ? " · session on" : ""}${error}${hint}`;
+  element.classList.toggle("warn", Boolean(entry.error) || !onDroneWifi);
+}
 
 function wifiText(wifi) {
   if (!wifi || wifi.state === "off") return "";

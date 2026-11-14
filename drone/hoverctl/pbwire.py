@@ -33,6 +33,8 @@ REQ_SET_FLIGHT_MODE_TO_MANUAL = 46  # bool
 REQ_HEARTBEAT_INFO = 70  # Empty, the app sends it at 1 Hz over Wi-Fi
 REQ_GET_BLE_ENCRY_LIST = 71
 REQ_CAMERA_START_PREVIEW = 240  # StartPreviewParams
+REQ_SET_UDP_SERVER_IP = 245  # string: where the drone pushes video
+REQ_SWITCH_TO_MANUAL_CAPTURE = 249  # bool
 REQ_EXIT_PREVIEW_MODE = 250  # Empty
 REQ_ENTER_PREVIEW_MODE = 254  # EnterPreview
 
@@ -342,6 +344,19 @@ def encode_enter_preview_request(request_id: int, udp_server_ip: str, codec: int
         + _int_field(_PREVIEW_CONNECT_TYPE, CONNECT_TYPE_APP)
     )
     return encode_rpc_request(request_id, REQ_ENTER_PREVIEW_MODE, body)
+
+
+def encode_camera_start_preview_request(request_id: int, codec: int) -> bytes:
+    """Start the video push, as the Manual Control screen does after set_udp_server_ipaddress."""
+    return encode_rpc_request(request_id, REQ_CAMERA_START_PREVIEW, _preview_params(True, codec))
+
+
+def encode_set_udp_server_request(request_id: int, udp_server_ip: str) -> bytes:
+    return _int_field(REQUEST_ID, request_id) + _str_field(REQ_SET_UDP_SERVER_IP, udp_server_ip)
+
+
+def encode_switch_to_manual_capture_request(request_id: int) -> bytes:
+    return _int_field(REQUEST_ID, request_id) + _int_field(REQ_SWITCH_TO_MANUAL_CAPTURE, 1)
 
 
 def encode_stop_preview_request(request_id: int, codec: int) -> bytes:

@@ -42,8 +42,12 @@ class StickSender:
 
     Inputs are -1..1 per axis and are scaled to `max_magnitude`. If no input arrives for
     INPUT_TIMEOUT_S the target becomes neutral. `stop()` sends EXIT_NEUTRAL_S of neutral.
-    `gate` is the stick interlock: while it returns False (or raises) nothing is sent at all, not
-    even neutral. In dry-run packets are still printed, and `locked` shows what would happen.
+    `gate` is the stick interlock: while it returns False (or raises) the sticks are neutral and
+    `locked` is set. Without a session gate nothing is sent at all while locked, not even neutral.
+    With one (`set_session_gate`) the rule is: no open session, nothing is sent; session open,
+    neutral is sent all the time (the app streams neutral on its joystick screen, and the drone
+    may need that stream to stay in MANUAL) and values only while `gate` passes. In dry-run
+    packets are still printed.
     """
 
     def __init__(
@@ -59,8 +63,10 @@ class StickSender:
         self.max_magnitude = min(abs(max_magnitude), AXIS_LIMIT)
         self.dry_run = dry_run
         self.locked = False
+        self.silent = gate is not None  # locked and no session: not even neutral goes out
         self.interlocked = gate is not None
         self._gate = gate
+        self._session: Callable[[], bool] | None = None
         self.output = NEUTRAL
         self.sent = 0
         self.errors = 0
@@ -78,6 +84,10 @@ class StickSender:
 
     def start(self) -> None:
         self._thread.start()
+
+    def set_session_gate(self, session: Callable[[], bool]) -> None:
+        """While `session()` is True a locked sender still sends neutral packets."""
+        self._session = session
 
     def set_input(self, axes: Axes) -> None:
         with self._lock:
@@ -120,26 +130,35 @@ class StickSender:
                 next_tick = time.monotonic()
 
     def _tick(self) -> None:
-        self.locked = not self._gate_open()
+        self._read_gates()
         self.output = NEUTRAL if self.locked else ramp(self.output, self._target())
         self._send(self.output)
 
     def _send_neutral(self) -> None:
-        self.locked = not self._gate_open()
+        self._read_gates()
         self.output = NEUTRAL
         self._send(NEUTRAL)
 
-    def _gate_open(self) -> bool:
-        if self._gate is None:
-            return True
+    def _read_gates(self) -> None:
+        gate_open = self._passes(self._gate, default=True)
+        if self._session is None:
+            self.locked = self.silent = not gate_open
+            return
+        session_open = self._passes(self._session, default=False)
+        self.locked = not (gate_open and session_open)
+        self.silent = not session_open
+
+    def _passes(self, check: Callable[[], bool] | None, default: bool) -> bool:
+        if check is None:
+            return default
         try:
-            return self._gate()
+            return check()
         except Exception as error:  # an interlock that fails stays closed
             self._note_error(error)
             return False
 
     def _send(self, axes: Axes) -> None:
-        if self.locked and not self.dry_run:
+        if self.silent and not self.dry_run:
             return
         packet = encode_rocker_command(self.sent, int(time.time() * 1000), axes)
         self.sent += 1

@@ -38,6 +38,10 @@ RECONNECT_MAX_S = 10.0
 MANUAL_MAX_AGE_S = 5.0  # a mode reading older than this no longer unlocks the sticks
 THREAD_START_TIMEOUT_S = 5.0
 HEARTBEAT_PERIOD_S = 1.0  # the app keeps sending this over Wi-Fi while the preview runs
+MAX_MISSED_HEARTBEATS = 5  # the app calls the drone disconnected after this many in a row
+MANUAL_CONFIRM_TIMEOUT_S = 3.0  # the app sees the mode push about 0.5 s after the request
+MANUAL_CONFIRM_POLL_S = 0.1
+MANUAL_STEPS = ("wifi", "preview", "manual", "video")
 
 _POLL_REQUESTS = (
     pbwire.REQ_BATTERY_STATUS,
@@ -64,6 +68,10 @@ class DroneLink:
         self._wifi_password = wifi_password  # None: leave the drone's Wi-Fi alone on connect
         self._wifi: dict[str, Any] = {"state": "off" if wifi_password is None else "pending"}
         self._heartbeat_stop: threading.Event | None = None
+        self._entering_manual = threading.Lock()
+        self._manual_session = False  # neutral sticks may flow; see in_manual_session()
+        self._manual_steps: list[str] = []
+        self._manual_error: str | None = None
         self._thread = threading.Thread(target=self._run_thread, name="drone-ble", daemon=True)
         self._ready = threading.Event()
         self._loop: asyncio.AbstractEventLoop | None = None
@@ -119,6 +127,11 @@ class DroneLink:
         with self._lock:
             values = dict(self._values)
             wifi = dict(self._wifi)
+            manual_entry = {
+                "session": self._manual_session,
+                "steps": list(self._manual_steps),
+                "error": self._manual_error,
+            }
             since, rssi, last, error = (
                 self._connected_since,
                 self._rssi,
@@ -144,6 +157,7 @@ class DroneLink:
                 "error": error,
             },
             "wifi": wifi,
+            "manual_entry": manual_entry,
             "mode": {
                 "value": mode,
                 "name": None if mode is None else pbwire.mode_name(mode),
@@ -191,8 +205,35 @@ class DroneLink:
                 and time.time() - ts <= MANUAL_MAX_AGE_S
             )
 
+    def in_manual_session(self) -> bool:
+        """True after enter_manual() got the drone's heartbeat, until the heartbeat is lost."""
+        with self._lock:
+            return self._manual_session
+
     def set_manual(self) -> dict[str, Any]:
+        """The bare flag over Bluetooth. The drone drops back to its own mode: use enter_manual."""
         return self._command(pbwire.encode_set_manual_request, RPC_TIMEOUT_S)
+
+    def enter_manual(self) -> dict[str, Any]:
+        """What the app does when the user taps Manual Control, in the same order, over Wi-Fi.
+
+        1. heartbeat_info_request, then every second (the app's "drone connected"; its stick
+           stream, neutral until moved, starts here: this opens the manual session)
+        2. switch_to_manual_capture_request(true), set_udp_server_ipaddress_request(our ip)
+        3. set_flight_mode_to_manual_request(true), over Wi-Fi HTTP, not Bluetooth
+        4. camera_start_preview_request(enable, session 0): the drone starts pushing video
+        Needs the laptop on the drone's Wi-Fi. Progress is in snapshot()["manual_entry"].
+        """
+        address = pbwire.drone_network_ip()
+        if address is None:
+            password = self._wifi_password or DEFAULT_WIFI_PASSWORD
+            return self._manual_failed(f"join {self._ssid} (password {password}) first")
+        if not self._entering_manual.acquire(blocking=False):
+            return {"ok": False, "error": "manual entry is already running"}
+        try:
+            return self._enter_manual(address)
+        finally:
+            self._entering_manual.release()
 
     def land(self) -> dict[str, Any]:
         """abort_flight_request: the drone lands."""
@@ -204,6 +245,8 @@ class DroneLink:
         """Start the drone's Wi-Fi access point, which carries video and sticks."""
         result = self._command(self._wifi_request(password), WIFI_TIMEOUT_S)
         self._set_wifi(result)
+        if result["ok"]:
+            self._wifi_password = password  # what the "join the Wi-Fi" hint should say
         return result
 
     def start_video(self) -> dict[str, Any]:
@@ -224,12 +267,72 @@ class DroneLink:
 
     def stop_video(self) -> dict[str, Any]:
         self._stop_heartbeat()
+        self._set_manual_session(False)
         stopped = _wifi_rpc(
             lambda rid: pbwire.encode_stop_preview_request(rid, pbwire.VIDEO_CODEC_AVC)
         )
         if not stopped["ok"]:
             return stopped
         return _wifi_rpc(lambda rid: pbwire.encode_rpc_request(rid, pbwire.REQ_EXIT_PREVIEW_MODE))
+
+    def _enter_manual(self, address: str) -> dict[str, Any]:
+        with self._lock:
+            self._manual_steps = []
+            self._manual_error = None
+        codec = pbwire.VIDEO_CODEC_AVC
+        plan = (
+            (
+                MANUAL_STEPS[0],
+                (lambda rid: pbwire.encode_rpc_request(rid, pbwire.REQ_HEARTBEAT_INFO),),
+            ),
+            (
+                MANUAL_STEPS[1],
+                (
+                    pbwire.encode_switch_to_manual_capture_request,
+                    lambda rid: pbwire.encode_set_udp_server_request(rid, address),
+                ),
+            ),
+            (MANUAL_STEPS[2], (pbwire.encode_set_manual_request,)),
+            (
+                MANUAL_STEPS[3],
+                (lambda rid: pbwire.encode_camera_start_preview_request(rid, codec),),
+            ),
+        )
+        for step, requests in plan:
+            for build in requests:
+                result = _wifi_rpc(build)
+                if not result["ok"]:
+                    return self._manual_failed(f"{step}: {result['error']}")
+            with self._lock:
+                self._manual_steps.append(step)
+            if step == MANUAL_STEPS[0]:
+                self._start_heartbeat()
+                self._set_manual_session(True)
+        if not self._wait_for_manual():
+            mode = self.snapshot()["mode"]["name"] or "no mode"
+            return self._manual_failed(
+                f"requests accepted but the drone reports {mode}, not MANUAL"
+            )
+        return {"ok": True, "error": None}
+
+    def _wait_for_manual(self) -> bool:
+        deadline = time.monotonic() + MANUAL_CONFIRM_TIMEOUT_S
+        while not self.is_manual():
+            if time.monotonic() >= deadline:
+                return False
+            time.sleep(MANUAL_CONFIRM_POLL_S)
+        return True
+
+    def _manual_failed(self, error: str) -> dict[str, Any]:
+        """Close the session (fail closed: no more neutral stream) and keep the reason."""
+        with self._lock:
+            self._manual_error = error
+            self._manual_session = False
+        return {"ok": False, "error": error}
+
+    def _set_manual_session(self, active: bool) -> None:
+        with self._lock:
+            self._manual_session = active
 
     def _wifi_request(self, password: str) -> Callable[[int], bytes]:
         return lambda rid: pbwire.encode_wifi_start_request(
@@ -249,7 +352,10 @@ class DroneLink:
         stop = threading.Event()
         self._heartbeat_stop = stop
         threading.Thread(
-            target=_heartbeat, args=(stop,), name="drone-heartbeat", daemon=True
+            target=_heartbeat,
+            args=(stop, lambda: self._set_manual_session(False)),
+            name="drone-heartbeat",
+            daemon=True,
         ).start()
 
     def _stop_heartbeat(self) -> None:
@@ -430,9 +536,14 @@ def _wifi_rpc(build: Callable[[int], bytes]) -> dict[str, Any]:
     return {"ok": response.error is None, "response": response.kind, "error": response.error}
 
 
-def _heartbeat(stop: threading.Event) -> None:
+def _heartbeat(stop: threading.Event, on_lost: Callable[[], None]) -> None:
+    """The app's 1 Hz heartbeat; `on_lost` runs on every beat after MAX_MISSED_HEARTBEATS misses."""
+    missed = 0
     while not stop.wait(HEARTBEAT_PERIOD_S):
-        _wifi_rpc(lambda rid: pbwire.encode_rpc_request(rid, pbwire.REQ_HEARTBEAT_INFO))
+        beat = _wifi_rpc(lambda rid: pbwire.encode_rpc_request(rid, pbwire.REQ_HEARTBEAT_INFO))
+        missed = 0 if beat["ok"] else missed + 1
+        if missed >= MAX_MISSED_HEARTBEATS:
+            on_lost()
 
 
 def _xyz(values: tuple[float, float, float]) -> dict[str, float]:
