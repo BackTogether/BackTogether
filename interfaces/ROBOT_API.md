@@ -34,6 +34,7 @@ Rules for these modules:
 Using the fakes until the real module exists:
 ```python
 import sys
+
 sys.path.insert(0, "<repo>/interfaces")
 import robot_fakes as navigator  # same functions as the real module
 ```
