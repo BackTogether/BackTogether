@@ -13,9 +13,10 @@ screen page works unchanged once the real bridge calls CareSession itself:
 On the robot (system Python 3.8) or on a laptop:
 
     python3 care_server.py            # then open http://localhost:8000/ui/
-    curl -X POST localhost:8000/care/start -d '{"zone": "sofa"}'
+    curl -X POST localhost:8000/care/start -d '{"zone": "park"}'
 
-Messages to the parents need TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_IDS (see caregiver.py). Spoken
+Messages to the parents go through ntfy if NTFY_TOPIC is set (no account needed, see
+ntfy_channel.py), else Telegram with TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_IDS (caregiver.py). Spoken
 answers need Vosk and its model (see listen.py); without them only the buttons work. The video
 call uses CALL_BASE_URL (a Jitsi server, default in care.py).
 """
@@ -35,6 +36,7 @@ from pathlib import Path
 import care
 import caregiver
 import listen
+import ntfy_channel
 import speech
 
 DEFAULT_PORT = 8000
@@ -272,8 +274,10 @@ def main() -> None:
     profile = json.loads(PROFILE_PATH.read_text(encoding="utf-8"))
     ears = listen if listen.available() else None
     call_base = os.environ.get("CALL_BASE_URL", "")
-    telegram = caregiver.from_environment()
-    server = CareServer(("0.0.0.0", args.port), profile, telegram, ears, call_base)
+    first_parent = profile["parents"][0]["name"].split()[0]
+    parents = ntfy_channel.from_environment(first_parent) or caregiver.from_environment()
+    log.info("parents are told through %s", type(parents).__name__ if parents else "nothing")
+    server = CareServer(("0.0.0.0", args.port), profile, parents, ears, call_base)
     log.info("care server on port %d, screen page at /ui/", args.port)
     try:
         server.serve_forever()

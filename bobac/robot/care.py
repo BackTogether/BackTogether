@@ -283,8 +283,8 @@ class CareSession:
             )
             self._telegram.send(
                 event["chat_id"],
-                f"I told {self._name}. Text or voice messages you send here are played by "
-                "the robot. Press the button when you are with them.",
+                f"I told {self._name}. Messages you send here are read out by the robot. "
+                "Press the button when you are with them.",
                 buttons=WITH_CHILD_BUTTON,
             )
         elif event["kind"] == "button" and event["data"] == "arrived":
