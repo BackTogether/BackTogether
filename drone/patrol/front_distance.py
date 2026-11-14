@@ -27,6 +27,7 @@ from pathlib import Path
 import numpy as np
 from PIL import Image
 
+from drone.patrol import console
 from drone.sdk.camera import CAMERA_HFOV_DEG
 
 # Depth Anything V2 Metric Indoor (Hypersim). Small: Apache-2.0, 99 MB, 72 fps on an M4 Pro GPU
@@ -259,6 +260,7 @@ def main() -> None:
     parser.add_argument("--input-width", type=int, default=DEFAULT_INPUT_WIDTH)
     parser.add_argument("--model", choices=sorted(MODELS), default=DEFAULT_MODEL)
     args = parser.parse_args()
+    console.install("front_distance")
 
     print(f"Loading {MODELS[args.model]} ...", flush=True)
     model = DepthModel(args.input_width, args.model)

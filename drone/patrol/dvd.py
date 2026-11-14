@@ -42,7 +42,7 @@ from pathlib import Path
 
 import numpy as np
 
-from drone.patrol import bounce
+from drone.patrol import bounce, console
 from drone.patrol.camera_height import CameraHeight, HeightCalibration
 from drone.patrol.floor_boundary import (
     GEOMETRY_HFOV_DEG,
@@ -557,6 +557,7 @@ def parse_args() -> argparse.Namespace:
 
 def main() -> None:
     args = parse_args()
+    console.install("dvd_dry" if args.dry_run else "dvd")
     log = None
     if args.sim_depth:
         from drone.patrol.sim_room import Room, demo_pillars

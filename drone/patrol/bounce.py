@@ -31,6 +31,7 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from enum import Enum
 
+from drone.patrol import console
 from drone.patrol.sdkdrone import (
     DEFAULT_URL,
     DroneState,
@@ -299,6 +300,7 @@ def main() -> None:
     local.add_argument("--min-battery", type=int, default=30, help="%% to return home and land")
     parser.add_argument("--seed", type=int, help="fix the random turns (tests)")
     args = parser.parse_args()
+    console.install("bounce_dry" if args.dry_run else "bounce")
 
     drone, close = connect(args)
     try:
