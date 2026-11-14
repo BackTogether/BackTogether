@@ -29,7 +29,13 @@ from PIL import Image
 
 from drone.sdk.camera import CAMERA_HFOV_DEG
 
-MODEL_ID = "depth-anything/Depth-Anything-V2-Metric-Indoor-Small-hf"
+# Depth Anything V2 Metric Indoor (Hypersim). Small: Apache-2.0, 99 MB, 72 fps on an M4 Pro GPU
+# (MPS) at 392 px. Base: CC-BY-NC-4.0 (non-commercial), 390 MB, 32 fps; no better on our walls.
+MODELS = {
+    "small": "depth-anything/Depth-Anything-V2-Metric-Indoor-Small-hf",
+    "base": "depth-anything/Depth-Anything-V2-Metric-Indoor-Base-hf",
+}
+DEFAULT_MODEL = "small"
 PATCH = 14  # the model needs sides that are multiples of 14
 DEFAULT_INPUT_WIDTH = 392
 DEFAULT_PITCH_DEG = 45.0  # recorded videos; live, the SDK's camera tilt estimate is used
@@ -53,27 +59,48 @@ class FrontReading:
     visible_m: float | None  # floor distance at the top of the image (None = sees horizon)
 
 
-class DepthModel:
-    """Metric depth in metres, on CPU. Heavy imports stay here."""
+def pick_device() -> str:
+    """The fastest torch device here: an NVIDIA GPU, else Apple's GPU (MPS), else the CPU."""
+    import torch
 
-    def __init__(self, input_width: int = DEFAULT_INPUT_WIDTH) -> None:
+    if torch.cuda.is_available():
+        return "cuda"
+    if torch.backends.mps.is_available():
+        return "mps"
+    return "cpu"
+
+
+class DepthModel:
+    """Metric depth in metres, on the GPU when there is one. Heavy imports stay here. The
+    weights must be in the Hugging Face cache (the drone's Wi-Fi has no internet)."""
+
+    def __init__(
+        self,
+        input_width: int = DEFAULT_INPUT_WIDTH,
+        model: str = DEFAULT_MODEL,
+        device: str | None = None,
+    ) -> None:
         import torch
         from transformers import AutoImageProcessor, AutoModelForDepthEstimation
 
         torch.set_num_threads(os.cpu_count() or 1)
         self._torch = torch
         self.input_width = input_width
-        self.processor = AutoImageProcessor.from_pretrained(MODEL_ID)
-        self.model = AutoModelForDepthEstimation.from_pretrained(MODEL_ID).eval()
+        self.device = device or pick_device()
+        model_id = MODELS[model]
+        self.processor = AutoImageProcessor.from_pretrained(model_id)
+        loaded = AutoModelForDepthEstimation.from_pretrained(model_id)
+        self.model = loaded.to(self.device).eval()
 
     def predict(self, image: Image.Image) -> np.ndarray:
         width = _multiple_of_patch(self.input_width)
         height = _multiple_of_patch(round(image.height * self.input_width / image.width))
         resized = image.convert("RGB").resize((width, height), Image.BILINEAR)
         inputs = self.processor(images=resized, return_tensors="pt", do_resize=False)
+        pixels = inputs["pixel_values"].to(self.device)
         with self._torch.inference_mode():
-            depth = self.model(**inputs).predicted_depth
-        return depth[0].numpy()
+            depth = self.model(pixel_values=pixels).predicted_depth
+        return depth[0].cpu().numpy()
 
 
 def _multiple_of_patch(value: int) -> int:
@@ -230,10 +257,12 @@ def main() -> None:
     )
     parser.add_argument("--hfov", type=float, default=DEFAULT_HFOV_DEG, help="horizontal FOV")
     parser.add_argument("--input-width", type=int, default=DEFAULT_INPUT_WIDTH)
+    parser.add_argument("--model", choices=sorted(MODELS), default=DEFAULT_MODEL)
     args = parser.parse_args()
 
-    print(f"Loading {MODEL_ID} ...", flush=True)
-    model = DepthModel(args.input_width)
+    print(f"Loading {MODELS[args.model]} ...", flush=True)
+    model = DepthModel(args.input_width, args.model)
+    print(f"on {model.device}", flush=True)
     try:
         if args.video:
             args.pitch = DEFAULT_PITCH_DEG if args.pitch is None else args.pitch

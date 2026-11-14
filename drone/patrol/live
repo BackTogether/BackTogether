@@ -1,15 +1,21 @@
 #!/usr/bin/env bash
 # Live patrol tests against the running app (drone/fly = drone.sdk serve), offline-safe.
-# Usage: drone/patrol/live spin [sticks] | tilt <deg> | distance | dry | bounce     [extra args for the module]
+# Usage: drone/patrol/live spin [sticks] | tilt <deg> | distance | dry | bounce | dvd-dry | dvd     [extra args for the module]
 #   spin      yaw calibration: one exact turn per stick value (default 100 80 60), then LANDS
 #   tilt      set the camera tilt through the SDK (needs Manual control)
 #   distance  perception only: prints the front distance, sends nothing
 #   dry       bounce patrol decisions (FORWARD/HOVER/TURN), sends nothing
 #   bounce    REAL autonomous bounce. Stop: Ctrl+C here, or STOP / Space in the page.
+#   dvd-dry   DVD patrol (reflection turns, floor-boundary distance) decisions, sends nothing
+#   dvd       REAL DVD patrol. Start drone/fly with --fence 15 in a big hall (default 8 m fence
+#             makes the SDK fly home and land). DVD_TAKEOFF_HEIGHT: 0 = took off from the floor.
 set -euo pipefail
 cd "$(dirname "$0")/../.."
 SDK=http://127.0.0.1:8077
-TAKEOFF_HEIGHT="${TAKEOFF_HEIGHT:-1.0}"   # metres above the floor where the drone took off
+# metres above the floor where the drone took off. The 2026-11-14 flight took off from the floor
+# (camera at the odometry's 1.72 m), so 1.0 put the camera 1 m too high: ~+1 m on every distance.
+# bounce's STOP_AT/CLEAR_AT stopgap below was tuned with it, so bounce keeps it; dvd uses 0.
+TAKEOFF_HEIGHT="${TAKEOFF_HEIGHT:-1.0}"
 # The depth model read ~2.2-2.5 m at ~1 m from a wall (2026-11-14): stop/clear thresholds in model metres
 STOP_AT="${STOP_AT:-2.5}"; CLEAR_AT="${CLEAR_AT:-3.3}"
 DEPS=(--offline --no-project --python 3.11 --with numpy --with pillow --with torch --with transformers)
@@ -21,5 +27,7 @@ case "$mode" in
   distance) exec uv run "${DEPS[@]}" python -m drone.patrol.front_distance --sdk "$SDK" --takeoff-height "$TAKEOFF_HEIGHT" "$@" ;;
   dry)      exec uv run "${DEPS[@]}" python -m drone.patrol.bounce --sdk "$SDK" --dry-run --takeoff-height "$TAKEOFF_HEIGHT" --geofence 4 --tilt -30 --stop-at "$STOP_AT" --clear-at "$CLEAR_AT" "$@" ;;
   bounce)   exec uv run "${DEPS[@]}" python -m drone.patrol.bounce --sdk "$SDK" --takeoff-height "$TAKEOFF_HEIGHT" --speed 0.3 --geofence 4 --tilt -30 --stop-at "$STOP_AT" --clear-at "$CLEAR_AT" "$@" ;;
-  *) sed -n '2,7p' "$0"; exit 1 ;;
+  dvd-dry)  exec uv run "${DEPS[@]}" python -m drone.patrol.dvd --sdk "$SDK" --dry-run --takeoff-height "${DVD_TAKEOFF_HEIGHT:-0}" --tilt -30 "$@" ;;
+  dvd)      exec uv run "${DEPS[@]}" python -m drone.patrol.dvd --sdk "$SDK" --takeoff-height "${DVD_TAKEOFF_HEIGHT:-0}" --tilt -30 "$@" ;;
+  *) sed -n '2,11p' "$0"; exit 1 ;;
 esac

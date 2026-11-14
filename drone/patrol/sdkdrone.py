@@ -44,6 +44,9 @@ class DroneState:
     position: tuple[float, float, float] | None  # odometry, z down, origin at takeoff
     altitude_m: float | None  # above the takeoff point (the SDK's estimate)
     tilt_deg: float | None  # camera tilt estimate, 0 = level, -90 = down; None = unknown
+    pose_xy: tuple[float, float] | None = None  # the estimator's position, extrapolated
+    heading_deg: float | None = None  # the estimator's heading (video yaw where trusted)
+    yaw_deg: float | None = None  # measured heading (telemetry "attitude"), when the SDK has it
 
 
 def _state(telemetry: dict[str, Any]) -> DroneState:
@@ -51,6 +54,7 @@ def _state(telemetry: dict[str, Any]) -> DroneState:
     pose, tilt = telemetry.get("pose") or {}, telemetry.get("tilt") or {}
     position = telemetry.get("position")
     in_flight = bool(telemetry.get("in_flight"))
+    attitude = telemetry.get("attitude") or {}
     return DroneState(
         flight_state=telemetry.get("flight_state"),
         in_flight=in_flight,
@@ -59,6 +63,9 @@ def _state(telemetry: dict[str, Any]) -> DroneState:
         position=None if position is None else tuple(position),
         altitude_m=pose.get("alt") if in_flight else None,
         tilt_deg=tilt.get("deg"),
+        pose_xy=(pose["x"], pose["y"]) if "x" in pose else None,
+        heading_deg=pose.get("heading_deg"),
+        yaw_deg=attitude.get("yaw_deg"),
     )
 
 
@@ -124,6 +131,10 @@ class RemoteDrone:
         """Simulator only: the true distance to the wall ahead."""
         return self.client.sim_truth()["front_m"]
 
+    def sim_truth(self) -> dict[str, float] | None:
+        """Simulator only: the true pose (takeoff frame), front distance and wall hits."""
+        return self.client.sim_truth()
+
 
 class LocalDrone:
     """A drone.sdk Drone in this process; sticks go through its Navigator's safety rules."""
@@ -168,8 +179,12 @@ class LocalDrone:
         return full_stick * yaw_input * cap / 100
 
     def fake_front_m(self) -> float | None:
+        truth = self.sim_truth()
+        return truth["front_m"] if truth else None
+
+    def sim_truth(self) -> dict[str, float] | None:
         truth = getattr(self.drone.link, "truth", None)
-        return truth()["front_m"] if truth else None
+        return truth() if truth else None
 
 
 PatrolDrone = RemoteDrone | LocalDrone
