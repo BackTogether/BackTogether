@@ -18,29 +18,6 @@ Params (set in bringup.launch):
 """
 
 
-
-
-'''
-CENTER:
-    xmin: 260.0
-    xmax: 404.0
-    ymin: 232.0
-    ymax: 376.0
----
-MAX RIGHT
-    xmin: 452.0
-    xmax: 596.0
-    ymin: 248.0
-    ymax: 392.0
----
-MIN LEFT
-    xmin: 4.0
-    xmax: 148.0
-    ymin: 248.0
-    ymax: 392.0
----
-'''
-
 import math
 import threading
 import time
@@ -56,7 +33,11 @@ DEFAULT_PERSON = "jorge"
 DEFAULT_TURN_SPEED = 0.3  # rad/s
 FULL_TURNS = 2
 RATE_HZ = 10
-IMAGE_WIDTH_PX = 640  # head camera (ar_pose usbcam_head.launch)
+# Face boxes measured on the robot's head camera (640x480), person standing in front:
+#   centre    x 260..404  y 232..376  -> face centre x = 332, box 144 x 144 px
+#   far right x 452..596  y 248..392  -> centre x 524
+#   far left  x   4..148  y 248..392  -> centre x 76
+IMAGE_CENTRE_X_PX = 332.0  # where a face straight ahead really lands (not 640 / 2)
 CENTRED_PX = 60  # face this close to the image centre = the robot is facing the person
 CENTRE_GAIN = 0.002  # rad/s per pixel off-centre while turning towards the face
 FACE_FRESH_S = 0.7  # a sighting older than this means the face left the image
@@ -115,7 +96,7 @@ class FaceCheck:
         with self.lock:
             if time.monotonic() - self.seen_at > FACE_FRESH_S:
                 return None
-            return self.face_x - IMAGE_WIDTH_PX / 2.0, self.face_area
+            return self.face_x - IMAGE_CENTRE_X_PX, self.face_area
 
     def offset_px(self):
         """How far the person's face is from the image centre (px, + = right), None if unseen."""
