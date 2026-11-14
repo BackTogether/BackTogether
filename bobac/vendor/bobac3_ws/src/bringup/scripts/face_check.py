@@ -44,6 +44,7 @@ class FaceCheck:
         self.lock = threading.Lock()
         self.seen_at = 0.0
         self.face_x = 0.0
+        self.face_area = 0.0  # px^2 of the face box: grows as the person gets closer
         self.search_requested = threading.Event()
         self.new_goal = threading.Event()
         if rospy.get_param("~search_on_start", False):
@@ -62,6 +63,7 @@ class FaceCheck:
                 with self.lock:
                     self.seen_at = time.monotonic()
                     self.face_x = (face.xmin + face.xmax) / 2.0
+                    self.face_area = (face.xmax - face.xmin) * (face.ymax - face.ymin)
                 return
 
     def on_result(self, result):
@@ -73,12 +75,17 @@ class FaceCheck:
     def on_goal(self, _goal):
         self.new_goal.set()  # move_base drives again: never turn against it
 
-    def offset_px(self):
-        """How far the person's face is from the image centre (px, + = right), None if unseen."""
+    def face(self):
+        """(offset from the image centre in px, + = right; box area in px^2), None if unseen."""
         with self.lock:
             if time.monotonic() - self.seen_at > FACE_FRESH_S:
                 return None
-            return self.face_x - IMAGE_WIDTH_PX / 2.0
+            return self.face_x - IMAGE_WIDTH_PX / 2.0, self.face_area
+
+    def offset_px(self):
+        """How far the person's face is from the image centre (px, + = right), None if unseen."""
+        face = self.face()
+        return None if face is None else face[0]
 
     def turn(self, angular_z):
         twist = Twist()
