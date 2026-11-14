@@ -1,0 +1,27 @@
+<!--
+  SLAM + navigation in ONE launch file, for the bobac3 (runs ON THE ROBOT, ROS Noetic).
+
+    roslaunch ~/leuk/bobac/robot/slam_nav.launch                    # mode:=slam (default)
+    roslaunch ~/leuk/bobac/robot/slam_nav.launch mode:=nav map:=demo
+
+  Needs the robot env (REI_ROBOT, LASER_TYPE, MAP_DIRECTORY): use `ssh -t` and type the command,
+  or `bash -ic "roslaunch ..."`. Built only from vendor packages (read-only copy in bobac/vendor/).
+  Safety: someone at the e-stop; only one thing publishes /cmd_vel at a time.
+-->
+<launch>
+  <arg name="mode" default="slam" doc="slam: build the map while navigating; nav: saved map + amcl"/>
+  <arg name="joy" default="true" doc="joystick teleop (it only publishes while enabled on the pad)"/>
+
+  <!-- robot model (tf of the base, lidars and cameras) -->
+  <include file="$(find bobac3_description)/launch/display.launch">
+    <arg name="open_rviz" value="false"/>
+  </include>
+
+  <!-- base (same node name as the one started at boot, so this one replaces it) -->
+  <include file="$(find rei_robot_base)/launch/base.launch"/>
+
+  <!-- front + rear lidar, merged into /fuse_scan -->
+  <include file="$(find cspc_lidar)/launch/bobac3_lidar.launch"/>
+
+  <include if="$(arg joy)" file="$(find robot_joy)/launch/robot_joy.launch"/>
+</launch>
