@@ -49,10 +49,15 @@ services:
       - ../../recordings:/app/recordings
     command: [python, -m, drone.sdk, serve, --http-port, "8077", --no-browser, --max, "60"]
 
-  # Bounce with the camera's depth model against an SDK that runs elsewhere: the `drone`
-  # service, or `drone/fly` natively on the Mac/Windows host (host.docker.internal).
+  # Bounce with the camera's depth model against an SDK that runs natively on the Mac/Windows
+  # host (`drone/fly`, `drone/patrol/winfly web`), which Docker Desktop names host.docker.internal.
+  # PATROL_ARGS defaults to --dry-run (decide and print, send no sticks).
+  # On a Linux host with the `drone` service: `docker compose run --rm --network host patrol
+  # python -m drone.patrol.bounce --sdk http://127.0.0.1:8077 --dry-run`.
   patrol:
     <<: *patrol
     profiles: [patrol]
-    extra_hosts: ["host.docker.internal:host-gateway"]
-    command: [python, -m, drone.patrol.bounce, --sdk, "${SDK_URL:-http://host.docker.internal:8077}", --dry-run]
+    environment:
+      SDK_URL: ${SDK_URL:-http://host.docker.internal:8077}
+      PATROL_ARGS: ${PATROL_ARGS:---dry-run}
+    command: [sh, -c, 'python -m drone.patrol.bounce --sdk "$$SDK_URL" $$PATROL_ARGS']
