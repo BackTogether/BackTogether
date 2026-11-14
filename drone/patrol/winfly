@@ -1,0 +1,90 @@
+#!/usr/bin/env bash
+# Run the drone tools on Windows from a WSL terminal.
+# WSL2 has no Bluetooth and does not receive the drone's UDP video, so the hoverctl web app
+# must run on Windows. This mirrors the repo to a Windows clone and opens a PowerShell window
+# there; everything else (editing, git) stays in WSL.
+#
+# Usage (from the repo root in WSL):
+#   drone/patrol/winfly web [max]        hoverctl web app like drone/fly (http://127.0.0.1:8077)
+#   drone/patrol/winfly wifi             join the drone's Wi-Fi (no internet there!)
+#   drone/patrol/winfly home             back to the usual Wi-Fi ($HOME_WIFI)
+#   drone/patrol/winfly distance [args]  print the front distance live (drone.patrol.front_distance)
+#   drone/patrol/winfly bounce [args]    bounce patrol (drone.patrol.bounce; try --dry-run first)
+set -euo pipefail
+cd "$(dirname "$0")/../.."
+
+WIN_HOME="$(wslpath "$(cmd.exe /c 'echo %USERPROFILE%' 2>/dev/null | tr -d '\r')")"
+WIN_REPO="${WIN_REPO:-$WIN_HOME/leukerbard-win}"
+DRONE_WIFI="${DRONE_WIFI:-HoverX1_060039}"
+DRONE_WIFI_PASSWORD="${DRONE_WIFI_PASSWORD:-<DRONE_WIFI_PASSWORD>}"  # hoverctl's DEFAULT_WIFI_PASSWORD
+HOME_WIFI="${HOME_WIFI:-Event_MyLAG}"
+WEB_PORT=8077
+ML_DEPS="--with numpy --with pillow --with torch --with transformers"
+
+sync_repo() {
+    [ -d "$WIN_REPO/.git" ] || { echo "No Windows clone at $WIN_REPO (set WIN_REPO)"; exit 1; }
+    rsync -a --delete --exclude captures/ --exclude recordings/ --exclude __pycache__/ \
+        drone/ "$WIN_REPO/drone/"
+    cp pyproject.toml uv.lock "$WIN_REPO/"
+}
+
+# Open a new PowerShell window on Windows running $1 (PowerShell code) in the Windows clone.
+win_window() {
+    local title="$1" code="$2"
+    local script="\$host.UI.RawUI.WindowTitle = '$title'
+\$env:Path = [Environment]::GetEnvironmentVariable('Path','Machine') + ';' + [Environment]::GetEnvironmentVariable('Path','User')
+Set-Location '$(wslpath -w "$WIN_REPO")'
+New-Item -ItemType Directory -Force recordings | Out-Null
+$code"
+    local encoded
+    encoded="$(printf '%s' "$script" | iconv -t UTF-16LE | base64 -w0)"
+    powershell.exe -NoProfile -Command \
+        "Start-Process powershell -ArgumentList '-NoExit','-EncodedCommand','$encoded'"
+    echo "Opened the Windows window '$title'."
+}
+
+join_drone_wifi() {
+    local xml="$WIN_REPO/recordings/drone-wifi.xml"
+    mkdir -p "$WIN_REPO/recordings"
+    cat > "$xml" <<EOF
+<?xml version="1.0"?>
+<WLANProfile xmlns="http://www.microsoft.com/networking/WLAN/profile/v1">
+  <name>$DRONE_WIFI</name>
+  <SSIDConfig><SSID><name>$DRONE_WIFI</name></SSID></SSIDConfig>
+  <connectionType>ESS</connectionType>
+  <connectionMode>manual</connectionMode>
+  <MSM><security>
+    <authEncryption><authentication>WPA2PSK</authentication><encryption>AES</encryption><useOneX>false</useOneX></authEncryption>
+    <sharedKey><keyType>passPhrase</keyType><protected>false</protected><keyMaterial>$DRONE_WIFI_PASSWORD</keyMaterial></sharedKey>
+  </security></MSM>
+</WLANProfile>
+EOF
+    netsh.exe wlan add profile filename="$(wslpath -w "$xml")" user=current | tr -d '\r'
+    rm -f "$xml"
+    echo "Without USB tethering this laptop loses internet now."
+    netsh.exe wlan connect name="$DRONE_WIFI" ssid="$DRONE_WIFI" | tr -d '\r'
+}
+
+command="${1:-}"
+shift || true
+case "$command" in
+    web)
+        sync_repo
+        win_window "drone web :$WEB_PORT" "uv run --with bleak python -m drone.hoverctl web \
+--http-port $WEB_PORT --max ${1:-60} --stick-log \"recordings/sticks-\$(Get-Date -Format HHmm).jsonl\""
+        echo "Open http://127.0.0.1:$WEB_PORT in a Windows browser. Close the Hover app first."
+        ;;
+    wifi) join_drone_wifi ;;
+    home) netsh.exe wlan connect name="$HOME_WIFI" | tr -d '\r' ;;
+    distance)
+        sync_repo
+        win_window "front distance" "uv run --no-project --python 3.11 $ML_DEPS python -m \
+drone.patrol.front_distance --web http://127.0.0.1:$WEB_PORT $*"
+        ;;
+    bounce)
+        sync_repo
+        win_window "bounce patrol" "uv run --no-project --python 3.11 $ML_DEPS python -m \
+drone.patrol.bounce --web http://127.0.0.1:$WEB_PORT $*"
+        ;;
+    *) sed -n '2,11p' "$0"; exit 1 ;;
+esac
