@@ -17,7 +17,7 @@ The drone is the original X1 ("HOVER CAMERA X1"), Wi-Fi SSID `HoverX1_<last 6 of
 | Telemetry push | BLE `PushMessage`, `flight_engineering_info_event=16`: position/velocity xyz, motor rpm, battery V/A | ✅ Fixed **1 Hz** (614 events measured) |
 | Manual sticks | UDP → `<DRONE_IP>:19091` from local port 19091, about 30 Hz, raw protobuf `RockerControlCommand` | Format known; not yet flown from the Mac |
 | Wi-Fi RPC | HTTP POST `http://<DRONE_IP>:1234/rpc`, body = raw `RpcRequest`, reply = raw `RpcResponse`. The app sends `heartbeat_info_request=70` here at 1 Hz | From app code; not yet confirmed on the wire |
-| Live video | UDP, the drone pushes to the client's **port 7078** after `enter_preview_mode_request=254` over the Wi-Fi RPC | Request built (`start_video()`); not yet confirmed on the drone |
+| Live video | UDP, the drone pushes **RTP/H.264, 1280×720, 30 fps** (payload type 96) to the client's **port 7078** after `set_udp_server_ipaddress=245` + `camera_start_preview=240` (the Manual control session) | ✅ **Works on the Mac** (2026-11-14, received during the Manual control session) |
 
 **Connecting over BLE.** No pairing and no encryption. Right after connecting, the app sends `get_ble_encry_list_request` with its phone id. The drone replies with its list of bound phone ids. The Mac reuses the owner's phone id (`ble.py`), and the drone accepts it. The drone takes **one BLE client at a time**, so close the Hover app before using `hoverctl`.
 

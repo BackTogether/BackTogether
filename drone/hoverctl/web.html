@@ -698,17 +698,29 @@ $("d-wifi").addEventListener("submit", (event) => {
 const typing = () => document.activeElement === $("d-wifi-pw");
 
 let stateAt = 0;
+let serverLost = false;
+let seenFrames = 0;
+
+// A finished MJPEG response leaves the <img> frozen on its last frame without firing
+// onerror, so reopen the stream when the server comes back or the decoder restarts.
+function reopenStreamIfNeeded(frames) {
+  const restarted = serverLost || frames < seenFrames || (seenFrames === 0 && frames > 0);
+  seenFrames = frames;
+  serverLost = false;
+  if (restarted) stream.src = `/video.mjpg?${Date.now()}`;
+}
 
 async function poll() {
   try {
     const response = await fetch("/api/state", { cache: "no-store", signal: AbortSignal.timeout(STALE_MS) });
     const state = await response.json();
     stateAt = performance.now();
+    reopenStreamIfNeeded(state.video.frames || 0);
     renderSticks(state.sticks);
     renderVideo(state.video);
     renderDrone(state);
   } catch {
-    // the freshness clock shows the link as lost
+    serverLost = true; // the freshness clock shows the link as lost
   }
   setTimeout(poll, POLL_MS);
 }
@@ -731,12 +743,12 @@ function renderClock() {
   else setCell("video-status", "video", `${video.fps.toFixed(0)} fps`);
 }
 
-poll();
-setInterval(renderClock, CLOCK_MS);
-
 const stream = $("stream");
 stream.onerror = () => setTimeout(() => { stream.src = `/video.mjpg?${Date.now()}`; }, RETRY_VIDEO_MS);
 stream.src = "/video.mjpg";
+
+poll();
+setInterval(renderClock, CLOCK_MS);
 </script>
 </body>
 </html>
