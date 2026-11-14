@@ -108,7 +108,10 @@ Checked every 0.1 s by the Navigator for every autopilot action (goto, turn, til
 for outside `/move` streams (ROS cmd_vel, the bounce patrol), which run under a `remote` watcher:
 - **STOP always wins:** `Drone.stop()`, `POST /stop` or `/land`, the page's STOP or LAND, or any
   flight key in the page cancel the running action at once (STOP pre-empted a patrol in 0.21 s in
-  the sim) and lock `/move` until a client sends `"resume": true`.
+  the sim) and lock `/move` until a client sends `"resume": true`. The page shows "STOPPED ·
+  hovering" for 4 s (also for a STOP from the API or ROS: `/api/state` → `estimate.stopped_at`),
+  and says so in red if the server never confirmed it. The bounce patrol over HTTP ends when STOP
+  comes while it sets the camera tilt (before, its first `/move` resumed and it flew on).
 - Targets outside the geofence box (default ±8 m) or the altitude limits (0.5-3 m) are refused.
 - Low battery (25 %), or the estimated position leaving the fence or above the ceiling: fly back
   to the takeoff point and land.
@@ -195,7 +198,7 @@ open in **one** tab, a hand on STOP (Space).
 1. MANUAL CONTROL in the page, then the drone's button: wait for `flying_manual`.
 2. `curl -XPOST localhost:8077/move -d '{"fwd": 0.3, "seconds": 1}'`: it should move forward
    ~0.5 m and stop. Then `-d '{"turn": 0.5, "seconds": 1}'`: it turns right, and the page's compass
-   needle turns with it.
+   ring turns with it.
 3. `curl -XPOST localhost:8077/tilt -d '{"deg": -30}'`: the camera sweeps to a stop, then to -30°.
 4. `curl -XPOST localhost:8077/goto -d '{"x": 1, "y": 0}'`, watch the map; STOP if it heads off.
 5. Calibrate the yaw rate (needs ~4 m clear ahead; stop drone/fly first, it owns the drone):
