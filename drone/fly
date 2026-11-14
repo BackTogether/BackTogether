@@ -1,9 +1,11 @@
 #!/usr/bin/env bash
-# Start the drone web app with Bluetooth and open it in the browser.
+# Start the drone web app with Bluetooth; open http://127.0.0.1:8077/ in one browser tab.
+# No auto-open: macOS can hand the URL to a hidden headless Chrome, which then counts as
+# an extra tab and posts neutral sticks.
 # Usage: drone/fly [max stick speed 0-100, default 60] [video quality sd|hd, default sd]
 set -euo pipefail
 cd "$(dirname "$0")/.."
 mkdir -p recordings
 exec uv run --with bleak python -m drone.hoverctl web \
-    --http-port 8077 --max "${1:-60}" --video-quality "${2:-sd}" \
+    --http-port 8077 --no-browser --max "${1:-60}" --video-quality "${2:-sd}" \
     --stick-log "recordings/sticks-$(date +%H%M).jsonl"
