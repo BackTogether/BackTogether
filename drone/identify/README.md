@@ -15,8 +15,9 @@ runs without a network: add `--offline` to `uv run` (without it uv tries the ind
 Add a few other people too: a face that looks more like someone else is never taken for Leo.
 
 Reference photos must be in `people/<name>/`: images directly in `people/` are not read.
-For the current demo, the local gallery is `people/demo/` (five phone photos and twelve drone
-frames). Keep the real drone views, including the small faces: those are the views to match.
+Use sharp close-ups (phone photos): people.py ignores reference faces under 100 px. Drone frames
+are not references: a small, blurry face is close to every other small, blurry face, so with
+them strangers in the drone video reach the target's score (15 Nov 20:51 flight).
 After changing the gallery, calibrate its threshold with a video **without the target**:
 ```bash
 uv run --with opencv-contrib-python-headless python -m drone.identify.face_model demo \
@@ -70,8 +71,9 @@ uv run --offline --with opencv-contrib-python-headless python -m drone.identify.
 Phone photos of the target's clothes in `drone/identify/body/`, and actual drone photos at demo
 height in `drone/identify/body/drone/` (not in git; in the phone photos the target is the
 biggest person, in the drone photos the person dressed most like the phone photos).
-Train once; the feed then also locks on the target from behind or from above (4 frames in a
-row), and uses it to keep the right person box while tracking:
+The tracker (body_track.py) does not use it since the 15 Nov 20:53 flight: trained on one outfit,
+it passed nearly every person in the hall and scored the target in other clothes lower than the
+strangers around him. Only the face locks (and re-locks) on the target. To train it anyway:
 ```bash
 uv run --with opencv-contrib-python-headless python -m drone.identify.body_model train \
     --negatives <video with other people, e.g. a drone video of the hall>
