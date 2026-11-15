@@ -21,7 +21,7 @@ from dataclasses import dataclass, field
 import numpy as np
 
 MIN_ALT_M = 0.1  # above the takeoff point; below this the drone is landing or on the ground
-MAX_ALT_M = 4.0
+MAX_ALT_M = 6.0  # above this an altitude reading is taken as a glitch
 MAX_STEP_M = 0.6  # between two readings (the patrol reads ~5/s; climbs are < 1 m/s)
 CONFIRM_READINGS = 5  # a jump is believed after holding this many readings
 # Self-calibration
