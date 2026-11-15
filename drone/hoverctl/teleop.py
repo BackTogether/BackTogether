@@ -2,14 +2,17 @@
 
 A terminal sends no key-up events, only the auto-repeat of the last key held. A key counts as
 held until HOLD_S after its last repeat. The first press waits longer, because macOS waits
-about 0.45 s (default InitialKeyRepeat) before it starts repeating. Only the last key held
-repeats, so the terminal can't do diagonal moves. The web UI can.
+about 0.45 s (default InitialKeyRepeat; Windows 0.25-1 s, by its keyboard settings) before it
+starts repeating. Only the last key held repeats, so the terminal can't do diagonal moves. The
+web UI can.
 """
 
+import contextlib
 import os
 import select
 import sys
 import time
+from collections.abc import Callable, Iterator
 from dataclasses import asdict, dataclass
 
 from .protocol import AXIS_DIRECTIONS, AXIS_NAMES, Axes
@@ -35,6 +38,7 @@ HOLD_S = 0.15
 FIRST_PRESS_HOLD_S = 0.55
 POLL_S = 0.01
 STATUS_PERIOD_S = 0.1
+_WINDOWS_KEY_PREFIXES = ("\x00", "\xe0")  # msvcrt: the next character is a key code
 HELP = (
     "W/S fwd/back  A/D left/right  I/K up/down  J/L turn left/right  U/O camera up/down\n"
     "SPACE neutral  Q quit (Ctrl-C works too)"
@@ -86,34 +90,65 @@ def _read_keys(fd: int) -> str:
     return os.read(fd, 64).decode(errors="ignore").lower() if ready else ""
 
 
-def run_teleop(sender: StickSender) -> None:
-    """Read keys until Q. The caller owns `sender` and must stop it (which sends neutral)."""
+def _read_keys_windows() -> str:
+    import msvcrt
+
+    keys = ""
+    while msvcrt.kbhit():
+        key = msvcrt.getwch()
+        if key in _WINDOWS_KEY_PREFIXES:
+            msvcrt.getwch()  # an arrow or function key: its code is a letter, not a key we bind
+        else:
+            keys += key
+    if not keys:
+        time.sleep(POLL_S)
+    return keys.lower()
+
+
+@contextlib.contextmanager
+def _key_reader() -> Iterator[Callable[[], str]]:
+    """A function returning the keys typed since its last call (waits up to POLL_S for one)."""
+    if sys.platform == "win32":  # the console gives single keys as it is: nothing to restore
+        yield _read_keys_windows
+        return
     # Unix-only modules, imported here so the web app (which imports this file) runs on Windows.
     import termios
     import tty
 
-    if not sys.stdin.isatty():
-        raise SystemExit("sticks needs an interactive terminal")
     fd = sys.stdin.fileno()
     saved = termios.tcgetattr(fd)
-    held = HeldKeys()
-    print(HELP)
-    next_status = 0.0
     try:
         tty.setcbreak(fd)
-        while True:
-            now = time.monotonic()
-            for key in _read_keys(fd):
-                if key == QUIT_KEY:
-                    return
-                if key == NEUTRAL_KEY:
-                    held.clear()
-                elif key in KEY_BINDINGS:
-                    held.press(key, now)
-            sender.set_input(held.axes(time.monotonic()))
-            if not sender.dry_run and now >= next_status:
-                print(_status_line(sender), end="", flush=True)
-                next_status = now + STATUS_PERIOD_S
+        yield lambda: _read_keys(fd)
     finally:
         termios.tcsetattr(fd, termios.TCSADRAIN, saved)
-        print()
+
+
+def run_teleop(sender: StickSender) -> None:
+    """Read keys until Q. The caller owns `sender` and must stop it (which sends neutral)."""
+    if not sys.stdin.isatty():
+        raise SystemExit("sticks needs an interactive terminal")
+    print(HELP)
+    with _key_reader() as read_keys:
+        try:
+            _fly_keys(sender, read_keys)
+        finally:
+            print()  # leave the status line, which is redrawn in place
+
+
+def _fly_keys(sender: StickSender, read_keys: Callable[[], str]) -> None:
+    held = HeldKeys()
+    next_status = 0.0
+    while True:
+        now = time.monotonic()
+        for key in read_keys():
+            if key == QUIT_KEY:
+                return
+            if key == NEUTRAL_KEY:
+                held.clear()
+            elif key in KEY_BINDINGS:
+                held.press(key, now)
+        sender.set_input(held.axes(time.monotonic()))
+        if not sender.dry_run and now >= next_status:
+            print(_status_line(sender), end="", flush=True)
+            next_status = now + STATUS_PERIOD_S

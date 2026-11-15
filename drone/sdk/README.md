@@ -1,6 +1,6 @@
 # drone/sdk: Python SDK, autopilot and HTTP API for the HoverAir X1
 
-Fly the X1 from code on the laptop (macOS, Linux; Windows natively), from the simulator, or
+Fly the X1 from code on the laptop (macOS, Linux, Windows), from the simulator, or
 from the robot over HTTP. It builds on `drone/hoverctl` (Bluetooth link, 30 Hz sticks, live
 video) and adds: a `Drone` object with telemetry and video streams, a pose estimate, a camera
 tilt estimate, a slow closed-loop navigator, waypoint patrols, safety rules, photos and MP4
@@ -299,11 +299,27 @@ more than half a battery, so for the demo bound it (`--width`, `--length`) or fl
 - **Linux**: Bluetooth through BlueZ + bleak (`uv run --with bleak`; your user may need the
   `bluetooth` group; no `setcap` needed). Wi-Fi auto-join through NetworkManager (`nmcli`, in
   hoverctl's macwifi.py). `ffmpeg` from the distribution.
-- **Windows**: native Python (WSL2 has no Bluetooth and does not receive the drone's UDP video:
-  see `drone/patrol/winfly`, which runs the server on Windows from WSL). Join the drone's Wi-Fi by
-  hand or with `winfly wifi`. `ffmpeg` on the PATH (`winget install ffmpeg`).
-- The SDK itself has no OS-specific calls: paths through pathlib, `ffmpeg` found with
-  `shutil.which` (a clear error if missing), stdlib HTTP.
+- **Windows**: natively, from `cmd` or PowerShell in a Windows clone of the repo (not in WSL2: it
+  has no Bluetooth and does not receive the drone's UDP video). Every launcher has a `.cmd` twin
+  that takes the same arguments: `drone\fly`, `drone\find`, `drone\land`, `drone\dock`,
+  `drone\patrol\live`.
+  1. Once, with internet: install [uv](https://docs.astral.sh/uv/) and ffmpeg
+     (`winget install Gyan.FFmpeg`), open a new terminal and run `drone\setup`. It downloads
+     Python 3.11, the packages and the depth model, so the launchers then run offline on the
+     drone's Wi-Fi.
+  2. `drone\fly 60 sd --fence 15`, open http://127.0.0.1:8077, MANUAL CONTROL. `enter_manual()`
+     joins the drone's Wi-Fi with `netsh wlan` (the laptop loses internet). The first time,
+     Windows asks about the firewall: allow Python on private and public networks, or no video
+     arrives (UDP 7078).
+  3. In other terminals, as on the Mac: `drone\find leo`, `drone\patrol\live sweep-dry`, ...
+     (settings are environment variables: `set SDK=http://127.0.0.1:8090`).
+
+  Bluetooth goes through bleak's WinRT backend (Windows 10 or later). From a WSL terminal,
+  `drone/patrol/winfly` still starts the same server on Windows and the patrols in Docker.
+- The SDK itself has few OS-specific calls, all in one place each: the Wi-Fi join
+  (hoverctl's macwifi.py), the terminal teleop's keys (teleop.py), the found / failed beeps
+  (identify's announce.py). Paths go through pathlib, `ffmpeg` is found with `shutil.which` (a
+  clear error if missing), HTTP is the stdlib's.
 
 ## First flight with the SDK (real drone)
 Open space (no people within 3 m), fresh battery, Hover app closed, `drone/fly` running, the page

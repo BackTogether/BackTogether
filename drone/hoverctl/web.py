@@ -275,6 +275,7 @@ class WebServer(ThreadingHTTPServer):
             sender.set_session_gate(link.in_manual_session)
         self.ble_note = ble_note
         bindings = {key: list(value) for key, value in KEY_BINDINGS.items()}
-        page = PAGE_TEMPLATE.read_text().replace(BINDINGS_PLACEHOLDER, json.dumps(bindings))
+        page = PAGE_TEMPLATE.read_text(encoding="utf-8")  # not the OS default (Windows: cp1252)
+        page = page.replace(BINDINGS_PLACEHOLDER, json.dumps(bindings))
         page = page.replace(DIRECTIONS_PLACEHOLDER, json.dumps(AXIS_DIRECTIONS))
         self.page = page.encode()

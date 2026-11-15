@@ -66,7 +66,7 @@ def main() -> None:
     parser.add_argument("--fps", type=float, default=DEFAULT_FPS, help="frames per second kept")
     args = parser.parse_args()
     if not shutil.which("ffmpeg"):
-        sys.exit("ffmpeg not found: brew install ffmpeg")
+        sys.exit("ffmpeg not found: install it (brew / apt / winget install ffmpeg)")
     for dump in args.dumps:
         target = export(dump, args.out, args.fps)
         if target is None:

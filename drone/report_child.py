@@ -59,6 +59,7 @@ NTFY_RETRY_MAX_S = 8.0
 NTFY_SINCE_MARGIN_S = 30  # answers published this long before our first try still count
 GIVE_UP_S = 600.0
 WATCH_POLL_S = 0.5
+WAIT_SLICE_S = 0.5
 WATCH_TIMEOUT_S = 2.0
 PING_COUNT = 3
 PING_WAIT_S = 10.0
@@ -188,7 +189,9 @@ class Delivery:
 
     def wait(self) -> bool:
         """Block until the delivery ended. True if the robot acknowledged the report."""
-        self.done.wait()
+        # in slices: on Windows a wait without a timeout does not let Ctrl+C through
+        while not self.done.wait(WAIT_SLICE_S):
+            pass
         return self.ack is not None
 
     def _run(self, target: HttpTarget | NtfyTarget) -> None:
@@ -293,7 +296,7 @@ def finish() -> bool:
             if not delivery.done.is_set():
                 name = delivery.body["mission_id"]
                 log.info("robot link: still sending %s (Ctrl+C gives up)", name)
-                delivery.done.wait()
+                delivery.wait()
     except KeyboardInterrupt:
         log.error("robot link: stopped before the robot acknowledged")
     return all(delivery.ack is not None for delivery in sent)

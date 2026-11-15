@@ -106,7 +106,7 @@ Sources: the decompiled app (`jadx/sources`), the drone's own answers in the Blu
 Raw captures and the decompiled app live outside git, in `../drone-re/` on rorosaga's machine.
 
 ## Usage (`drone/hoverctl/`)
-Stdlib only, plus the `ffmpeg` CLI for video (`brew install ffmpeg`). Nothing to download on the drone's Wi-Fi. Run from the repo root:
+Stdlib only, plus the `ffmpeg` CLI for video (`brew install ffmpeg`). Nothing to download on the drone's Wi-Fi. On Windows the launchers are `drone\fly`, `drone\find`, ... from `cmd` (after `drone\setup` once, see "Operating systems" in [sdk/README.md](sdk/README.md)). Run from the repo root:
 
 ```bash
 drone/fly                                          # the usual way: web UI on http://127.0.0.1:8077, Bluetooth on, cap 60, stick log in recordings/

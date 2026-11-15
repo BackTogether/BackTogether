@@ -94,7 +94,7 @@ class MjpegDecoder:
 
     def __init__(self, codec: str | None = None) -> None:
         if not shutil.which("ffmpeg"):
-            raise SystemExit("ffmpeg not found: brew install ffmpeg (or use --no-decode)")
+            raise SystemExit("ffmpeg not found: install it (winget, brew, apt) or use --no-decode")
         self._configured_codec = codec
         self.codec = codec
         self.frames = 0

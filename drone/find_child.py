@@ -38,6 +38,7 @@ import logging
 import os
 import shutil
 import subprocess
+import sys
 import time
 from collections import deque
 from pathlib import Path
@@ -72,7 +73,7 @@ SWEEP_ALIGN_M = 2.5  # the mission's aligning leg is the sweep's lane axis: long
 SWEEP_EXIT_S = 5.0  # after terminate(), before kill()
 CHILD_REPORTED = "child reported"  # the mission's step flying home after the orbit (mission.py)
 REPO = Path(__file__).resolve().parent.parent
-LIVE_HELPER = REPO / "drone" / "patrol" / "live"
+LIVE_HELPER = REPO / "drone" / "patrol" / ("live.cmd" if sys.platform == "win32" else "live")
 RECORDINGS = REPO / "recordings"
 
 log = logging.getLogger("find_child")
@@ -147,7 +148,12 @@ def start_sweep(args: argparse.Namespace) -> subprocess.Popen:
 def end_sweep(sweep: subprocess.Popen) -> None:
     if sweep.poll() is not None:
         return
-    sweep.terminate()
+    if sys.platform == "win32":
+        # terminate() would end only the launcher (cmd), and the sweep under it would fly on
+        tree = ["taskkill", "/T", "/F", "/PID", str(sweep.pid)]
+        subprocess.run(tree, capture_output=True, check=False)
+    else:
+        sweep.terminate()
     try:
         sweep.wait(SWEEP_EXIT_S)
     except subprocess.TimeoutExpired:

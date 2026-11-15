@@ -60,6 +60,8 @@ def install(name: str) -> Path | None:
     """Turn stdout into a PANEL_LINES-line live panel and log it all; the log path, or None."""
     if PANEL_LINES <= 0 or not sys.stdout.isatty():
         return None
+    if sys.platform == "win32":
+        os.system("")  # the old Windows console reads ANSI codes only after this
     LOG_DIR.mkdir(exist_ok=True)
     path = LOG_DIR / f"{name}_{time.strftime('%Y%m%d-%H%M%S')}.log"
     log = path.open("w", buffering=1)
