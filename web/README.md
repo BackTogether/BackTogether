@@ -40,9 +40,12 @@ library, Python 3.8+), saves each request in a folder named after the child in c
 
 ```bash
 python3 scripts/web_inbox.py                              # ~/search_requests/JORGE/photo-1.jpg ...
-python3 scripts/web_inbox.py --out ~/.reinovo/face_data   # straight into the robot's faces
-python3 scripts/web_inbox.py --out drone/identify/people  # straight into the drone's faces
+drone/inbox                                               # drone laptop: drone/identify/people/ (Windows: drone\inbox)
 ```
+On the robot it runs as a service from boot, into `~/.reinovo/face_data/` where face_rec reads
+faces (`bobac/vendor/bobac3_ws/src/bringup/systemd/web-inbox.service`, install steps inside).
+Then search with the name it printed: `drone/find JORGE` on the drone laptop, and the robot's
+demo launched (or relaunched: face_rec loads faces when it starts) with `person:=jorge`.
 
 It reads the topic from this same `apiUrl` line. Only requests sent while it runs are saved; a new
 request for the same name replaces that folder's photos. With `apiUrl` empty nothing is sent.
