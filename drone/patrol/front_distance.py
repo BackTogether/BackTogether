@@ -32,6 +32,8 @@ from drone.sdk.camera import CAMERA_HFOV_DEG
 
 # Depth Anything V2 Metric Indoor (Hypersim). Small: Apache-2.0, 99 MB, 72 fps on an M4 Pro GPU
 # (MPS) at 392 px. Base: CC-BY-NC-4.0 (non-commercial), 390 MB, 32 fps; no better on our walls.
+# Large (CC-BY-NC-4.0, 1.3 GB, ~8 fps) put the wall ~0.6 m too far on the 2026-11-14 22:07
+# approach (odometry); Small was within ~0.15 m (replay.py): not worth it.
 MODELS = {
     "small": "depth-anything/Depth-Anything-V2-Metric-Indoor-Small-hf",
     "base": "depth-anything/Depth-Anything-V2-Metric-Indoor-Base-hf",
