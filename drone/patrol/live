@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Live patrol tests against the running app (drone/fly = drone.sdk serve), offline-safe.
-# Usage: drone/patrol/live spin [sticks] | tilt <deg> | distance | dry | bounce | dvd-dry | dvd | clear-dry | clear | sweep-dry | sweep  [extra args]
+# Usage: drone/patrol/live feed <name> | mission | mission-sweep | status | abort | spin [sticks] | tilt <deg> | distance | dry | bounce | dvd-dry | dvd | clear-dry | clear | sweep-dry | sweep  [extra args]
 #   spin      yaw calibration: one exact turn per stick value (default 100 80 60), then LANDS
 #   tilt      set the camera tilt through the SDK (needs Manual control)
 #   distance  perception only: prints the front distance, sends nothing
@@ -27,6 +27,13 @@ DEPS=(--offline --no-project --python 3.11 --with numpy --with pillow --with tor
 export HF_HUB_OFFLINE="${HF_HUB_OFFLINE:-1}"  # model is cached; the drone Wi-Fi has no internet
 mode="${1:-}"; shift || true
 case "$mode" in
+  feed)     exec uv run --offline --with opencv-contrib-python-headless --with numpy python -m drone.identify.feed "${1:?child name: a folder in drone/identify/people/}" --url "$SDK" "${@:2}" ;;
+  mission)  # small test mission: square 2-4 m ahead of the launch, until found, then overhead fix, 1 orbit, land
+            curl -s -X POST "$SDK/mission/start" -H 'Content-Type: application/json' -d "{\"waypoints\": [{\"x\": 2, \"y\": -1.5}, {\"x\": 4, \"y\": -1.5}, {\"x\": 4, \"y\": 1.5}, {\"x\": 2, \"y\": 1.5}], \"loops\": 0, \"orbit_turns\": ${ORBIT_TURNS:-1}, \"launch_height_m\": ${DVD_TAKEOFF_HEIGHT:-0}}"; echo ;;
+  mission-sweep)  # the mission watches for the child while `live sweep` flies the lawnmower
+            curl -s -X POST "$SDK/mission/start" -H 'Content-Type: application/json' -d "{\"waypoints\": [{\"x\": 2, \"y\": 0}], \"strategy\": \"external\", \"patrol_tilt_deg\": -40, \"orbit_turns\": ${ORBIT_TURNS:-1}, \"launch_height_m\": ${DVD_TAKEOFF_HEIGHT:-0}}"; echo ;;
+  abort)    curl -s -X POST "$SDK/mission/abort"; echo ;;
+  status)   curl -s "$SDK/mission" | python3 -c "import json,sys; m=json.load(sys.stdin); c=m.get('child') or {}; print(m['state'], '|', m['step'], '|', m.get('message'), '| child:', c.get('drone'), c.get('map'))" ;;
   spin)     exec uv run --offline --no-project --python 3.11 --with numpy --with pillow python -m drone.calibration.spin "$@" ;;
   tilt)     curl -s -X POST -H 'Content-Type: application/json' -d "{\"deg\": ${1:?degrees}}" "$SDK/tilt"; echo ;;
   distance) exec uv run "${DEPS[@]}" python -m drone.patrol.front_distance --sdk "$SDK" --takeoff-height "$TAKEOFF_HEIGHT" "$@" ;;
