@@ -1,0 +1,61 @@
+name: Pages
+
+# Publishes web/ (the "find my child" site) to GitHub Pages. The site is static and has no build
+# step: its only dependency, three.js, is vendored in web/vendor/.
+#
+# One-time setup in the repository: Settings -> Pages -> "Build and deployment" -> Source:
+# "GitHub Actions". Without it the deploy step fails with "Pages site not found".
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "web/**"
+      - "scripts/check_web.py"
+      - ".github/workflows/pages.yml"
+  workflow_dispatch: # deploy the branch you pick, by hand, from the Actions tab
+
+concurrency:
+  group: pages
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+jobs:
+  check:
+    name: check the site
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+      - name: Every referenced file exists
+        run: python3 scripts/check_web.py
+      - name: The page scripts parse
+        run: |
+          for file in web/*.js; do
+            cp "$file" "${RUNNER_TEMP}/$(basename "$file" .js).mjs"
+            node --check "${RUNNER_TEMP}/$(basename "$file" .js).mjs"
+          done
+
+  deploy:
+    name: deploy to Pages
+    needs: check
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/configure-pages@v5
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: web
+      - id: deployment
+        uses: actions/deploy-pages@v4

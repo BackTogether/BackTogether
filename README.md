@@ -50,6 +50,21 @@ codex "Follow docs/REVIEWER.md and run one review round"
 ```
 To repeat it periodically in Claude Code: `/loop 15m Follow docs/REVIEWER.md and run one review round`.
 
+## Website (GitHub Pages)
+[web/](web/) is the "Find My Child" page parents use at an event: they add a photo of their child
+and the page POSTs a search request that starts the drone, with a 3D view of the Hover Air X1
+launching from the Bobac3 base. Setup, the request format and how to point it at the real robot
+are in [web/README.md](web/README.md).
+
+```bash
+cd web && python3 -m http.server 8080     # run it locally on http://localhost:8080
+python3 scripts/check_web.py              # what CI checks before deploying
+```
+
+Pushing to `main` with changes under `web/` deploys it through
+[.github/workflows/pages.yml](.github/workflows/pages.yml). **Once, by a repo admin:**
+Settings → Pages → Build and deployment → Source: **GitHub Actions**.
+
 ## Protecting `main` on GitHub (repo admin, once)
 Settings → Rules → Rulesets → **New branch ruleset**:
 - Target: default branch (`main`), Enforcement: **Active**, no bypass list.
@@ -68,5 +83,6 @@ No application code yet. Planned layout (folders are created when needed): see
 [AGENTS.md](AGENTS.md#project).
 ```
 docs/         REVIEWER.md
-scripts/      check_commit_msg.py, board.py
+scripts/      check_commit_msg.py, board.py, check_web.py
+web/          the GitHub Pages site (see web/README.md)
 ```

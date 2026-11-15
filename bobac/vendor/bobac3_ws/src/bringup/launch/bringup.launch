@@ -1,0 +1,51 @@
+<launch>
+  <!-- Starts every block of the demo. Add one include / node per new block.
+
+       Run it with:  roslaunch bringup bringup.launch
+       The chassis driver is started here too: kill the boot-time instance
+       first (rosnode kill /rei_base). -->
+
+  <arg name="open_rviz" default="true"/>
+  <!-- person to find on arrival: folder name of their photos in $FACE_DIRECTORY -->
+  <arg name="person" default="jorge"/>
+  <!-- true: start turning right away, without waiting for a navigation goal (to test it) -->
+  <arg name="search_on_start" default="false"/>
+  <!-- following: face box to keep in px^2 (20736 = 144 x 144 px, measured with the person at
+       the right distance; 0 = its size when found) and top speed in m/s -->
+  <arg name="target_area" default="20736"/>
+  <arg name="max_linear" default="0.15"/>
+  <!-- full screen image over the terminals and rviz, and seconds to wait before showing it
+       (rviz opens a few seconds after the launch starts) -->
+  <arg name="splash" default="true"/>
+  <arg name="splash_delay" default="5.0"/>
+
+  <!-- Block: SLAM + navigation (base, lidars, gmapping, move_base) -->
+  <include file="$(find bringup)/launch/slam_nav.launch">
+    <arg name="open_rviz" value="$(arg open_rviz)"/>
+  </include>
+
+  <!-- Block: head camera + face recognition -> /face_results -->
+  <include file="$(find face_rec)/launch/face_rec_topic.launch"/>
+
+  <!-- Block: on arrival at a goal, turn on the spot until the person is recognised, then
+       follow them: turn to keep the face centred, back up / move forward to keep its size
+       (publishes the name on /face_check/found when found) -->
+  <node name="face_check" pkg="bringup" type="face_check.py" output="screen">
+    <param name="person" value="$(arg person)"/>
+    <param name="turn_speed" value="0.3"/>
+    <param name="search_on_start" value="$(arg search_on_start)"/>
+    <param name="target_area" value="$(arg target_area)"/>
+    <param name="max_linear" value="$(arg max_linear)"/>
+  </node>
+
+  <!-- Block: full screen image (assets/base_image.png) on top of everything, so the demo shows
+       one clean picture instead of the terminals and rviz. Esc closes it, or:
+       rostopic pub -1 /splash/show std_msgs/Bool "data: false" -->
+  <node if="$(arg splash)" name="splash" pkg="bringup" type="splash.py" output="screen">
+    <param name="image" value="$(find bringup)/assets/base_image.png"/>
+    <param name="fit" value="contain"/>
+    <param name="background" value="black"/>
+    <param name="delay" value="$(arg splash_delay)"/>
+    <param name="topmost" value="true"/>
+  </node>
+</launch>

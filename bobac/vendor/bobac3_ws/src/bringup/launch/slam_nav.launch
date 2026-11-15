@@ -1,0 +1,69 @@
+<launch>
+  <!-- SLAM and navigation at the same time: gmapping builds the map live and
+       move_base plans on that growing map, so goals can be sent straight away,
+       into space the robot has never seen. No map_server and no amcl here:
+       gmapping is what publishes /map and the map -> odom transform, and amcl
+       would fight it for that transform.
+
+       Run it with:  roslaunch bringup slam_nav.launch
+       Save the map: roslaunch map_manager map_save.launch map_file:=<name>  -->
+
+  <arg name="open_rviz" default="true"/>
+  <arg name="use_joystick" default="false"/>
+  <arg name="scan_topic" default="fuse_scan"/>
+
+  <!-- robot model and static tf -->
+  <include file="$(find bobac3_description)/launch/display.launch">
+    <arg name="open_rviz" value="false"/>
+  </include>
+
+  <!-- chassis: kill the boot-time instance first (rosnode kill /rei_base) -->
+  <include file="$(find rei_robot_base)/launch/base.launch"/>
+
+  <!-- front + rear lidar, merged into /fuse_scan -->
+  <include file="$(find cspc_lidar)/launch/bobac3_lidar.launch"/>
+
+  <!-- manual override. Off by default: it publishes /cmd_vel and would fight
+       move_base for the base. -->
+  <group if="$(arg use_joystick)">
+    <include file="$(find robot_joy)/launch/robot_joy.launch"/>
+  </group>
+
+  <!-- SLAM -->
+  <include file="$(find bobac3_slam)/launch/bobac3_gmapping.launch">
+    <arg name="scan_topic" value="$(arg scan_topic)"/>
+  </include>
+
+  <!-- Navigation. Same params as bobac3_navigation/launch/move_base.launch,
+       with two changes for the no-saved-map case (see the comments below). -->
+  <node pkg="move_base" type="move_base" respawn="false" name="move_base_node" output="screen">
+    <rosparam file="$(find bobac3_navigation)/param/costmap_common_params_global.yaml" command="load" ns="global_costmap"/>
+    <rosparam file="$(find bobac3_navigation)/param/costmap_common_params.yaml" command="load" ns="local_costmap"/>
+    <rosparam file="$(find bobac3_navigation)/param/local_costmap_params.yaml" command="load"/>
+    <rosparam file="$(find bobac3_navigation)/param/global_costmap_params.yaml" command="load"/>
+    <rosparam file="$(find bobac3_navigation)/param/teb_local_planner_params.yaml" command="load"/>
+    <rosparam file="$(find bobac3_navigation)/param/move_base_params.yaml" command="load"/>
+    <rosparam file="$(find bobac3_navigation)/param/navfn_global_planner_params.yaml" command="load"/>
+
+    <!-- 1. Drop virtual_wall_layer from both costmaps. It is a StaticLayer on
+            /virtual_wall_map, published only by the saved-map navigation launch;
+            without it move_base blocks forever on "Requesting the map...". -->
+    <rosparam param="global_costmap/plugins">
+      [{name: static_layer,    type: "costmap_2d::StaticLayer"},
+       {name: obstacle_layer,  type: "costmap_2d::VoxelLayer"},
+       {name: inflation_layer, type: "costmap_2d::InflationLayer"}]
+    </rosparam>
+    <rosparam param="local_costmap/plugins">
+      [{name: obstacle_layer,  type: "costmap_2d::VoxelLayer"},
+       {name: inflation_layer, type: "costmap_2d::InflationLayer"}]
+    </rosparam>
+
+    <!-- 2. Let the global planner cross space gmapping has not mapped yet. -->
+    <param name="NavfnROS/allow_unknown" value="true"/>
+  </node>
+
+  <group if="$(arg open_rviz)">
+    <node pkg="rviz" type="rviz" name="rviz"
+          args="-d $(find bobac3_navigation)/rviz/robot_navigation.rviz"/>
+  </group>
+</launch>
