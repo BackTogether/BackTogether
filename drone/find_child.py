@@ -15,6 +15,7 @@ the robot's pad (or LAND in the web page).
                                      #   lane turn to the left; --length/--width bound the hall)
     drone/find jorge                 # the square of waypoints instead of the sweep
     drone/find jorge --watch         # no flight: recognise and track on the live video only
+    drone/find jorge --collect       # also save frames for the body model (identify/collect.py)
 
 The child is a folder of face photos (copied into drone/identify/people/<folder name>/, which
 git ignores) or the name of a folder already there. Other people's folders stay in the database:
@@ -46,6 +47,7 @@ from typing import Any
 
 from drone.identify.__main__ import load_people
 from drone.identify.body_track import LOCK_FACE_FRAMES, SEARCHING
+from drone.identify.collect import Collector
 from drone.identify.feed import (
     DroneServer,
     fractions,
@@ -165,6 +167,7 @@ def search(
     people: People,
     args: argparse.Namespace,
     started_at: float,
+    collector: Collector | None,
 ) -> dict[str, Any]:
     """Feed the mission until it is done with the child (then STOP: the drone hovers there) or
     ends. Returns the mission's last status. With --robot the child goes to the robot as soon as
@@ -200,6 +203,8 @@ def search(
                 continue
             frame_time, image = frame
             result = tracker.update(image, frame_time)
+            if collector is not None:
+                collector.add(image, result, frame_time)
             server.post("/vision", vision_body(result, frame_time, image.shape, name))
             report = mission_body(result, frame_time, image.shape, name)
             if report:
@@ -279,11 +284,15 @@ def main() -> None:
     parser.add_argument(
         "--watch", action="store_true", help="no flight: recognise and track on the video only"
     )
+    parser.add_argument(
+        "--collect", action="store_true", help="save frames for the body model (collect.py)"
+    )
     args = parser.parse_args()
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(message)s", datefmt="%H:%M:%S")
     name = add_child(args.child)
     people = load_child(name)
     client = DroneClient(args.url)
+    collector = Collector(RECORDINGS) if args.collect else None
     try:
         telemetry = client.status()["telemetry"]
     except DroneApiError as error:
@@ -296,9 +305,10 @@ def main() -> None:
     if args.watch:
         log.info("watching for %s on %s: boxes on the page, no flight", name, args.url)
         try:
-            run_live(name, args.url, people)
+            run_live(name, args.url, people, collector)
         except KeyboardInterrupt:
             print("stopped watching")
+        report_collected(collector)
         return
     if not telemetry["in_flight"]:
         tilt_on_ground(client, args.tilt)
@@ -321,11 +331,13 @@ def main() -> None:
     patrol = "the sweep" if args.sweep else "the waypoints"
     log.info("looking for %s at %.1f m with %s: press the drone's button", name, args.alt, patrol)
     try:
-        mission = search(client, DroneServer(args.url), name, people, args, started_at)
+        mission = search(client, DroneServer(args.url), name, people, args, started_at, collector)
     except KeyboardInterrupt:
         client.stop()
         print("stopped: the drone hovers where it is")
+        report_collected(collector)
         return
+    report_collected(collector)
     child = mission.get("child")
     state, message = mission["state"], mission.get("message")
     if done_with_child(mission, args):
@@ -339,6 +351,11 @@ def main() -> None:
         print(f"child at {child.get('drone')} m from the takeoff point (drone frame)")
     if args.robot and child:
         follow_robot(mission, args, started_at)
+
+
+def report_collected(collector: Collector | None) -> None:
+    if collector is not None:
+        print(f"{collector.saved} frames for the body model in {collector.folder}")
 
 
 def follow_robot(mission: dict[str, Any], args: argparse.Namespace, started_at: float) -> None:

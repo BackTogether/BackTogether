@@ -2,7 +2,7 @@
 rem Windows twin of drone/demo (keep the two in step): the whole demo, drone side. Take off from
 rem the robot's pad, lawnmower sweep at 3 m, find the child, hover over them with the camera down, send
 rem the child to the robot through ngrok and follow it. Needs drone\fly running and, on the robot,
-rem roslaunch bringup state_demo.launch.
+rem roslaunch bringup state_demo.launch. Frames for the body model: recordings\collect-<time>\.
 rem Usage: drone\demo [child, default jorge] [more drone\find options, e.g. --length 10 --width 6]
 setlocal
 set "CHILD=jorge"
@@ -20,4 +20,4 @@ set "REST=%REST% %1"
 shift
 goto rest
 :run
-call "%~dp0find.cmd" %CHILD% --alt 3 --orbit 0 --takeoff-height %PAD_HEIGHT_M% --sweep --robot%REST%
+call "%~dp0find.cmd" %CHILD% --alt 3 --orbit 0 --takeoff-height %PAD_HEIGHT_M% --sweep --collect --robot%REST%

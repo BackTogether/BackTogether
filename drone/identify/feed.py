@@ -33,6 +33,7 @@ from . import annotate
 from .__main__ import load_people
 from .body_model import BodyModel
 from .body_track import BODY, BodyTracker, FrameResult, make_tracker
+from .collect import Collector
 from .faces import FaceEmbedder
 from .people import PEOPLE_DIR, People, is_photo
 from .persons import PersonDetector
@@ -166,7 +167,7 @@ def load_body_model() -> BodyModel | None:
         return None
 
 
-def run_live(target: str, url: str, people: People) -> None:
+def run_live(target: str, url: str, people: People, collector: Collector | None = None) -> None:
     server = DroneServer(url)
     tracker = make_tracker_for(target, people)
     last = None
@@ -177,6 +178,8 @@ def run_live(target: str, url: str, people: People) -> None:
             continue
         frame_time, image = frame
         result = tracker.update(image, frame_time)
+        if collector is not None:
+            collector.add(image, result, frame_time)
         server.post("/vision", vision_body(result, frame_time, image.shape, target))
         report = mission_body(result, frame_time, image.shape, target)
         answer = server.post("/mission/target", report) if report else None
