@@ -21,7 +21,9 @@ Messages to the parents go through ntfy if NTFY_TOPIC is set (no account needed,
 ntfy_channel.py), else Telegram with TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_IDS (caregiver.py). Spoken
 answers need Vosk and its model (see listen.py). The video call uses CALL_BASE_URL (a Jitsi
 server, default in care.py). The child profile is found next to this file, or where
-KID_CARE_PROFILE points (the launch file sets it, so an installed package works too).
+KID_CARE_PROFILE points (the launch file sets it, so an installed package works too). Its name
+gives way to the one the parent typed on the web page for the person being searched
+(KID_CARE_PERSON): scripts/web_inbox.py's request.json in that person's folder of KID_CARE_FACES.
 """
 
 import argparse
@@ -48,6 +50,10 @@ import speech
 DEFAULT_PORT = 8000
 HERE = Path(__file__).resolve().parent
 PROFILE_PATH = Path(os.environ.get("KID_CARE_PROFILE") or HERE.parent / "config" / "child.json")
+# The person face_check searches for, and face_rec's folders (the web's requests land there)
+PERSON = os.environ.get("KID_CARE_PERSON", "")
+FACE_DIRECTORY = Path(os.environ.get("KID_CARE_FACES") or Path.home() / ".reinovo" / "face_data")
+WEB_REQUEST_FILE = "request.json"
 BUZZER_TIMEOUT_S = 5
 CALL_PROFILE_DIR = Path.home() / "leuk" / "call-firefox"
 CALL_LOG_PATH = Path.home() / "leuk" / "call-firefox.log"
@@ -203,6 +209,23 @@ class CallWindow:
         self._members = None
 
 
+def requested_name(person: str, faces: Path = FACE_DIRECTORY):
+    """The name the parent typed on the web page for `person`, None without one. The web's folders
+    are in capitals (JORGE) and face_check's person is not: compared without case."""
+    if not person:
+        return None
+    for folder in sorted(faces.glob("*")):
+        if folder.name.lower() != person.lower():
+            continue
+        try:
+            name = json.loads((folder / WEB_REQUEST_FILE).read_text(encoding="utf-8")).get("name")
+        except (OSError, ValueError, AttributeError):
+            continue  # a folder of photos added by hand, without a request
+        if isinstance(name, str) and name.strip():
+            return name.strip()
+    return None
+
+
 class CareServer(ThreadingHTTPServer):
     daemon_threads = True
 
@@ -224,8 +247,13 @@ class CareServer(ThreadingHTTPServer):
                 return False
             if self.telegram:
                 self.telegram.skip_backlog()
+            profile = self.profile
+            name = requested_name(PERSON)
+            if name:  # read now, not at start-up: the request may arrive after the launch
+                log.info("the child is %s (the web page's request for %s)", name, PERSON)
+                profile = {**self.profile, "name": name}
             self.session = care.CareSession(
-                self.profile,
+                profile,
                 found_time,
                 speech,
                 self.telegram,
