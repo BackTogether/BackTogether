@@ -54,6 +54,19 @@ uv run --offline --with opencv-contrib-python-headless python -m drone.identify.
     --frames recordings/frames/<session> --first 40 --count 90 --out /tmp/annotated
 ```
 
+## Body model (recognise the target without the face)
+Photos of the target's clothes in `drone/identify/body/` (not in git; any angle, the target the
+biggest person in each). Train once; the feed then also locks on the target from behind or from
+above (3 frames in a row), and uses it to keep the right person box while tracking:
+```bash
+uv run --with opencv-contrib-python-headless python -m drone.identify.body_model train \
+    --negatives <video with other people, e.g. a drone video of the hall>
+uv run --with opencv-contrib-python-headless python -m drone.identify.body_model check <image>
+```
+Colours of the torso and the legs + an SVM overfitted to this person, with the photos made to
+look like the drone's view from above. Held-out photos: 100 % recognised at 1 % of other people
+passing; none of 146 people in unseen hall frames passed.
+
 ## Landing pad
 `pad` finds the landing pad on the robot (white square, grey circle, orange H) in drone frames,
 seen diagonally from 0.6-4 m. Put a few photos of the pad in `drone/identify/base/` (not in git),

@@ -21,6 +21,10 @@ Every frame: faces (YuNet + SFace, faces.py and people.py) and persons (YOLOX, p
   only after CONFIRM_FRAMES in a row, so one look-alike frame cannot move the lock). A
   recognised face of someone else inside the box, without the target's: the lock is dropped.
   No confirmation (face or detector) for LOST_S: searching again.
+- with a body model (body_model.py, trained on photos of the target's clothes): while searching,
+  the same person recognised by their body in BODY_CONFIRM_FRAMES frames in a row also locks
+  (from behind or above, without the face); while locked, an overlapping box passes if it is
+  the target's body or has the target's colours.
 
 Times are frame times (X-Frame-Time, or the recording's frame rate), so a recording replays
 like the live feed.
@@ -33,6 +37,7 @@ from dataclasses import dataclass
 import cv2
 import numpy as np
 
+from .body_model import BodyModel
 from .faces import FaceEmbedder
 from .live import CONFIRM_FRAMES
 from .people import People
@@ -54,6 +59,8 @@ MAX_SIZE_CHANGE = 1.5  # ...and its size (sqrt of the area) within this factor o
 COLOUR_LEARN = 0.1  # weight of a new frame in the target's colour histogram
 FACE_CONFIDENCE = 0.9  # posted confidence: the target's face is in this frame
 DETECTOR_CONFIDENCE = 0.8  # the person detector found the tracked body
+BODY_CONFIDENCE = 0.8  # locked by the body model, without the face
+BODY_CONFIRM_FRAMES = 3  # the body model must agree this many frames in a row to lock
 TRACKER_CONFIDENCE = 0.4  # only the tracker: shown, below the mission's min_confidence 0.5
 SEARCHING = "searching"
 LOCKED = "locked"
@@ -101,12 +108,18 @@ def make_tracker() -> cv2.Tracker:
 
 class BodyTracker:
     def __init__(
-        self, target: str, embedder: FaceEmbedder, people: People, detector: PersonDetector
+        self,
+        target: str,
+        embedder: FaceEmbedder,
+        people: People,
+        detector: PersonDetector,
+        body_model: BodyModel | None = None,
     ) -> None:
         self.target = target
         self.embedder = embedder
         self.people = people
         self.detector = detector
+        self.body_model = body_model
         self._now = 0.0  # the frame time of the frame being processed
         self._unlock()
 
@@ -127,7 +140,7 @@ class BodyTracker:
         elif target_face and self._in_a_row >= CONFIRM_FRAMES:
             target = self._lock(image, target_face, persons)
         else:
-            target = None
+            target = self._lock_by_body(image, faces, persons)
         ms = (time.monotonic() - started) * 1000
         return FrameResult(LOCKED if self.locked else SEARCHING, faces, persons, target, ms)
 
@@ -143,6 +156,28 @@ class BodyTracker:
             self._set(image, body, BODY)
             self._colour = colour_histogram(image, body)
         return self._result(self._box, FACE_CONFIDENCE, "face")
+
+    def _lock_by_body(
+        self, image: np.ndarray, faces: list[FaceSeen], persons: list[Person]
+    ) -> Target | None:
+        """Lock on the person the body model recognises in BODY_CONFIRM_FRAMES frames in a row,
+        at the same place (one look-alike frame is not enough)."""
+        if self.body_model is None:
+            return None
+        scored = [(self.body_model.score(image, p.box), p.box) for p in persons]
+        score, box = max(scored, default=(-np.inf, None))
+        if box is None or score < self.body_model.threshold:
+            self._body_candidate, self._body_in_a_row = None, 0
+            return None
+        same = self._body_candidate is not None and iou(box, self._body_candidate) >= MIN_IOU
+        self._body_in_a_row = self._body_in_a_row + 1 if same else 1
+        self._body_candidate = box
+        if self._body_in_a_row < BODY_CONFIRM_FRAMES:
+            return None
+        log.info("%s locked by the body (%.2f)", self.target, score)
+        self._set(image, box, BODY)
+        self._colour = colour_histogram(image, box)
+        return self._checked(faces, self._result(box, BODY_CONFIDENCE, "body"))
 
     def _follow(
         self,
@@ -222,6 +257,8 @@ class BodyTracker:
         return best
 
     def _colour_ok(self, image: np.ndarray, box: Box) -> bool:
+        if self.body_model is not None and self.body_model.is_target(image, box):
+            return True
         if self._colour is None:
             return True
         similarity = cv2.compareHist(self._colour, colour_histogram(image, box), cv2.HISTCMP_CORREL)
@@ -283,6 +320,8 @@ class BodyTracker:
         self._face_at: float | None = None
         self._in_a_row = 0
         self._scale = 1.0
+        self._body_candidate: Box | None = None  # the body model's pick while searching
+        self._body_in_a_row = 0
 
 
 def body_for_face(face: Box, persons: list[Person]) -> Box | None:

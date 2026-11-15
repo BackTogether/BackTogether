@@ -31,6 +31,7 @@ import numpy as np
 
 from . import annotate
 from .__main__ import load_people
+from .body_model import BodyModel
 from .body_track import BODY, BodyTracker, FrameResult, make_tracker
 from .faces import FaceEmbedder
 from .people import PEOPLE_DIR, People, is_photo
@@ -153,7 +154,16 @@ def mission_body(
 
 def make_tracker_for(target: str, people: People) -> BodyTracker:
     embedder = FaceEmbedder(detect_width=FULL_SIZE, max_faces=FACES_EMBEDDED)
-    return BodyTracker(target, embedder, people, PersonDetector())
+    return BodyTracker(target, embedder, people, PersonDetector(), load_body_model())
+
+
+def load_body_model() -> BodyModel | None:
+    """The body model if it was trained (body_model.py), else None: faces only."""
+    try:
+        return BodyModel()
+    except FileNotFoundError as error:
+        log.info("no body model (%s): the lock needs the face", error)
+        return None
 
 
 def run_live(target: str, url: str, people: People) -> None:
