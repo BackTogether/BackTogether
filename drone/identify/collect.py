@@ -2,9 +2,10 @@
 
     recordings/collect-<time>/seen/  the target placed by the face, the person detector or the
                                      body model (one frame per SEEN_EVERY_S)
-    recordings/collect-<time>/lost/  after a sighting, the target out of sight or only the
-                                     tracker's guess or its last box, for LOST_AFTER_S (one per LOST_EVERY_S):
-                                     the views the model misses, the ones worth teaching it
+    recordings/collect-<time>/lost/  after a sighting, the target out of sight, only the
+                                     tracker's guess or its last box, for LOST_AFTER_S (one
+                                     per LOST_EVERY_S): the views the model misses, the ones
+                                     worth teaching it
 
 Raw frames (no overlay) with a .json each: the frame time, the tracker state, the target's box
 and source, every person box. Sort them by eye, then retrain: frames with the target go to
