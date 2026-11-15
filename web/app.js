@@ -1,15 +1,9 @@
 /**
  * Page logic: the request form, the photo, the POST that will start the real drone, and the
- * launch / search views driven by the 3D stage in scene.js.
+ * confirmation that the drone is on its way.
  */
 
-import { createStage, LAUNCH_STEPS } from "./scene.js";
-
 const CONFIG = window.FINDMYCHILD_CONFIG || {};
-const SEARCH_PHASES = ["launch", "search", "recall"];
-const FOUND_STEP_LABEL = "Bobac3 going to the child";
-// Demo mode has no robot to report a sighting, so the child is "found" at this much coverage.
-const DEMO_FOUND_COVERAGE = 20;
 
 const $ = (selector) => document.querySelector(selector);
 const reducedMotion = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
@@ -24,19 +18,8 @@ const el = {
   photoClear: $("#photo-clear"),
   submit: $("#submit"),
   formError: $("#form-error"),
+  request: $("#request"),
   mission: $("#mission"),
-  missionSteps: $("#mission-steps"),
-  missionPhoto: $("#mission-photo"),
-  missionChild: $("#mission-child"),
-  missionId: $("#mission-id"),
-  missionMode: $("#mission-mode"),
-  missionElapsed: $("#mission-elapsed"),
-  altitude: $("#stat-altitude"),
-  speed: $("#stat-speed"),
-  battery: $("#stat-battery"),
-  coverage: $("#stat-coverage"),
-  coverageBar: $("#coverage-bar"),
-  cancel: $("#cancel-search"),
   liveStatus: $("#live-status"),
   eventName: $("#event-name"),
   year: $("#year"),
@@ -44,9 +27,6 @@ const el = {
 
 /** The photo the parent picked, already downscaled: { dataUrl, mediaType, name, width, height }. */
 let photo = null;
-let stage = null;
-let mission = null; // { id, startedAt, child, mode }
-let elapsedTimer = null;
 
 /* ------------------------------------------------------------------- photo */
 
@@ -175,59 +155,13 @@ function showFormError(message) {
   el.formError.hidden = !message;
 }
 
-function buildStepList() {
-  el.missionSteps.innerHTML = "";
-  const steps = [...LAUNCH_STEPS.map((step) => step.label), "Scanning the event zone", FOUND_STEP_LABEL];
-  steps.forEach((label, index) => {
-    const item = document.createElement("li");
-    item.className = "step";
-    item.dataset.index = String(index);
-    item.innerHTML = `<span class="step-dot" aria-hidden="true"></span><span class="step-label">${label}</span>`;
-    el.missionSteps.append(item);
-  });
-}
-
-function markStep(index) {
-  for (const item of el.missionSteps.children) {
-    const itemIndex = Number(item.dataset.index);
-    item.dataset.state = itemIndex < index ? "done" : itemIndex === index ? "active" : "todo";
-  }
-}
-
 function setView(view) {
   document.body.dataset.view = view;
+  el.request.hidden = view === "mission"; // once sent, only the confirmation is left on screen
   if (view === "mission") {
     el.mission.hidden = false;
     el.mission.scrollIntoView({ behavior: reducedMotion ? "auto" : "smooth", block: "start" });
   }
-}
-
-function formatElapsed(ms) {
-  const total = Math.floor(ms / 1000);
-  return `${String(Math.floor(total / 60)).padStart(2, "0")}:${String(total % 60).padStart(2, "0")}`;
-}
-
-function startTelemetryLoop() {
-  if (elapsedTimer) clearInterval(elapsedTimer);
-  elapsedTimer = setInterval(() => {
-    if (!mission) return;
-    el.missionElapsed.textContent = formatElapsed(Date.now() - mission.startedAt);
-    const telemetry = stage?.telemetry();
-    if (!telemetry) return;
-    el.altitude.textContent = `${telemetry.altitude.toFixed(1)} m`;
-    el.speed.textContent = `${telemetry.speed.toFixed(1)} m/s`;
-    el.battery.textContent = `${Math.round(telemetry.battery)} %`;
-    el.coverage.textContent = `${Math.round(telemetry.coverage)} %`;
-    el.coverageBar.style.setProperty("--value", `${telemetry.coverage}%`);
-    if (mission.mode === "demo" && telemetry.phase === "search" && telemetry.coverage >= DEMO_FOUND_COVERAGE) {
-      stage.setPhase("found");
-    }
-  }, 250);
-}
-
-function stopTelemetryLoop() {
-  if (elapsedTimer) clearInterval(elapsedTimer);
-  elapsedTimer = null;
 }
 
 /* --------------------------------------------------------------- the flight */
@@ -252,9 +186,8 @@ async function onSubmit(event) {
   el.submit.dataset.state = "sending";
   showFormError("");
 
-  let result;
   try {
-    result = await sendRequest(payload);
+    await sendRequest(payload);
   } catch (error) {
     el.submit.disabled = false;
     el.submit.dataset.state = "";
@@ -264,56 +197,11 @@ async function onSubmit(event) {
     return;
   }
 
-  mission = {
-    id,
-    startedAt: Date.now(),
-    child: payload.child.name || "your child",
-    mode: result.mode,
-  };
-
-  el.missionPhoto.src = photo.dataUrl;
-  el.missionChild.textContent = mission.child;
-  el.missionId.textContent = id;
-  el.missionMode.textContent = result.mode === "live" ? "Request sent to the robot" : "Demo mode · no robot endpoint set";
-  el.missionMode.dataset.mode = result.mode;
-  el.liveStatus.textContent = `Search ${id} started. The Hover Air X1 is launching from the Bobac3 base.`;
-
-  buildStepList();
-  markStep(0);
+  el.liveStatus.textContent = "The drone is on its way. You will soon get a notification with the video call.";
   setView("mission");
-  startTelemetryLoop();
-  stage?.setPhase("launch");
 
   el.submit.disabled = false;
   el.submit.dataset.state = "";
-}
-
-function onCancel() {
-  if (!mission) return;
-  el.cancel.disabled = true;
-  el.liveStatus.textContent = "Search cancelled. The drone is returning to the base.";
-  stage?.setPhase("recall");
-}
-
-function onPhase(phase) {
-  if (phase === "search") {
-    markStep(LAUNCH_STEPS.length);
-    el.liveStatus.textContent = `The drone is scanning the event zone for ${mission?.child || "your child"}.`;
-  }
-  if (phase === "found") {
-    markStep(LAUNCH_STEPS.length + 1);
-    el.liveStatus.textContent = `${mission?.child || "Your child"} was spotted. The Bobac3 robot is driving there.`;
-  }
-  if (phase === "idle" && mission) {
-    // The recall sequence finished: back to the form, ready for another request.
-    mission = null;
-    stopTelemetryLoop();
-    el.cancel.disabled = false;
-    setView("form");
-    el.mission.hidden = true;
-    el.liveStatus.textContent = "The drone is back over the base. You can start a new search.";
-  }
-  void SEARCH_PHASES;
 }
 
 /* ------------------------------------------------------------------- setup */
@@ -351,21 +239,6 @@ function init() {
   clearPhoto();
 
   el.form.addEventListener("submit", onSubmit);
-  el.cancel.addEventListener("click", onCancel);
-
-  stage = createStage($("#stage-canvas"), {
-    reducedMotion,
-    onStep: (step) => {
-      // Only the launch and search steps are in the list; later phases just update the status.
-      if (step.phase === "launch" || step.phase === "search") markStep(step.index);
-      if (step.label) el.liveStatus.textContent = step.label;
-    },
-    onPhase,
-  });
-
-  if (!stage) {
-    document.body.dataset.stage = "unavailable";
-  }
 
   for (const link of document.querySelectorAll('a[href^="#"]')) {
     link.addEventListener("click", (event) => {

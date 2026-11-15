@@ -108,36 +108,8 @@
         </section>
 
         <section class="card mission" id="mission" hidden aria-labelledby="mission-title">
-          <header class="card-head mission-head">
-            <div>
-              <p class="eyebrow">Search in progress</p>
-              <h2 id="mission-title">Looking for <span id="mission-child">your child</span></h2>
-              <p class="muted small">Request <code id="mission-id">—</code></p>
-            </div>
-            <img class="mission-photo" id="mission-photo" alt="The photo sent with this search" />
-          </header>
-
-          <p class="mode-badge" id="mission-mode" data-mode="demo">Demo mode</p>
-
-          <ol class="steps" id="mission-steps"></ol>
-
-          <div class="telemetry">
-            <div class="stat"><span>Altitude</span><strong id="stat-altitude">0.0 m</strong></div>
-            <div class="stat"><span>Speed</span><strong id="stat-speed">0.0 m/s</strong></div>
-            <div class="stat"><span>Battery</span><strong id="stat-battery">100 %</strong></div>
-            <div class="stat"><span>Elapsed</span><strong id="mission-elapsed">00:00</strong></div>
-          </div>
-
-          <div class="coverage">
-            <div class="coverage-head">
-              <span>Zone scanned</span><strong id="stat-coverage">0 %</strong>
-            </div>
-            <div class="bar" id="coverage-bar"><span></span></div>
-          </div>
-
-          <button class="button ghost big" type="button" id="cancel-search">
-            We found them — bring the drone back
-          </button>
+          <h2 id="mission-title">The drone is on its way</h2>
+          <p class="muted">You will soon get a notification with the video call.</p>
         </section>
 
         <section class="how" id="how">
@@ -176,22 +148,6 @@
         </footer>
       </div>
 
-      <!-- sticky 3D column -->
-      <div class="stage-column">
-        <div class="stage">
-          <canvas id="stage-canvas" aria-label="3D view of the Bobac3 base with the Hover Air X1 drone"></canvas>
-          <div class="stage-chrome">
-            <p class="stage-tag">Live robot view · drag to look around</p>
-            <ul class="stage-legend">
-              <li><span class="key" aria-hidden="true"></span> Hover Air X1 · folding drone</li>
-              <li><span class="key alt" aria-hidden="true"></span> Bobac3 · ROS mobile base</li>
-            </ul>
-          </div>
-          <p class="stage-fallback">
-            This browser cannot show the 3D view, but the search request works normally.
-          </p>
-        </div>
-      </div>
     </main>
 
     <p class="visually-hidden" id="live-status" role="status" aria-live="polite"></p>
