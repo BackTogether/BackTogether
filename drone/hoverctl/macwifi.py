@@ -19,13 +19,16 @@ from .pbwire import drone_network_ip
 JOIN_TIMEOUT_S = 25.0  # association plus DHCP on the drone's access point
 POLL_S = 0.5
 _WIFI_PORT = re.compile(r"Hardware Port: (?:Wi-Fi|AirPort)\nDevice: (\S+)")
-# Windows only connects to a network it has a profile for. Manual mode: never joined on its own.
+# Windows only connects to a network it has a profile for. Auto mode and the first place in the
+# profile order: if the link drops in flight, Windows rejoins the drone, not a known network with
+# internet (it did, 2026-11-15, and the manual session and the sticks were lost).
+_NETSH_FIRST_VALUE = re.compile(r"^[ \t]+[^:\n]+?[ \t]*:[ \t]*(\S.*)$", re.MULTILINE)
 _WINDOWS_PROFILE = """<?xml version="1.0"?>
 <WLANProfile xmlns="http://www.microsoft.com/networking/WLAN/profile/v1">
   <name>{ssid}</name>
   <SSIDConfig><SSID><name>{ssid}</name></SSID></SSIDConfig>
   <connectionType>ESS</connectionType>
-  <connectionMode>manual</connectionMode>
+  <connectionMode>auto</connectionMode>
   <MSM><security>
     <authEncryption>
       <authentication>WPA2PSK</authentication><encryption>AES</encryption><useOneX>false</useOneX>
@@ -99,10 +102,20 @@ def _join_windows(ssid: str, password: str) -> str:
             _WINDOWS_PROFILE.format(ssid=escape(ssid), password=escape(password)), encoding="utf-8"
         )
         added = _netsh("add", "profile", f"filename={profile}", "user=current")
-    if added.returncode != 0:
-        return (added.stdout + added.stderr).strip()
+    # a failed add (e.g. an older profile of the same name) does not stop the connect
+    interface = _windows_wifi_interface()
+    if interface:
+        _netsh("set", "profileorder", f"name={ssid}", f"interface={interface}", "priority=1")
     result = _netsh("connect", f"name={ssid}", f"ssid={ssid}")
-    return "" if result.returncode == 0 else (result.stdout + result.stderr).strip()
+    if result.returncode == 0:
+        return ""
+    return " ".join(part.strip() for part in (added.stdout, result.stdout, result.stderr) if part)
+
+
+def _windows_wifi_interface() -> str | None:
+    # The first "key : value" line is the interface's name, whatever the system's language
+    match = _NETSH_FIRST_VALUE.search(_netsh("show", "interfaces").stdout)
+    return match.group(1).strip() if match else None
 
 
 def _netsh(*arguments: str) -> subprocess.CompletedProcess:
