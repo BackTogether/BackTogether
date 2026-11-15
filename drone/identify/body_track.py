@@ -24,9 +24,12 @@ Every frame: faces (YuNet + SFace, faces.py and people.py) and persons (YOLOX, p
   leg boxes from the floor), no box confirms the target in that frame (better no confirmation
   than the neighbour). CSRT (MIL without opencv-contrib) bridges the frames the detector
   misses, for BRIDGE_S at most: alone it drifts onto the background or onto whoever is next to
-  the target. The target's face inside the box re-confirms it. A target face elsewhere moves
-  the lock to that person only with the evidence of a new lock, LOCK_FACE_FRAMES in a row:
-  moving is locking on someone else, and from the drone a stranger's face often scores just
+  the target. A frame where nothing places the box (no face, no detector box, the tracker
+  failed or past BRIDGE_S) shows the last box again ("held"), so the lock never blinks off
+  between confirmations. The target's face inside the box re-confirms it. A target face
+  elsewhere moves the lock to that person only with the evidence of a new lock,
+  LOCK_FACE_FRAMES in a row: moving is locking on someone else, and from the drone a stranger's
+  face often scores just
   above the threshold for a frame or two. Someone else's face recognised with
   OTHER_FACE_SIMILARITY inside the box drops the lock (a weak match is not enough, for the same
   reason). No confirmation (face or detector) for LOST_S: searching again, and only the face
@@ -78,6 +81,10 @@ NEW_VIEW = 0.8  # a confirmed view less alike than this to all kept ones is a ne
 FACE_CONFIDENCE = 0.9  # posted confidence: the target's face is in this frame
 DETECTOR_CONFIDENCE = 0.8  # the person detector found the tracked body
 TRACKER_CONFIDENCE = 0.4  # only the tracker: shown, below the mission's min_confidence 0.5
+# Nothing placed the box in this frame: the last one is shown again, also below the mission's
+# min_confidence: an old image box with the drone's pose now would put the child somewhere else
+# once the drone has turned, and the approach already flies on its last fix (HOLD_S)
+HELD_CONFIDENCE = TRACKER_CONFIDENCE
 SEARCHING = "searching"
 LOCKED = "locked"
 BODY = "body"
@@ -101,7 +108,7 @@ class Target:
     box: Box
     kind: str  # BODY or HEAD
     confidence: float
-    source: str  # "face", "detector" or "tracker": what placed the box in this frame
+    source: str  # "face", "detector", "tracker" or "held" (the last box, nothing placed it)
     similarity: float | None  # last face match of the target
     face_age_s: float | None  # since that match
 
@@ -215,7 +222,7 @@ class BodyTracker:
             return self._checked(faces, self._result(box, DETECTOR_CONFIDENCE, "detector"))
         if tracked is not None:
             return self._checked(faces, self._result(tracked, TRACKER_CONFIDENCE, "tracker"))
-        return None
+        return self._checked(faces, self._result(self._shown, HELD_CONFIDENCE, "held"))
 
     def _face_counts(self, face: FaceSeen, tracked: Box | None) -> bool:
         """A target face inside the tracked box always counts; elsewhere only LOCK_FACE_FRAMES
@@ -321,11 +328,13 @@ class BodyTracker:
         return cv2.resize(image, None, fx=self._scale, fy=self._scale)
 
     def _result(self, box: Box, confidence: float, source: str) -> Target:
+        self._shown = box  # held again when nothing places the box in a later frame
         age = None if self._face_at is None else round(self._now - self._face_at, 2)
         return Target(box, self._kind, confidence, source, self._similarity, age)
 
     def _unlock(self) -> None:
         self._box: Box | None = None  # the last confirmed box (face or detector)
+        self._shown: Box | None = None  # the last box returned, confirmed or not
         self._kind = BODY
         self._tracker: cv2.Tracker | None = None
         self._gallery: list[np.ndarray] = []  # the target's views: [0] at the lock
