@@ -220,7 +220,7 @@ code {
   margin: 0 auto;
   padding: 0 var(--gutter);
   display: grid;
-  grid-template-columns: minmax(0, 1fr) minmax(0, 1.05fr);
+  grid-template-columns: minmax(0, 1fr);
   gap: clamp(1.5rem, 3vw, 3rem);
   align-items: start;
 }
@@ -242,7 +242,9 @@ code {
 
 /* --------------------------------------------------------------- 3D stage */
 
+/* Not shown: a plain mobile page. The stage still runs hidden, it drives the mission view. */
 .stage-column {
+  display: none;
   position: sticky;
   top: var(--topbar-h);
   height: calc(100vh - var(--topbar-h));
@@ -752,10 +754,6 @@ body[data-stage="unavailable"] .stage-chrome {
 
 /* Tablet and phone: one column, the 3D stage sticks to the top of the page. */
 @media (max-width: 1020px) {
-  :root {
-    --stage-h: 38dvh;
-  }
-
   .layout {
     grid-template-columns: minmax(0, 1fr);
   }
@@ -791,10 +789,6 @@ body[data-stage="unavailable"] .stage-chrome {
 }
 
 @media (max-width: 620px) {
-  :root {
-    --stage-h: 30dvh;
-  }
-
   .stage-column {
     min-height: 190px;
   }
