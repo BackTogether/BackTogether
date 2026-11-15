@@ -63,7 +63,7 @@
             </label>
 
             <div class="photo-block">
-              <h3>Photo of your child</h3>
+              <h3>Photos of your child</h3>
               <div
                 class="dropzone"
                 id="dropzone"
@@ -71,7 +71,7 @@
                 role="button"
                 tabindex="0"
                 aria-controls="photo"
-                aria-label="Choose a photo of your child"
+                aria-label="Choose photos of your child"
               >
                 <img class="photo-preview" id="photo-preview" alt="" />
                 <div class="dropzone-empty">
@@ -84,15 +84,15 @@
                       stroke-linecap="round"
                     />
                   </svg>
-                  <p><strong>Tap to take or choose a photo</strong></p>
+                  <p><strong>Tap to take or choose photos</strong></p>
                   <p class="muted">a face the drone can recognise</p>
                 </div>
               </div>
               <div class="photo-meta">
                 <p class="muted small" id="photo-name"></p>
-                <button class="button tiny ghost" type="button" id="photo-clear">Remove photo</button>
+                <button class="button tiny ghost" type="button" id="photo-clear">Remove photos</button>
               </div>
-              <input class="visually-hidden" type="file" id="photo" name="photo" accept="image/*" />
+              <input class="visually-hidden" type="file" id="photo" name="photo" accept="image/*" multiple />
             </div>
 
             <p class="error" id="form-error" role="alert" hidden></p>
