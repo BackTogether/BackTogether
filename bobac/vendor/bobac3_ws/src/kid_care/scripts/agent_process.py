@@ -1,11 +1,12 @@
-"""Start and stop the voice agent (bobac/agent/voice_agent.py) from the care flow.
+"""Start and stop the voice agent (the package's agent/voice_agent.py) from the care flow.
 
 The agent needs Python 3.11 and google-genai, the robot's own Python is 3.8: it runs as a
 separate program, in its own environment. Configuration, from the environment:
 
     GEMINI_API_KEY        the AI Studio key; without it there is no agent
     VOICE_AGENT_PYTHON    Python 3.11 that has google-genai (default ~/leuk/agent-venv/bin/python)
-    VOICE_AGENT_SCRIPT    the agent program (default: ../agent/voice_agent.py next to this file)
+    VOICE_AGENT_SCRIPT    the agent program (default: ../agent/voice_agent.py next to this file;
+                          the launch file sets it, so an installed package works too)
 """
 
 import logging
@@ -31,7 +32,7 @@ def available() -> bool:
         return False
     for path in (_python(), _script()):
         if not path.exists():
-            log.warning("voice agent not installed: %s missing (see bobac/agent/README.md)", path)
+            log.warning("voice agent not installed: %s missing (see the package README)", path)
             return False
     return True
 

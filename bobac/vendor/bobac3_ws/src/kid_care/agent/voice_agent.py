@@ -2,7 +2,7 @@
 
 A separate program (Python 3.11+, google-genai) because the robot's own Python is 3.8. The care
 flow starts it when the robot starts waiting for the parent and stops it (SIGTERM) as soon as
-the parent joins the call (bobac/robot/agent_process.py). Setup: README.md next to this file.
+the parent joins the call (scripts/agent_process.py). Setup: the package README.
 
     GEMINI_API_KEY=... python voice_agent.py --child-name Leo --child-age 7 \\
         --parent-called Mom --emergency-number 112

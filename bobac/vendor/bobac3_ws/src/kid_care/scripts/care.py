@@ -8,8 +8,8 @@ The two questions ("are you okay?", "did you get hurt?") are switched off with A
 reaching the parent comes first, and a voice agent is meant to talk with the child meanwhile.
 
 Plain Python 3.8, no ROS: everything that touches hardware is passed in, so it runs on a laptop.
-The HTTP bridge (or care_server.py) owns one CareSession: `run()` in a thread, `answer()` from
-the screen buttons, `stop()` to abort, `snapshot()` for /status.
+The HTTP bridge (or care_server.py) owns one CareSession: `run()` in a thread, `answer()` for
+the child's answer, `stop()` to abort, `snapshot()` for /status.
 """
 
 import json
@@ -151,7 +151,7 @@ class CareSession:
             return self._parent_in_call
 
     def answer(self, value: str) -> bool:
-        """A button was pressed on the screen. False if that answer is not expected now."""
+        """The child answered (POST /ui/answer). False if that answer is not expected now."""
         with self._lock:
             if value not in self._options:
                 return False

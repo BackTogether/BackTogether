@@ -17,7 +17,7 @@
     <arg name="open_rviz" value="false"/>
   </include>
 
-  <!-- chassis: kill the boot-time instance first (rosnode kill /rei_base) -->
+  <!-- chassis: replaces the boot-time /rei_base by itself (same node name) -->
   <include file="$(find rei_robot_base)/launch/base.launch"/>
 
   <!-- front + rear lidar, merged into /fuse_scan -->

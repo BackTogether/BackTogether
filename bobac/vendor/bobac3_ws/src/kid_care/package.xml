@@ -1,0 +1,29 @@
+<?xml version="1.0"?>
+<package format="2">
+  <name>kid_care</name>
+  <version>0.0.1</version>
+  <description>Stay with the lost child: Gemini voice agent and a video call with the parents</description>
+  <maintainer email="noreply@example.com">leukerbad team</maintainer>
+  <license>MIT</license>
+
+  <buildtool_depend>catkin</buildtool_depend>
+
+  <!-- kid_care_start.py: it waits for the `care` state through bringup's StateClient
+       (bringup/src/bringup/state.py) and stops the nodes holding the head camera -->
+  <exec_depend>rospy</exec_depend>
+  <exec_depend>bringup</exec_depend>
+  <exec_depend>std_msgs</exec_depend>
+  <exec_depend>rosgraph</exec_depend>
+  <exec_depend>rosnode</exec_depend>
+  <!-- the buzzer the care flow uses when the child does not answer (`rosservice call
+       /set_buzzer`): without it the flow only logs a warning -->
+  <exec_depend>rei_robot_base</exec_depend>
+
+  <!-- Not ROS packages, so not listed as dependencies; the README says how to install them:
+         firefox          the video call window
+         speech-dispatcher (spd-say), ffmpeg, alsa-utils (aplay)   the robot's voice
+         pulseaudio-utils (parec, pacat)                           the voice agent's audio
+         python3.11 + google-genai, in its own venv                the voice agent
+         vosk + its model  optional, so the child can answer out loud instead of tapping -->
+
+</package>

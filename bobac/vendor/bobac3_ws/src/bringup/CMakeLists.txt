@@ -3,12 +3,16 @@ project(bringup)
 
 find_package(catkin REQUIRED)
 
+# src/bringup/: the python module the scripts import (setup.py)
+catkin_python_setup()
+
 catkin_package()
 
 catkin_install_python(PROGRAMS
   scripts/face_check.py
   scripts/splash.py
-  scripts/child_goal_server.py
+  scripts/system_state.py
+  scripts/arrival_watch.py
   DESTINATION ${CATKIN_PACKAGE_BIN_DESTINATION}
 )
 

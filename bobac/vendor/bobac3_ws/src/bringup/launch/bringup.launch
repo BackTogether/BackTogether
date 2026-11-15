@@ -2,20 +2,29 @@
   <!-- Starts every block of the demo. Add one include / node per new block.
 
        Run it with:  roslaunch bringup bringup.launch
-       The chassis driver is started here too: kill the boot-time instance
-       first (rosnode kill /rei_base). -->
+       The chassis driver (/rei_base) is started here too: it replaces the boot-time one by
+       itself (same node name), no rosnode kill needed. -->
 
-  <arg name="open_rviz" default="true"/>
+  <!-- rviz on the robot's N97 costs CPU the navigation needs: off unless asked -->
+  <arg name="open_rviz" default="false"/>
+  <!-- the child's photos: $FACE_DIRECTORY/<person>/, the robot's folder if it is not set -->
+  <arg name="face_directory" default="$(optenv FACE_DIRECTORY /home/bobac3/.reinovo/face_data)"/>
+  <!-- child_goal_server: the drone's port (drone/report_child.py) and how far short of the
+       child the robot stops, facing them -->
+  <arg name="child_port" default="8001"/>
+  <arg name="standoff" default="0.8"/>
   <!-- person to find on arrival: folder name of their photos in $FACE_DIRECTORY -->
   <arg name="person" default="jorge"/>
   <!-- true: start turning right away, without waiting for a navigation goal (to test it) -->
   <arg name="search_on_start" default="false"/>
+  <!-- false: no face search on arrival (demo.launch with start_care_on:=arrived) -->
+  <arg name="face_check" default="true"/>
   <!-- following: face box to keep in px^2 (20736 = 144 x 144 px, measured with the person at
        the right distance; 0 = its size when found) and top speed in m/s -->
   <arg name="target_area" default="20736"/>
   <arg name="max_linear" default="0.15"/>
-  <!-- full screen image over the terminals and rviz, and seconds to wait before showing it
-       (rviz opens a few seconds after the launch starts) -->
+  <!-- full screen face gifs over the terminals and rviz, and seconds to wait before showing
+       them (rviz opens a few seconds after the launch starts) -->
   <arg name="splash" default="true"/>
   <arg name="splash_delay" default="5.0"/>
 
@@ -25,12 +34,15 @@
   </include>
 
   <!-- Block: head camera + face recognition -> /face_results -->
-  <include file="$(find face_rec)/launch/face_rec_topic.launch"/>
+  <include file="$(find face_rec)/launch/face_rec_topic.launch">
+    <arg name="face_rec_directory" value="$(arg face_directory)"/>
+  </include>
 
-  <!-- Block: on arrival at a goal, turn on the spot until the person is recognised, then
+  <!-- Block: on arrival at the child's goal (/child_goal/reached, not any goal), turn on the
+       spot until the person is recognised, then
        follow them: turn to keep the face centred, back up / move forward to keep its size
        (publishes the name on /face_check/found when found) -->
-  <node name="face_check" pkg="bringup" type="face_check.py" output="screen">
+  <node if="$(arg face_check)" name="face_check" pkg="bringup" type="face_check.py" output="screen">
     <param name="person" value="$(arg person)"/>
     <param name="turn_speed" value="0.3"/>
     <param name="search_on_start" value="$(arg search_on_start)"/>
@@ -38,17 +50,23 @@
     <param name="max_linear" value="$(arg max_linear)"/>
   </node>
 
-  <!-- Block: full screen image (assets/base_image.png) on top of everything, so the demo shows
-       one clean picture instead of the terminals and rviz. Esc closes it, or:
+  <!-- Block: full screen face gifs (assets/*.gif, random order) over everything, so the demo
+       shows one clean screen instead of the terminals and rviz. Esc closes it, or:
        rostopic pub -1 /splash/show std_msgs/Bool "data: false" -->
   <node if="$(arg splash)" name="splash" pkg="bringup" type="splash.py" output="screen">
-    <param name="image" value="$(find bringup)/assets/base_image.png"/>
+    <param name="images" value="$(find bringup)/assets"/>
     <param name="fit" value="contain"/>
     <param name="background" value="black"/>
     <param name="delay" value="$(arg splash_delay)"/>
     <param name="topmost" value="true"/>
   </node>
 
-  <node pkg="bringup" type="child_goal_server.py" name="child_goal_server" output="screen"/>
+  <!-- Block: the drone's child position (HTTP :child_port/child_found) -> move_base goal,
+       standoff short of the child; /child_goal/reached on arrival starts face_check -->
+  <node pkg="bringup" type="child_goal_server.py" name="child_goal_server" output="screen"
+        respawn="true" respawn_delay="2">
+    <param name="port" value="$(arg child_port)"/>
+    <param name="standoff" value="$(arg standoff)"/>
+  </node>
 
 </launch>

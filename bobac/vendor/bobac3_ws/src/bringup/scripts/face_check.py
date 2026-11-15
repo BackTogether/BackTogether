@@ -1,9 +1,11 @@
 #!/usr/bin/env python3
-"""When the robot reaches a navigation goal, turn on the spot until the expected person is
+"""When the robot reaches the child's goal, turn on the spot until the expected person is
 recognised by the head camera, then follow them: face left/right of the image = turn towards it,
 face bigger = back up, face smaller = move forward, so it stays centred and at the same size.
 
-Arrival = move_base reports its goal SUCCEEDED (/move_base/result). While searching, the robot
+Arrival = the machine reached the arrived state (state_demo.launch, arrival_watch) or
+child_goal_server reached the drone's goal (~arrival_topic, /child_goal/reached). The search
+then puts the machine in searching, and finding the child in care. While searching, the robot
 turns slowly; once the face is seen it turns towards it until the face is in the middle of the
 image, stops and publishes the name on /face_check/found. A new goal, or not finding the person
 within ~timeout, stops the search. The robot is always left stopped.
@@ -13,9 +15,15 @@ Params (set in bringup.launch):
   ~turn_speed       rad/s while searching (default 0.3, slow so the recogniser keeps up)
   ~timeout          seconds before giving up (default: two full turns)
   ~search_on_start  true: search right away, without waiting for a goal (to test it alone)
+  ~arrival_topic    std_msgs/Bool that starts a search (default /child_goal/reached)
   ~max_linear       m/s forward / back while following (default 0.15)
   ~target_area      face box to keep while following, px^2 (default 20736 = 144 x 144, the
                     measured box; 0 = its size when found)
+
+States (only when a system_state node is running):
+  arrived   starts the search
+  searching published when the robot starts turning
+  care      published once the child is found, before following them
 """
 
 
@@ -24,13 +32,17 @@ import threading
 import time
 
 import rospy
-from actionlib_msgs.msg import GoalStatus
+from bringup.state import StateClient
 from face_rec.msg import face_results
 from geometry_msgs.msg import Twist
-from move_base_msgs.msg import MoveBaseActionGoal, MoveBaseActionResult
-from std_msgs.msg import String
+from move_base_msgs.msg import MoveBaseActionGoal
+from std_msgs.msg import Bool, String
 
+START_STATE = "arrived"
+SEARCHING_STATE = "searching"
+CARE_STATE = "care"
 DEFAULT_PERSON = "jorge"
+DEFAULT_ARRIVAL_TOPIC = "/child_goal/reached"  # child_goal_server.py
 DEFAULT_TURN_SPEED = 0.3  # rad/s
 FULL_TURNS = 2
 RATE_HZ = 10
@@ -71,8 +83,10 @@ class FaceCheck:
         self.cmd_vel = rospy.Publisher("/cmd_vel", Twist, queue_size=1)
         self.found = rospy.Publisher("/face_check/found", String, queue_size=1, latch=True)
         rospy.Subscriber("/face_results", face_results, self.on_faces, queue_size=1)
-        rospy.Subscriber("/move_base/result", MoveBaseActionResult, self.on_result, queue_size=1)
+        arrival_topic = str(rospy.get_param("~arrival_topic", DEFAULT_ARRIVAL_TOPIC))
+        rospy.Subscriber(arrival_topic, Bool, self.on_arrival, queue_size=1)
         rospy.Subscriber("/move_base/goal", MoveBaseActionGoal, self.on_goal, queue_size=1)
+        self.machine = StateClient(self.on_state)
         rospy.loginfo("face_check: looking for '%s' after each arrival", self.person)
 
     def on_faces(self, results):
@@ -84,11 +98,18 @@ class FaceCheck:
                     self.face_area = (face.xmax - face.xmin) * (face.ymax - face.ymin)
                 return
 
-    def on_result(self, result):
-        if result.status.status == GoalStatus.SUCCEEDED:
-            rospy.loginfo("face_check: arrived, searching for '%s'", self.person)
-            self.new_goal.clear()
-            self.search_requested.set()
+    def start_search(self, reason):
+        rospy.loginfo("face_check: %s, searching for '%s'", reason, self.person)
+        self.new_goal.clear()
+        self.search_requested.set()
+
+    def on_arrival(self, arrived):
+        if arrived.data:
+            self.start_search("at the child")
+
+    def on_state(self, state):
+        if state == START_STATE:
+            self.start_search("arrived")
 
     def on_goal(self, _goal):
         self.new_goal.set()  # move_base drives again: never turn against it
@@ -193,9 +214,11 @@ class FaceCheck:
             if not self.search_requested.wait(0.5):
                 continue
             self.search_requested.clear()
+            self.machine.set(SEARCHING_STATE)
             if self.search():
                 rospy.loginfo("face_check: found '%s', following them", self.person)
                 self.found.publish(String(data=self.person))
+                self.machine.set(CARE_STATE)
                 self.follow()
             elif not self.new_goal.is_set():
                 rospy.logwarn("face_check: '%s' not found in %.0f s", self.person, self.timeout)

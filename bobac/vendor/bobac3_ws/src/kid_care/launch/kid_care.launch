@@ -1,0 +1,67 @@
+<launch>
+  <!-- The care flow: what the robot does once it is WITH the child.
+
+       The episode starts when the machine enters the `care` state, which is where
+       bringup's face_check puts it the moment it recognises the child
+       (home -> arrived -> searching -> care). state_demo.launch includes this file, so the
+       whole demo is one launch; on its own it is:
+
+           roslaunch kid_care kid_care.launch                  # waits for the care state
+           roslaunch kid_care kid_care.launch start_state:=""  # starts straight away
+
+       Two nodes:
+         kid_care        the care flow, up from the start and idle until it is asked to begin
+         kid_care_start  waits for the `care` state, then begins the episode
+
+       Then: the Gemini voice agent greets the child by name and keeps them company, the video
+       call opens full screen on the robot's screen (the only window the robot shows), and the
+       parents get a push notification with one "Join the video call" button. When a parent
+       joins, the agent goes quiet; when they hang up, the robot takes it as "the family has
+       arrived", says goodbye and goes idle.
+
+       The keys are NOT in the repo: put them in the hidden file kid_care/.env
+       (GEMINI_API_KEY, NTFY_TOPIC, VOICE_AGENT_PYTHON). See the package README. -->
+
+  <!-- hidden file with the keys; anything already exported in the shell wins over it -->
+  <arg name="env_file" default="$(find kid_care)/.env"/>
+  <!-- the state that starts the episode; empty: start as soon as the care server answers -->
+  <arg name="start_state" default="care"/>
+  <!-- where the child is, told to the parents -->
+  <arg name="zone" default="park"/>
+  <!-- the care server's HTTP port -->
+  <arg name="port" default="8090"/>
+  <!-- false: start nothing by itself, POST /care/start when you want it:
+       curl -X POST localhost:8090/care/start -d '{"zone": "park"}' -->
+  <arg name="auto_start" default="true"/>
+  <!-- seconds between the trigger and the episode: the screen and the camera must be free
+       before the call window opens -->
+  <arg name="start_delay" default="2.0"/>
+  <!-- hide bringup's full screen image: it is always on top and would cover the call -->
+  <arg name="hide_splash" default="true"/>
+  <!-- stop the nodes holding the head camera: the call's browser cannot open it otherwise.
+       It also ends face_check's following, which needs the same camera. -->
+  <arg name="free_camera" default="true"/>
+  <!-- the child's profile: name, age, parents, emergency number -->
+  <arg name="child_profile" default="$(find kid_care)/config/child.json"/>
+
+  <!-- The care flow (scripts/care_server.py): the robot's voice, the voice agent, the video
+       call window and the push notification to the parents. Idle until /care/start. -->
+  <node name="kid_care" pkg="kid_care" type="kid_care_node.py" output="screen"
+        args="--env-file $(arg env_file) --port $(arg port)">
+    <!-- found next to the scripts too, but set here so an installed package works as well -->
+    <env name="KID_CARE_PROFILE" value="$(arg child_profile)"/>
+    <env name="VOICE_AGENT_SCRIPT" value="$(find kid_care)/agent/voice_agent.py"/>
+  </node>
+
+  <!-- `care`: the robot is with the child. Clear the screen, free the camera, begin. -->
+  <node if="$(arg auto_start)" name="kid_care_start" pkg="kid_care" type="kid_care_start.py"
+        output="screen">
+    <param name="start_state" value="$(arg start_state)"/>
+    <param name="care_url" value="http://localhost:$(arg port)"/>
+    <param name="zone" value="$(arg zone)"/>
+    <param name="delay" value="$(arg start_delay)"/>
+    <param name="hide_splash" value="$(arg hide_splash)"/>
+    <param name="free_camera" value="$(arg free_camera)"/>
+  </node>
+
+</launch>

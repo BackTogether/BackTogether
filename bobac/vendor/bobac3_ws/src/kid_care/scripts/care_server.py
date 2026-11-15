@@ -1,33 +1,36 @@
-"""Run the care flow (care.py) on its own, with the screen page, without the rest of the robot.
+"""The care flow (care.py) as one program that needs no ROS.
 
-Serves the part of the bridge API in interfaces/ROBOT_API.md that the care flow needs, so the
-screen page works unchanged once the real bridge calls CareSession itself:
+The robot's screen shows nothing of its own: the only window this opens is the video call
+with the parents, full screen. Normally started by the launch file (`roslaunch kid_care
+kid_care.launch`) through kid_care_node.py, which loads the keys from the package's hidden
+.env first. The HTTP API:
 
-    GET  /ui/           screen page (bobac/robot/ui/)
-    GET  /status        contract fields + "care" (extra details for the screen)
+    GET  /status        contract fields + "care" (the details of the episode)
     POST /care/start    {"zone": str, "found_time": epoch seconds (optional)} -> the robot
                         reached the lost child in that zone
-    POST /ui/answer     {"answer": "ok" | "help" | "yes" | "no"}
+    POST /ui/answer     {"answer": "ok" | "help" | "yes" | "no"}, for the child's answers
     POST /stop
 
-On the robot (system Python 3.8) or on a laptop:
+Also runs on its own, on the robot (system Python 3.8) or on a laptop:
 
-    python3 care_server.py            # then open http://localhost:8000/ui/
-    curl -X POST localhost:8000/care/start -d '{"zone": "park"}'
+    python3 care_server.py --port 8090
+    curl -X POST localhost:8090/care/start -d '{"zone": "park"}'
+    curl localhost:8090/status
 
 Messages to the parents go through ntfy if NTFY_TOPIC is set (no account needed, see
 ntfy_channel.py), else Telegram with TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_IDS (caregiver.py). Spoken
-answers need Vosk and its model (see listen.py); without them only the buttons work. The video
-call uses CALL_BASE_URL (a Jitsi server, default in care.py).
+answers need Vosk and its model (see listen.py). The video call uses CALL_BASE_URL (a Jitsi
+server, default in care.py). The child profile is found next to this file, or where
+KID_CARE_PROFILE points (the launch file sets it, so an installed package works too).
 """
 
 import argparse
 import contextlib
 import json
 import logging
-import mimetypes
 import os
 import shutil
+import signal
 import subprocess
 import threading
 import time
@@ -44,13 +47,12 @@ import speech
 
 DEFAULT_PORT = 8000
 HERE = Path(__file__).resolve().parent
-UI_DIR = HERE / "ui"
-PROFILE_PATH = HERE.parent / "config" / "child.json"
+PROFILE_PATH = Path(os.environ.get("KID_CARE_PROFILE") or HERE.parent / "config" / "child.json")
 BUZZER_TIMEOUT_S = 5
 CALL_PROFILE_DIR = Path.home() / "leuk" / "call-firefox"
 CALL_LOG_PATH = Path.home() / "leuk" / "call-firefox.log"
-CALL_PROFILE_LOCKS = ("lock", ".parentlock")  # left behind when Firefox is killed
-CALL_CLOSE_TIMEOUT_S = 3
+FIREFOX_PROFILE_LOCKS = ("lock", ".parentlock")  # left behind when Firefox is killed
+FIREFOX_CLOSE_TIMEOUT_S = 3
 CALL_MARIONETTE_PORT = 2829  # localhost only: lets this program press Join in the call window
 CALL_JOIN_TIMEOUT_S = 300  # the call page can take minutes to load on the robot's connection
 CALL_WATCH_POLL_S = 1
@@ -63,8 +65,15 @@ const join = document.querySelector('[data-testid="prejoin.joinMeeting"]');
 if (join && !join.disabled && join.getAttribute("aria-disabled") !== "true") join.click();
 return -1;
 """
+# Full screen windows nobody can click away: no first-run pages, no "restore session".
+KIOSK_FIREFOX_PREFS = (
+    'user_pref("browser.shell.checkDefaultBrowser", false);\n'
+    'user_pref("browser.sessionstore.resume_from_crash", false);\n'
+    'user_pref("browser.aboutwelcome.enabled", false);\n'
+    'user_pref("datareporting.policy.firstRunURL", "");\n'
+)
 # The call window must use the camera and microphone with nobody there to tap "Allow".
-CALL_FIREFOX_PREFS = (
+CALL_FIREFOX_PREFS = KIOSK_FIREFOX_PREFS + (
     'user_pref("media.navigator.permission.disabled", true);\n'
     'user_pref("permissions.default.camera", 1);\n'
     'user_pref("permissions.default.microphone", 1);\n'
@@ -72,8 +81,6 @@ CALL_FIREFOX_PREFS = (
     f'user_pref("marionette.port", {CALL_MARIONETTE_PORT});\n'
     # Firefox's default camera on the robot is the floor-level base camera: use the head one
     'user_pref("media.video_loopback_dev", "A68-1600W: A68-1600W");\n'
-    'user_pref("browser.shell.checkDefaultBrowser", false);\n'
-    'user_pref("browser.sessionstore.resume_from_crash", false);\n'
 )
 IDLE_STATUS = {"state": "idle", "answer": None, "updated_at": 0.0, "care": None}
 
@@ -92,9 +99,51 @@ def buzz() -> None:
         log.warning("buzzer call timed out")
 
 
+def open_kiosk(profile_dir: Path, prefs: str, url: str, log_path: Path, extra_args=()):
+    """`url` full screen on the robot display, in a Firefox of its own; None without Firefox."""
+    if shutil.which("firefox") is None:
+        log.warning("firefox not installed: open it yourself: %s", url)
+        return None
+    free_profile(profile_dir)
+    profile_dir.mkdir(parents=True, exist_ok=True)
+    (profile_dir / "user.js").write_text(prefs)
+    env = dict(os.environ, DISPLAY=os.environ.get("DISPLAY", ":0"))
+    command = ["firefox", "--new-instance", *extra_args, "--profile", str(profile_dir)]
+    command += ["--kiosk", url]
+    # Firefox errors go to a file: when the window does not appear, the reason is there.
+    with open(str(log_path), "ab") as output:
+        return subprocess.Popen(command, env=env, stdout=output, stderr=output)
+
+
+def close_window(process) -> None:
+    if process and process.poll() is None:
+        process.terminate()
+        try:
+            process.wait(FIREFOX_CLOSE_TIMEOUT_S)
+        except subprocess.TimeoutExpired:
+            process.kill()
+            process.wait()
+
+
+def free_profile(profile_dir: Path) -> None:
+    """A Firefox left by an earlier run (server killed or restarted) still holds the profile, and
+    the call one also the camera and the microphone, so the new window would hang: end it."""
+    if shutil.which("pkill") is not None:
+        leftover = subprocess.run(
+            ["pkill", "-f", str(profile_dir)], check=False, stdout=subprocess.DEVNULL
+        )
+        if leftover.returncode == 0:
+            log.warning("closed a window left open by an earlier run (%s)", profile_dir.name)
+            time.sleep(FIREFOX_CLOSE_TIMEOUT_S)
+    for lock in FIREFOX_PROFILE_LOCKS:
+        with contextlib.suppress(OSError):  # no stale lock: nothing to remove
+            (profile_dir / lock).unlink()
+
+
 class CallWindow:
-    """The video call, full screen on the robot display, in a Firefox of its own (Jitsi servers
-    do not allow being embedded in our page). Opens on top of the screen page, closes after."""
+    """The video call, full screen on the robot display, in a Firefox of its own. It is the
+    only thing the robot puts on its screen: it opens when the episode starts and closes with
+    it, so the camera is free for the next one."""
 
     def __init__(self):
         self._process = None
@@ -112,18 +161,11 @@ class CallWindow:
                 self._open(url)
 
     def _open(self, url: str) -> None:
-        if shutil.which("firefox") is None:
-            log.warning("firefox not installed: open the call yourself: %s", url)
+        self._process = open_kiosk(
+            CALL_PROFILE_DIR, CALL_FIREFOX_PREFS, url, CALL_LOG_PATH, ("--marionette",)
+        )
+        if not self._process:
             return
-        self._free_profile()
-        CALL_PROFILE_DIR.mkdir(parents=True, exist_ok=True)
-        (CALL_PROFILE_DIR / "user.js").write_text(CALL_FIREFOX_PREFS)
-        env = dict(os.environ, DISPLAY=os.environ.get("DISPLAY", ":0"))
-        command = ["firefox", "--new-instance", "--marionette", "--profile", str(CALL_PROFILE_DIR)]
-        command += ["--kiosk", url]
-        # Firefox errors go to a file: when the window does not appear, the reason is there.
-        with open(str(CALL_LOG_PATH), "ab") as output:
-            self._process = subprocess.Popen(command, env=env, stdout=output, stderr=output)
         log.info("video call window opened: %s (firefox log: %s)", url, CALL_LOG_PATH)
         threading.Thread(target=self._watch, args=(self._process,), daemon=True).start()
 
@@ -155,29 +197,10 @@ class CallWindow:
 
     def _close(self) -> None:
         if self._process and self._process.poll() is None:
-            self._process.terminate()
-            try:
-                self._process.wait(CALL_CLOSE_TIMEOUT_S)
-            except subprocess.TimeoutExpired:
-                self._process.kill()
-                self._process.wait()
+            close_window(self._process)
             log.info("video call window closed")
         self._process = None
         self._members = None
-
-    def _free_profile(self) -> None:
-        """A call Firefox left by an earlier run (server killed or restarted during a call) still
-        holds the camera, the microphone and the profile, and the new call would hang: end it."""
-        if shutil.which("pkill") is not None:
-            leftover = subprocess.run(
-                ["pkill", "-f", str(CALL_PROFILE_DIR)], check=False, stdout=subprocess.DEVNULL
-            )
-            if leftover.returncode == 0:
-                log.warning("closed a call window left open by an earlier run")
-                time.sleep(CALL_CLOSE_TIMEOUT_S)
-        for lock in CALL_PROFILE_LOCKS:
-            with contextlib.suppress(OSError):  # no stale lock: nothing to remove
-                (CALL_PROFILE_DIR / lock).unlink()
 
 
 class CareServer(ThreadingHTTPServer):
@@ -223,8 +246,6 @@ class Handler(BaseHTTPRequestHandler):
     def do_GET(self):
         if self.path == "/status":
             self._send_status()
-        elif self.path.split("?")[0].startswith("/ui/"):
-            self._send_ui_file(self.path.split("?")[0][len("/ui/") :] or "index.html")
         else:
             self._send_json(404, {"error": "not found"})
 
@@ -283,15 +304,6 @@ class Handler(BaseHTTPRequestHandler):
         }
         self._send_json(200, status)
 
-    def _send_ui_file(self, relative: str) -> None:
-        target = (UI_DIR / relative).resolve()
-        if UI_DIR not in target.parents or not target.is_file():
-            self._send_json(404, {"error": "not found"})
-            return
-        content = target.read_bytes()
-        content_type = mimetypes.guess_type(target.name)[0] or "application/octet-stream"
-        self._send(200, content, content_type)
-
     def _read_json(self):
         length = int(self.headers.get("Content-Length") or 0)
         if length == 0:
@@ -316,7 +328,7 @@ class Handler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(content)
 
-    def log_message(self, format, *args):  # the page polls /status every second: keep quiet
+    def log_message(self, format, *args):  # /status can be polled once a second: keep quiet
         pass
 
 
@@ -324,6 +336,7 @@ def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("--port", type=int, default=DEFAULT_PORT)
     args = parser.parse_args()
+    signal.signal(signal.SIGTERM, signal.default_int_handler)  # roslaunch stop = Ctrl+C: clean up
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(name)s: %(message)s")
     profile = json.loads(PROFILE_PATH.read_text(encoding="utf-8"))
     ears = listen if listen.available() else None
@@ -332,7 +345,7 @@ def main() -> None:
     parents = ntfy_channel.from_environment(first_parent) or caregiver.from_environment()
     log.info("parents are told through %s", type(parents).__name__ if parents else "nothing")
     server = CareServer(("0.0.0.0", args.port), profile, parents, ears, call_base)
-    log.info("care server on port %d, screen page at /ui/", args.port)
+    log.info("care server on port %d", args.port)
     try:
         server.serve_forever()
     except KeyboardInterrupt:
