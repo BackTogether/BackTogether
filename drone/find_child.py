@@ -59,7 +59,7 @@ from drone.identify.feed import (
     vision_body,
 )
 from drone.identify.people import PEOPLE_DIR, People, is_photo
-from drone.report_child import ROBOT_URL, deliver, finish, follow, mission_id
+from drone.report_child import ROBOT_URL, child_report, deliver, finish, follow, mission_id
 from drone.sdk.client import DroneApiError, DroneClient, tilt_on_ground
 from drone.sdk.mission import END_STATES, IDLE, REPORTING, RETURNING
 
@@ -405,9 +405,22 @@ def main() -> None:
         print(f"mission ended without the child: {state}: {message}")
     if child:
         print(f"child at {child.get('drone')} m from the takeoff point (drone frame)")
+        print_for_robot(mission, name, args.heading_offset)
     if args.robot and child:
         follow_robot(mission, args, started_at)
     recording.stop()
+
+
+def print_for_robot(mission: dict[str, Any], name: str, heading_offset_deg: float) -> None:
+    """The child in the robot's frame (what --robot sends), as the command that sends it by
+    hand: x metres ahead of where the robot stood at takeoff, y to its left."""
+    try:
+        report = child_report(mission, heading_offset_deg)
+    except ValueError as error:
+        print(f"no robot-frame position for {name}: {error}")
+        return
+    x, y = report["x"], report["y"]
+    print(f"{name} for the robot: {x:+.2f} m ahead, {y:+.2f} m left -> drone/robot {x:.2f} {y:.2f}")
 
 
 def watch(client: DroneClient, name: str, people: People, args: argparse.Namespace) -> None:
