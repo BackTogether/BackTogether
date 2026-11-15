@@ -1,0 +1,161 @@
+"""Bring the drone back to the robot and land on its pad, when it is time.
+
+    drone/fly 100 sd --fence 15 --max-alt 4      # terminal 1: drone + page
+    drone/find jorge --sweep                     # terminal 2: find the child, hover over them
+    drone/dock --care http://<robot>:8000        # terminal 3: waits, then lands on the robot
+    drone/dock --now                             # land on the robot right away
+
+It waits for the first of:
+- the parent hung up: the robot's care server (bobac/robot/care_server.py, GET /status) went
+  from "video_call" to anything else (--care; the parent is with the child now);
+- low battery: at or below --battery % (above the server's own return-home rule, which would
+  land at the takeoff point, blind);
+- the mission flying home by itself (patrol over without the child, or the child reported and
+  drone/find's STOP missed): it would land at the takeoff point, blind, where the robot may no
+  longer be. A return home of the server's safety rules is left alone.
+Then STOP (the drone hovers, the mission ends) and drone/land_on_pad.py takes over with where the
+robot should be, best first: --robot; the robot's live pose (ROS, GET /map/state, with the
+mission's map <-> takeoff transform); where it drove to (the child reported: the mission's
+goal, standoff_m short of the child on the line from the takeoff point); the takeoff point. It
+flies near it, finds the robot and then its pad, and lands on it.
+"""
+
+import argparse
+import json
+import logging
+import math
+import time
+import urllib.error
+import urllib.request
+from typing import Any
+
+from drone.identify.pad import PadDetector
+from drone.land_on_pad import (
+    DEFAULT_URL,
+    PAD_HEIGHT_M,
+    LandSettings,
+    land_on_pad,
+    load_robot_detector,
+    stop,
+)
+from drone.sdk.client import DroneApiError, DroneClient, standoff_goal
+
+POLL_S = 1.0
+HTTP_TIMEOUT_S = 2.0
+BATTERY_PCT = 35  # the server's own rule returns home at 25 % (SafetyLimits.low_battery_pct)
+CALL_STATE = "video_call"  # bobac/robot/care.py
+RETURNING = "returning"  # drone/sdk/mission.py
+OWN_RETURNS = ("child not found", "child reported")  # the mission's go-home reasons we take over
+DEFAULT_STANDOFF_M = 0.8  # MissionConfig.standoff_m
+
+log = logging.getLogger("dock")
+
+
+def wait_for_trigger(client: DroneClient, care_url: str | None, battery_pct: float) -> str:
+    """Block until it is time to go back to the robot; why. RuntimeError if the drone landed."""
+    in_call = False
+    while True:
+        status = client.status()
+        telemetry = status["telemetry"]
+        if not telemetry["in_flight"]:
+            raise RuntimeError("the drone is not flying")
+        battery = telemetry.get("battery_pct")
+        if battery is not None and battery <= battery_pct:
+            return f"battery at {battery} %"
+        mission = client.mission()
+        step = mission.get("step") or ""
+        if mission.get("state") == RETURNING and step.startswith(OWN_RETURNS):
+            return f"the mission is flying home ({step}): landing on the robot instead"
+        if care_url is not None:
+            state = care_state(care_url)
+            if state == CALL_STATE and not in_call:
+                log.info("the parent is on the video call: waiting for them to hang up")
+            if in_call and state is not None and state != CALL_STATE:
+                return "the parent hung up"
+            in_call = in_call or state == CALL_STATE
+        time.sleep(POLL_S)
+
+
+def care_state(care_url: str) -> str | None:
+    """The robot's care state (GET /status "state"), None when the robot cannot be reached."""
+    try:
+        with urllib.request.urlopen(f"{care_url}/status", timeout=HTTP_TIMEOUT_S) as reply:
+            return json.load(reply).get("state")
+    except (OSError, ValueError) as error:
+        log.debug("care server: %s", error)
+        return None
+
+
+def robot_position(client: DroneClient) -> tuple[tuple[float, float], str]:
+    """Where the robot should be in the takeoff frame, and how that was found."""
+    mission = client.mission()
+    live = _live_robot(client, mission)
+    if live is not None:
+        return live, "the robot's live pose"
+    child = (mission.get("child") or {}).get("drone")
+    if child is not None:
+        config = mission.get("config") or {}
+        standoff = config.get("standoff_m", DEFAULT_STANDOFF_M)
+        x, y, _yaw = standoff_goal(0.0, 0.0, child["x"], child["y"], standoff)
+        return (x, y), f"where it drove to: {standoff:.1f} m short of the child"
+    return (0.0, 0.0), "the takeoff point"
+
+
+def _live_robot(client: DroneClient, mission: dict[str, Any]) -> tuple[float, float] | None:
+    """The robot's map pose (ROS, not stale) in the takeoff frame, via the mission's transform:
+    the takeoff frame in `map` as the ROS frame drone_takeoff = (x, -y) of the takeoff frame."""
+    transform = mission.get("map_from_drone")
+    try:
+        robot = client.map_state().get("robot")
+    except DroneApiError:
+        return None
+    if transform is None or robot is None or robot.get("stale"):
+        return None
+    dx, dy = robot["x"] - transform["x"], robot["y"] - transform["y"]
+    cos, sin = math.cos(transform["yaw"]), math.sin(transform["yaw"])
+    ahead, left = cos * dx + sin * dy, -sin * dx + cos * dy
+    return ahead, -left
+
+
+def main() -> None:
+    parser = argparse.ArgumentParser(description="land on the robot when it is time")
+    parser.add_argument("--url", default=DEFAULT_URL, help="drone/fly (or the simulator)")
+    parser.add_argument("--care", help="the robot's care server, e.g. http://<robot>:8000")
+    parser.add_argument("--battery", type=float, default=BATTERY_PCT, help="go back at this %%")
+    parser.add_argument("--now", action="store_true", help="go back right away")
+    parser.add_argument(
+        "--robot", type=float, nargs=2, metavar=("X", "Y"), help="the robot, takeoff frame m"
+    )
+    parser.add_argument("--pad-height", type=float, default=PAD_HEIGHT_M, help="m above floor")
+    parser.add_argument("--takeoff-height", type=float, default=0.0, help="m above the floor")
+    args = parser.parse_args()
+    logging.basicConfig(level=logging.INFO, format="%(asctime)s %(message)s", datefmt="%H:%M:%S")
+    client = DroneClient(args.url)
+    try:
+        detect = PadDetector().detect
+    except FileNotFoundError as error:
+        raise SystemExit(str(error)) from error
+    detect_robot = load_robot_detector()
+    try:
+        reason = "now" if args.now else wait_for_trigger(client, args.care, args.battery)
+    except (RuntimeError, DroneApiError) as error:
+        raise SystemExit(f"not docking: {error}") from error
+    except KeyboardInterrupt:
+        print("stopped waiting: the drone was not touched")
+        return
+    log.info("going back to the robot: %s", reason)
+    stop(client)  # the drone hovers; the mission (or its flight home) ends here
+    robot, source = (tuple(args.robot), "--robot") if args.robot else robot_position(client)
+    log.info("the robot should be at (%.1f, %.1f): %s", robot[0], robot[1], source)
+    settings = LandSettings(
+        pad_height_m=args.pad_height, takeoff_height_m=args.takeoff_height, robot_xy=robot
+    )
+    try:
+        print(land_on_pad(client, detect, settings, detect_robot))
+    except KeyboardInterrupt:
+        stop(client)
+        print("stopped: the drone hovers where it is")
+
+
+if __name__ == "__main__":
+    main()
