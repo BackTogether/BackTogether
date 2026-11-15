@@ -9,10 +9,12 @@ Run by the server (`POST /mission/start`, API.md), or in Python with a Navigator
     mission.run()          # blocking; detections come in with report_target() from any thread
 
 States (`status()["state"]`), in order: idle, launching (waits for the button takeoff),
-climbing, aligning (the calibration leg), patrolling, approaching (back to patrolling when the
-child is lost), reporting, orbiting, returning; then one end state: landed, stopped (STOP: the
-drone hovers where it was, `stopped_in` says in which state), aborted (abort(): back to the
-takeoff point and landed), failed (`message` says why; landed at the takeoff point if it flew).
+climbing, aligning (the calibration leg), patrolling, looking (a glimpse of the child's face,
+report_glimpse(): turning on the spot toward it, then patrolling again), approaching (back to
+patrolling when the child is lost), reporting, orbiting, returning; then one end state:
+landed, stopped (STOP: the drone hovers where it was, `stopped_in` says in which state), aborted
+(abort(): back to the takeoff point and landed), failed (`message` says why; landed at the
+takeoff point if it flew).
 
 Frames:
 - drone: the odometry frame of this flight. Origin = takeoff point, x/y horizontal, y 90 deg
@@ -54,6 +56,7 @@ from collections.abc import Callable
 from dataclasses import asdict, dataclass, field, replace
 from typing import Any
 
+from . import camera
 from .approach_track import (
     ChildFix,
     OverheadSample,
@@ -76,6 +79,7 @@ from .mission_geometry import (
 from .navigate import (
     ALT_GAIN,
     APPROACH_FRACTION,
+    COMMAND_HOLD_S,
     CRUISE_MAX,
     FLYING_PREFIX,
     HOME,
@@ -98,6 +102,7 @@ LAUNCHING = "launching"
 CLIMBING = "climbing"
 ALIGNING = "aligning"
 PATROLLING = "patrolling"
+LOOKING = "looking"
 APPROACHING = "approaching"
 REPORTING = "reporting"
 ORBITING = "orbiting"
@@ -107,7 +112,7 @@ STOPPED = "stopped"
 ABORTED = "aborted"
 FAILED = "failed"
 END_STATES = (IDLE, LANDED, STOPPED, ABORTED, FAILED)
-SEARCH_STATES = (LAUNCHING, CLIMBING, ALIGNING, PATROLLING, APPROACHING)  # detections count
+SEARCH_STATES = (LAUNCHING, CLIMBING, ALIGNING, PATROLLING, LOOKING, APPROACHING)  # detections
 # Frames and patrol strategies
 FRAME_DRONE = "drone"
 FRAME_LAUNCH = "launch"
@@ -124,11 +129,18 @@ ANCHOR_CENTRE = "centre"  # the bbox centre, target_height_m above the floor (he
 ANCHOR_FEET = "feet"  # a standing body: its floor contact point, on the floor
 ANCHORS = (ANCHOR_CENTRE, ANCHOR_FEET)
 # Why the mission interrupted its own step (Drone.stop), by priority
+REASON_GLIMPSE = "glimpse"
 REASON_TARGET = "target"
 REASON_TIMEOUT = "timeout"
 REASON_ABORT = "abort"
 REASON_STOP = "stop"
-REASON_PRIORITY = {REASON_TARGET: 1, REASON_TIMEOUT: 1, REASON_ABORT: 2, REASON_STOP: 3}
+REASON_PRIORITY = {
+    REASON_GLIMPSE: 0,
+    REASON_TARGET: 1,
+    REASON_TIMEOUT: 1,
+    REASON_ABORT: 2,
+    REASON_STOP: 3,
+}
 # Timing
 WAIT_POLL_S = 0.05
 ODOMETRY_WAIT_S = 3.0
@@ -137,7 +149,11 @@ HISTORY_S = 10.0  # pose/tilt history for detections
 HISTORY_SAMPLES = 120  # telemetry is 10 Hz
 MAX_DETECTION_AGE_S = 3.0  # an older frame does not start an approach
 RETRY_COOLDOWN_S = 5.0  # after a failed approach, before a detection starts another one
-REPORT_HOLD_S = 3.0  # hover over the child while the robot picks up the position
+REPORT_HOLD_S = 1.0  # hover over the child (the robot's topics are latched)
+# Look-around after a glimpse of the child's face (not yet enough to lock on them)
+LOOK_TURN = 0.4  # yaw input of the look-around once facing the glimpse (~10 deg/s at cap 100)
+LOOK_AIM_DEG = 5.0  # this close to the glimpse's bearing: it has been reached
+LOOK_COOLDOWN_S = 8.0  # after a look-around without the child, glimpses wait this long
 HISTORY_STATES = 40
 # Aligning leg
 ALIGN_FRACTION = 0.35  # forward stick, fraction of the speed cap
@@ -157,7 +173,9 @@ ORBIT_MPS_PER_STICK_PCT = 0.02  # feed-forward only: the position loop corrects 
 ORBIT_MAX_SPEED_MPS = 0.35
 ORBIT_YAW_FRACTION = 0.8  # of the fastest turn at the current speed cap
 ORBIT_POSITION_GAIN = 0.8  # m/s per metre off the circle
-DEFAULT_ORBIT_TILT_DEG = -30.0
+ORBIT_TILT_BAND_DEG = 10.0  # camera this far off its target tilt: full gimbal input
+ORBIT_FOLLOW = 0.2  # each fresh detection moves the orbit's centre this much of the way to it
+ORBIT_FOLLOW_MAX_M = 1.0  # a detection farther than this from the centre is someone else
 
 PatrolStrategy = Callable[[Navigator], object]
 """A patrol: flies until it ends (returns) or Drone.stop() interrupts it (raises Interrupted).
@@ -195,6 +213,7 @@ class MissionConfig:
     patrol_timeout_s: float = 600.0
     approach_timeout_s: float = 90.0
     lost_timeout_s: float = 10.0
+    look_max_deg: float = 180.0  # turning on the spot after a glimpse, at most; 0 = no look
 
     def as_dict(self) -> dict[str, Any]:
         data = asdict(replace(self, patrol=None))  # asdict deep-copies: a patrol may hold threads
@@ -278,6 +297,8 @@ class Mission:
         self._states: list[dict[str, Any]] = []
         self._reason: str | None = None
         self._latest: Detection | None = None
+        self._glimpse: Detection | None = None  # the last glimpse of the child's face
+        self._look_until = 0.0  # glimpses are ignored until then (after a look-around)
         self._used_frame_time = 0.0
         self._detections = 0
         self._attempts = 0
@@ -308,16 +329,35 @@ class Mission:
         """A detection; (accepted, why). During the patrol a fresh one starts the approach."""
         with self._lock:
             config, state = self._config, self._state
-            if config is None or state not in SEARCH_STATES:
+            if config is None or state not in (*SEARCH_STATES, ORBITING):
                 return False, f"not searching (mission {state})"
             if detection.confidence < config.min_confidence:
                 return False, f"confidence under {config.min_confidence}"
             self._latest = detection
             self._detections += 1
             fresh = detection.frame_time >= time.time() - MAX_DETECTION_AGE_S
-            trigger = state == PATROLLING and fresh and time.time() >= self._ignore_until
+            searching = state in (PATROLLING, LOOKING)
+            trigger = searching and fresh and time.time() >= self._ignore_until
         if trigger:
             self._interrupt(REASON_TARGET)
+        return True, state
+
+    def report_glimpse(self, glimpse: Detection) -> tuple[bool, str]:
+        """The child's face seen, not (yet) enough to lock on them; (accepted, why). During the
+        patrol a fresh one starts the look-around: turning on the spot toward it."""
+        with self._lock:
+            config, state = self._config, self._state
+            if config is None or config.look_max_deg <= 0:
+                return False, "no look-around in this mission"
+            if state not in (PATROLLING, LOOKING):
+                return False, f"not patrolling (mission {state})"
+            if glimpse.frame_time < time.time() - MAX_DETECTION_AGE_S:
+                return False, "too old"
+            if time.time() < max(self._look_until, self._ignore_until):
+                return False, "just looked around"
+            self._glimpse = glimpse
+        if state == PATROLLING:
+            self._interrupt(REASON_GLIMPSE)
         return True, state
 
     def set_launch_pose(self, pose: LaunchPose) -> None:
@@ -486,8 +526,8 @@ class Mission:
             self._alignment = alignment
 
     def _search(self, config: MissionConfig) -> str | None:
-        """Patrol until a detection (None) or the end of the patrol (why it ended)."""
-        self._set(PATROLLING, "starting")
+        """Patrol until a detection (None) or the end of the patrol (why it ended). A glimpse
+        of the child pauses it for a look-around (_look), then it goes on."""
         if self._patrol_deadline is None:
             self._patrol_deadline = time.monotonic() + config.patrol_timeout_s
         remaining = self._patrol_deadline - time.monotonic()
@@ -497,13 +537,19 @@ class Mission:
         timer.daemon = True
         timer.start()
         try:
-            if self._fresh_trigger():
-                return None
-            self._set_tilt(config.patrol_tilt_deg)
-            strategy = self._strategy(config, remaining)
-            self._step_note("flying")
-            outcome = strategy(self.navigator)
-            return f"patrol ended: {outcome}"
+            while True:
+                self._set(PATROLLING, "starting")
+                if self._fresh_trigger():
+                    return None
+                try:
+                    self._set_tilt(config.patrol_tilt_deg)
+                    strategy = self._strategy(config, self._patrol_deadline - time.monotonic())
+                    self._step_note("flying")
+                    outcome = strategy(self.navigator)
+                    return f"patrol ended: {outcome}"
+                except Interrupted:
+                    self._raise_unless_glimpse()
+                self._look(config)  # a detection while looking: Interrupted, below
         except Interrupted:
             reason = self._pending_reason()
             if reason == REASON_TARGET:
@@ -516,6 +562,66 @@ class Mission:
         finally:
             timer.cancel()
             self.patrol = None
+
+    def _look(self, config: MissionConfig) -> None:
+        """Turn on the spot toward the last glimpse of the child in one smooth turn: straight
+        to its bearing (faster the farther it is), then on that way at LOOK_TURN, re-aimed by
+        each new glimpse, until a detection interrupts it (REASON_TARGET) or look_max_deg is
+        turned; then back to the patrol."""
+        self._set(LOOKING, "toward the glimpse")
+        self.navigator.require_ready()
+        epoch = self.drone.epoch
+        turned, side, used, aim = 0.0, 1.0, 0.0, None
+        last = self.drone.pose().heading_deg
+        try:
+            while turned < config.look_max_deg:
+                try:
+                    self.navigator.guard(epoch)
+                    with self._lock:
+                        glimpse = self._glimpse
+                    if glimpse is not None and glimpse.frame_time > used:
+                        used, aim = glimpse.frame_time, self._glimpse_heading(glimpse)
+                    heading = self.drone.pose().heading_deg
+                    turned += abs(wrap_deg(heading - last))
+                    last = heading
+                    turn = side * LOOK_TURN
+                    if aim is not None:
+                        error = wrap_deg(aim - heading)
+                        side = math.copysign(1.0, error) if error else side
+                        if abs(error) <= LOOK_AIM_DEG:
+                            aim = None  # facing the glimpse: on that way, slower
+                        else:
+                            turn = math.copysign(
+                                min(1.0, max(LOOK_TURN, abs(error) * YAW_GAIN)), error
+                            )
+                    where = "toward the glimpse" if aim is not None else "on"
+                    self._step_note(
+                        f"turning {where} ({turned:.0f} of {config.look_max_deg:.0f} deg)"
+                    )
+                    self.navigator.send(epoch, turn=turn)
+                    self.drone.sleep(TICK_S, epoch)
+                except Interrupted:
+                    self._raise_unless_glimpse()  # a glimpse just as the look began: go on
+                    epoch = self.drone.epoch
+        finally:
+            self.drone.neutral()
+        self._note(f"looked around {turned:.0f} deg: no child; patrolling again")
+        with self._lock:
+            self._look_until = time.time() + LOOK_COOLDOWN_S
+
+    def _raise_unless_glimpse(self) -> None:
+        """In an `except Interrupted`: a glimpse is consumed here, anything else re-raised."""
+        if self._pending_reason() != REASON_GLIMPSE:
+            raise
+        self._take_reason()
+
+    def _glimpse_heading(self, glimpse: Detection) -> float:
+        """Heading (drone frame, degrees) toward the glimpse: the drone's heading at its frame
+        plus the bearing of the face in the image."""
+        sample = self.history.at(glimpse.frame_time)
+        heading = sample[0].heading_deg if sample else self.drone.pose().heading_deg
+        offset_px = (glimpse.centre[0] - 0.5) * camera.CAMERA_WIDTH_PX
+        return heading + math.degrees(math.atan2(offset_px, camera.CAMERA_FOCAL_PX))
 
     def _strategy(self, config: MissionConfig, remaining_s: float) -> PatrolStrategy:
         if config.patrol is not None:
@@ -642,33 +748,28 @@ class Mission:
             return
         alt = self.drone.pose().alt if config.orbit_alt_m is None else config.orbit_alt_m
         self._set(ORBITING, f"at {alt:.1f} m")
-        if config.orbit_alt_m is not None:
-            self.navigator.climb_to(alt)
         pose = self.drone.pose()
         away = math.atan2(pose.y - child[1], pose.x - child[0])
         if math.hypot(pose.x - child[0], pose.y - child[1]) < MIN_RANGE_M:
             away = math.radians(pose.heading_deg) + math.pi  # straight over it: back off
         radius = config.orbit_radius_m
-        start = (child[0] + radius * math.cos(away), child[1] + radius * math.sin(away))
         try:
             self.navigator.limits.check_target(*self._circle_extent(child, radius), alt)
         except ValueError as error:
             self._note(f"no orbit: {error}")
             return
-        self._step_note("to the circle")
-        self.navigator.goto(*start, alt)
-        self.navigator.turn_to(_bearing_deg(start, child))
-        height = max(alt + config.launch_height_m - config.target_height_m, 0.0)
-        tilt = -math.degrees(math.atan2(height, radius)) if height else DEFAULT_ORBIT_TILT_DEG
-        self._set_tilt(tilt)
-        self._circle(config, child, away, alt)
+        self._circle(config, child, away, alt)  # spirals out to the circle from where it is
 
     def _circle(
         self, config: MissionConfig, child: tuple[float, float], start_angle: float, alt: float
     ) -> None:
         """Fly the circle clockwise (seen from above), facing the centre: feed-forward
         sideways speed and yaw rate (the calibrated yaw_rate_dps), plus position and heading
-        correction on the estimate."""
+        correction on the estimate. It starts at once from wherever the drone is (straight over
+        the child after the fix): the position correction carries it out to the circle while
+        it descends to `alt`, and the camera tilts all the way round to keep the child in the
+        middle row. The centre follows the child's fresh detections, so the circle moves with
+        them when they step aside."""
         radius = config.orbit_radius_m
         cap = min(self.drone.speed_cap, self.navigator.limits.max_speed)
         yaw_rate = getattr(self.drone.estimator, "yaw_rate_dps", DEFAULT_YAW_RATE_DPS)
@@ -680,10 +781,11 @@ class Mission:
         mps_per_fraction = ORBIT_MPS_PER_STICK_PCT * cap
         self.navigator.require_ready()
         epoch = self.drone.epoch
-        began = time.monotonic()
+        began, after = time.monotonic(), time.time()
         try:
             while (elapsed := time.monotonic() - began) < duration:
                 self.navigator.guard(epoch)
+                child = self._follow_child(config, child, after)
                 angle = start_angle + math.radians(rate_dps) * elapsed
                 pose = self.drone.pose()
                 speed = radius * math.radians(rate_dps)
@@ -695,12 +797,15 @@ class Mission:
                 )
                 fwd, right = frame_to_body(vx, vy, pose.heading_deg)
                 facing = wrap_deg(_bearing_deg((pose.x, pose.y), child) - pose.heading_deg)
-                self.navigator.send(
+                scale = min(1.0, self.navigator.limits.max_speed / max(self.drone.speed_cap, 1.0))
+                self.drone.command(  # the gimbal is not scaled (a scaled one is in its dead zone)
+                    _clip(fwd / mps_per_fraction, CRUISE_MAX) * scale,
+                    _clip(right / mps_per_fraction, CRUISE_MAX) * scale,
+                    _clip(ALT_GAIN * (alt - pose.alt), MAX_VERTICAL) * scale,
+                    _clip(rate_dps / fastest_dps + YAW_GAIN * facing, 1.0) * scale,
+                    COMMAND_HOLD_S,
                     epoch,
-                    fwd=_clip(fwd / mps_per_fraction, CRUISE_MAX),
-                    right=_clip(right / mps_per_fraction, CRUISE_MAX),
-                    up=_clip(ALT_GAIN * (alt - pose.alt), MAX_VERTICAL),
-                    turn=_clip(rate_dps / fastest_dps + YAW_GAIN * facing, 1.0),
+                    self._orbit_gimbal(config, pose, child),
                 )
                 self._step_note(
                     f"turn {elapsed / duration * config.orbit_turns:.1f} of {config.orbit_turns:g}"
@@ -708,6 +813,30 @@ class Mission:
                 self.drone.sleep(TICK_S, epoch)
         finally:
             self.drone.neutral()
+
+    def _orbit_gimbal(self, config: MissionConfig, pose: Pose, child: tuple[float, float]) -> float:
+        """Gimbal input that turns the camera toward the child from where the drone is."""
+        now = self.drone.camera_tilt().deg
+        if now is None:
+            return 0.0
+        height = max(pose.alt + config.launch_height_m - config.target_height_m, MIN_RANGE_M)
+        distance = math.hypot(child[0] - pose.x, child[1] - pose.y)
+        wanted = -math.degrees(math.atan2(height, distance))
+        return _clip((wanted - now) / ORBIT_TILT_BAND_DEG, 1.0)
+
+    def _follow_child(
+        self, config: MissionConfig, child: tuple[float, float], after: float
+    ) -> tuple[float, float]:
+        """The orbit's centre, moved ORBIT_FOLLOW of the way toward a fresh detection (from a
+        frame after `after`) of the child; one farther than ORBIT_FOLLOW_MAX_M is ignored."""
+        detection = self._fresh_detection(after)
+        located = self._locate(config, detection) if detection else None
+        if located is None:
+            return child
+        (x, y), _ = located
+        if math.hypot(x - child[0], y - child[1]) > ORBIT_FOLLOW_MAX_M:
+            return child
+        return child[0] + ORBIT_FOLLOW * (x - child[0]), child[1] + ORBIT_FOLLOW * (y - child[1])
 
     def _go_home(self, why: str) -> str:
         """Back to the takeoff point and land; returns how it ended."""

@@ -54,7 +54,7 @@ from .safety import Interrupted, NotReady, SafetyLanding, SafetyLimits
 from .sim import FAULTS, SimDetector, SimLink
 from .splat import Registration
 from .telemetry import Pose, Tilt
-from .tilt import GIMBAL_BOTTOM_DEG, GIMBAL_DEADZONE_PCT, GIMBAL_TOP_DEG, gimbal_rate
+from .tilt import GIMBAL_BOTTOM_DEG, GIMBAL_TOP_DEG
 from .vision import VisionLog, parse_result
 
 MAX_JSON_BYTES = 64 * 1024  # a long patrol fits
@@ -502,6 +502,7 @@ class ApiHandler(WebHandler):
             "/drone/record": self._drone_record,
             "/mission/start": self._mission_start,
             "/mission/target": self._mission_target,
+            "/mission/glimpse": self._mission_glimpse,
             "/mission/launch_pose": self._mission_launch_pose,
             "/mission/abort": self._mission_abort,
             "/vision": self._vision_post,
@@ -612,11 +613,6 @@ class ApiHandler(WebHandler):
         drone = self.server.drone
         if drone.sticks.gate_state != GATE_LIVE:
             return HTTPStatus.CONFLICT, {"error": "sticks locked: press Manual control first"}
-        if gimbal_rate(drone.speed_cap) <= 0:
-            return HTTPStatus.CONFLICT, {
-                "error": f"speed {drone.speed_cap:.0f} is inside the gimbal dead zone "
-                f"({GIMBAL_DEADZONE_PCT} %): raise the speed"
-            }
         action = functools.partial(drone.set_tilt, deg)
         return self._start("tilt", action, detail={"target_deg": deg})
 
@@ -663,12 +659,7 @@ class ApiHandler(WebHandler):
         return self._start(MISSION_TASK, mission.run, detail={"config": config.as_dict()})
 
     def _mission_target(self, body: dict[str, Any]) -> Reply:
-        bbox = body.get("bbox")
-        if not isinstance(bbox, list) or len(bbox) != 4:
-            raise BadRequest('"bbox" must be [x0, y0, x1, y1], fractions of the image')
-        corners = [_number({"v": value}, "v", None, 0.0, 1.0) for value in bbox]
-        if not (corners[0] < corners[2] and corners[1] < corners[3]):
-            raise BadRequest('"bbox" needs x0 < x1 and y0 < y1')
+        corners = _bbox(body)
         label = body.get("label")
         if label is not None and not isinstance(label, str):
             raise BadRequest('"label" must be a string')
@@ -679,12 +670,15 @@ class ApiHandler(WebHandler):
             label=label[:MAX_LABEL_CHARS] if label else None,
             anchor=_choice(body, "anchor", ANCHOR_CENTRE, ANCHORS),
         )
-        accepted, why = self.server.mission.report_target(detection)
-        return HTTPStatus.OK, {
-            "accepted": accepted,
-            "state": why if accepted else None,
-            "reason": None if accepted else why,
-        }
+        return _accepted(*self.server.mission.report_target(detection))
+
+    def _mission_glimpse(self, body: dict[str, Any]) -> Reply:
+        glimpse = Detection(
+            frame_time=_number(body, "frame_time", time.time(), 0.0),
+            bbox=tuple(_bbox(body)),
+            confidence=0.0,
+        )
+        return _accepted(*self.server.mission.report_glimpse(glimpse))
 
     def _vision_post(self, body: dict[str, Any]) -> Reply:
         try:
@@ -951,7 +945,28 @@ def _mission_config(body: dict[str, Any]) -> MissionConfig:
         patrol_timeout_s=number("patrol_timeout_s", 1, 3600),
         approach_timeout_s=number("approach_timeout_s", 5, 600),
         lost_timeout_s=number("lost_timeout_s", 1, 120),
+        look_max_deg=number("look_max_deg", 0, 360),
     )
+
+
+def _bbox(body: dict[str, Any]) -> list[float]:
+    """The body's "bbox": [x0, y0, x1, y1], fractions of the image."""
+    bbox = body.get("bbox")
+    if not isinstance(bbox, list) or len(bbox) != 4:
+        raise BadRequest('"bbox" must be [x0, y0, x1, y1], fractions of the image')
+    corners = [_number({"v": value}, "v", None, 0.0, 1.0) for value in bbox]
+    if not (corners[0] < corners[2] and corners[1] < corners[3]):
+        raise BadRequest('"bbox" needs x0 < x1 and y0 < y1')
+    return corners
+
+
+def _accepted(accepted: bool, why: str) -> Reply:
+    """The answer to a detection or a glimpse."""
+    return HTTPStatus.OK, {
+        "accepted": accepted,
+        "state": why if accepted else None,
+        "reason": None if accepted else why,
+    }
 
 
 def _busy() -> Reply:

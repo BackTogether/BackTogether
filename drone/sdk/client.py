@@ -169,6 +169,11 @@ class DroneClient:
             body["anchor"] = anchor
         return self._request("POST", "/mission/target", body)
 
+    def mission_glimpse(self, frame_time: float | None, bbox: list[float]) -> dict[str, Any]:
+        """The child's face seen, not enough to lock on them yet: while patrolling, the
+        mission turns toward it to look again (bbox as in mission_target)."""
+        return self._request("POST", "/mission/glimpse", {"frame_time": frame_time, "bbox": bbox})
+
     def mission_launch_pose(self, x: float, y: float, yaw: float) -> dict[str, Any]:
         """The robot's pose in `map` at takeoff (metres, radians): enables map coordinates."""
         return self._request("POST", "/mission/launch_pose", {"x": x, "y": y, "yaw": yaw})
