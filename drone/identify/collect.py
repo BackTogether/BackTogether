@@ -3,7 +3,7 @@
     recordings/collect-<time>/seen/  the target placed by the face, the person detector or the
                                      body model (one frame per SEEN_EVERY_S)
     recordings/collect-<time>/lost/  after a sighting, the target out of sight or only the
-                                     tracker's guess, for LOST_AFTER_S (one per LOST_EVERY_S):
+                                     tracker's guess or its last box, for LOST_AFTER_S (one per LOST_EVERY_S):
                                      the views the model misses, the ones worth teaching it
 
 Raw frames (no overlay) with a .json each: the frame time, the tracker state, the target's box
@@ -26,7 +26,7 @@ LOST = "lost"
 EVERY_S = {SEEN: 1.0, LOST: 0.5}  # the lost views are rarer and more useful
 LOST_AFTER_S = 15.0
 MAX_FRAMES = 600  # ~45 MB: a guard for a long flight
-GUESS = "tracker"  # body_track.py: a source that is only the visual tracker's guess
+GUESSES = ("tracker", "held")  # body_track.py: sources that are no sighting of the target
 
 
 class Collector:
@@ -59,7 +59,7 @@ class Collector:
 
     def _kind(self, result: FrameResult, frame_time: float) -> str | None:
         target = result.target
-        if target is not None and target.source != GUESS:
+        if target is not None and target.source not in GUESSES:
             self._seen_at = frame_time
             return SEEN
         if self._seen_at is not None and frame_time - self._seen_at <= LOST_AFTER_S:
