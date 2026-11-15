@@ -1,0 +1,19 @@
+# The drone laptop's link to child_goal_server (:8001) through ngrok, kept up from boot.
+# Our ngrok account's free domain never changes: drone/report_child.py's ROBOT_URL. If anything
+# else holds that domain, ngrok fails to start and this retries until it is free.
+# Install once (needs ~/.local/bin/ngrok and `ngrok config add-authtoken <token>`):
+#   systemctl --user enable --now $PWD/ngrok.service     # from this folder
+#   loginctl enable-linger                               # start at boot, before any login
+#   journalctl --user -u ngrok -f                        # its log
+[Unit]
+Description=ngrok tunnel to child_goal_server (:8001)
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+ExecStart=%h/.local/bin/ngrok http 8001 --log stdout
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=default.target
