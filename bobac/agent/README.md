@@ -11,9 +11,10 @@ never talks over the parent.
 | `../robot/agent_process.py` | starts / stops it from the care flow (the robot's Python 3.8 cannot run the SDK) |
 
 ## How it fits the care flow
-`care.py` starts the agent right after the robot says "I am calling your Mom", and stops it
-when `parent_in_call` turns `True` (the parent joined), on `/stop`, and when the episode ends.
-Without `GEMINI_API_KEY`, or if the agent is not installed, everything works as before.
+`care.py` starts the agent as soon as the robot reaches the child (it says the first hello and
+replaces the robot's own voice), and stops it when `parent_in_call` turns `True` (the parent
+joined), on `/stop`, and when the episode ends. Without `GEMINI_API_KEY`, or if the agent is
+not installed, the robot speaks with its own voice as before.
 
 ## Setup (once)
 1. **API key:** log into [AI Studio](https://aistudio.google.com) with the hackathon `@gcplab.me`
