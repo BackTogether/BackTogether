@@ -91,7 +91,7 @@ def has_face(data):
     return bool(face_recognition.face_locations(face_recognition.load_image_file(io.BytesIO(data))))
 
 
-def save(request, out, requests_dir, check_faces=False):
+def save(request, out, requests_dir=DEFAULT_REQUESTS, check_faces=False):
     """Write the request's photos in out/<name>/ and its summary in requests_dir/<name>.json.
     Returns (folder, photos saved)."""
     request_id = str(request.get("request_id") or "request")
