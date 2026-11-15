@@ -1,8 +1,9 @@
 # web/ — "Find My Child" site
 
-The public page parents use during an event: they describe their child, add a photo, and the page
-POSTs a search request that starts the drone. While the request goes out, a 3D view shows the
-Hover Air X1 lifting off from just above the Bobac3 base and flying a search grid.
+The public page parents use during an event. It asks for two things only — the child's **name**
+and a **photo** — and POSTs a search request that starts the drone. While the request goes out, a
+3D view shows the Hover Air X1 lifting off from just above the Bobac3 base and flying a search
+grid. It is built for a phone held in one hand: one column, the 3D stage sticky at the top.
 
 Deployed to GitHub Pages by [.github/workflows/pages.yml](../.github/workflows/pages.yml) on every
 push to `main` that touches `web/`.
@@ -10,9 +11,9 @@ push to `main` that touches `web/`.
 ## Files
 | File | What it does |
 |---|---|
-| `index.html` | the whole page: hero, "how it works", request form, search panel |
+| `index.html` | the whole page: hero, request form (name + photo), search panel, "how it works" |
 | `styles.css` | dark control-room theme, sticky 3D column, mobile layout |
-| `config.js` | **the only file you edit to point the site at the robot** (endpoint, token, zones) |
+| `config.js` | **the only file you edit to point the site at the robot** (endpoint, token, event name) |
 | `app.js` | form, photo downscaling, the POST, and the search view driven by the 3D stage |
 | `scene.js` | three.js stage: ground, crowd, pad, the Bobac3 with its screen, the X1, and the choreography |
 | `vendor/three.module.min.js` | three.js r160, vendored so the demo works without wifi |
@@ -39,7 +40,6 @@ window.FINDMYCHILD_CONFIG = {
   apiUrl: "https://robot.example.org/api/v1/search-requests",
   apiToken: "",            // optional, sent as "Authorization: Bearer <token>"
   eventName: "Leukerbad Open Air",
-  zones: ["Main stage", "Food court", "…"],
 };
 ```
 
@@ -60,13 +60,11 @@ Anything in `config.js` is public once deployed. Use a token that only starts a 
 
 ```json
 {
-  "schema": "find-my-child/search-request@1",
+  "schema": "find-my-child/search-request@2",
   "request_id": "FMC-20261116-9F3A2B10",
   "requested_at": "2026-11-16T13:41:07.182Z",
   "event": "Leukerbad Open Air",
-  "parent": { "name": "Anna Weber", "phone": "+41 79 123 45 67" },
-  "child": { "name": "Mia", "age": 6, "description": "Red rain jacket, blond ponytail" },
-  "last_seen": { "zone": "Food court", "minutes_ago": 12, "note": "Walked towards the stands" },
+  "child": { "name": "Mia" },
   "photo": {
     "filename": "mia.jpg",
     "media_type": "image/jpeg",
@@ -78,6 +76,8 @@ Anything in `config.js` is public once deployed. Use a token that only starts a 
 }
 ```
 
+- Only `child.name` and `photo` are ever sent: the form has no other fields, so the drone side
+  must not expect a parent, an age, a description or a zone. Schema bumped to `@2` for that.
 - `photo.data` is base64 **without** the `data:` prefix: `base64.b64decode(data)` gives a JPEG.
   The browser downscales to 1024 px on the longest side first, so a request is around 150 kB.
 - `request_id` is generated in the browser and shown to the parent; use it to tie the search,
@@ -107,7 +107,7 @@ class Handler(BaseHTTPRequestHandler):
         request = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
         photo = base64.b64decode(request["photo"]["data"])
         pathlib.Path(f"{request['request_id']}.jpg").write_bytes(photo)
-        print("search for", request["child"]["name"], "in", request["last_seen"]["zone"])
+        print("search for", request["child"]["name"])
         # TODO: hand request_id + the photo to the drone
         self.send_response(202)
         self._cors()

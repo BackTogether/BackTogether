@@ -24,7 +24,4 @@ window.FINDMYCHILD_CONFIG = {
 
   // Name of the event, shown in the header and sent with the request.
   eventName: "Leukerbad Open Air",
-
-  // Zones the parent can pick as "last seen". Keep them in sync with the map the robot uses.
-  zones: ["Main stage", "Food court", "Playground", "Ticket gate", "Parking", "Lake path"],
 };

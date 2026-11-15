@@ -16,7 +16,7 @@ const reducedMotion = window.matchMedia("(prefers-reduced-motion: reduce)").matc
 
 const el = {
   form: $("#request-form"),
-  zone: $("#zone"),
+  childName: $("#child-name"),
   photoInput: $("#photo"),
   dropzone: $("#dropzone"),
   photoPreview: $("#photo-preview"),
@@ -28,7 +28,6 @@ const el = {
   missionSteps: $("#mission-steps"),
   missionPhoto: $("#mission-photo"),
   missionChild: $("#mission-child"),
-  missionZone: $("#mission-zone"),
   missionId: $("#mission-id"),
   missionMode: $("#mission-mode"),
   missionElapsed: $("#mission-elapsed"),
@@ -46,7 +45,7 @@ const el = {
 /** The photo the parent picked, already downscaled: { dataUrl, mediaType, name, width, height }. */
 let photo = null;
 let stage = null;
-let mission = null; // { id, startedAt, child, zone, mode }
+let mission = null; // { id, startedAt, child, mode }
 let elapsedTimer = null;
 
 /* ------------------------------------------------------------------- photo */
@@ -92,7 +91,8 @@ async function acceptPhoto(file) {
     return;
   }
   el.photoPreview.src = photo.dataUrl;
-  el.photoName.textContent = `${photo.name} · ${photo.width}×${photo.height}`;
+  // Not the file name: a phone photo name is long and useless to the parent.
+  el.photoName.textContent = `Photo ready · ${photo.width}×${photo.height}`;
   el.dropzone.dataset.state = "filled";
   showFormError("");
 }
@@ -114,30 +114,18 @@ function requestId() {
 
 /**
  * The body POSTed to the robot bridge. Documented in README.md: the drone side reads
- * `photo.data` (base64 JPEG) to build the face model and `child`/`last_seen` to plan the search.
+ * `photo.data` (base64 JPEG) to build the face model and `child.name` to label the search.
  */
 function buildPayload(form, id) {
   const data = new FormData(form);
-  const value = (name) => String(data.get(name) || "").trim();
 
   return {
-    schema: "find-my-child/search-request@1",
+    schema: "find-my-child/search-request@2",
     request_id: id,
     requested_at: new Date().toISOString(),
     event: CONFIG.eventName || null,
-    parent: {
-      name: value("parent_name"),
-      phone: value("parent_phone"),
-    },
     child: {
-      name: value("child_name"),
-      age: Number(value("child_age")) || null,
-      description: value("child_description"),
-    },
-    last_seen: {
-      zone: value("zone"),
-      minutes_ago: Number(value("minutes_ago")) || null,
-      note: value("last_seen_note"),
+      name: String(data.get("child_name") || "").trim(),
     },
     photo: {
       filename: photo.name,
@@ -246,12 +234,16 @@ function stopTelemetryLoop() {
 
 async function onSubmit(event) {
   event.preventDefault();
+  if (!el.childName.value.trim()) {
+    showFormError("Please type your child's name.");
+    el.childName.focus();
+    return;
+  }
   if (!photo) {
     showFormError("A photo of your child is what the drone searches with: please add one.");
     el.dropzone.focus();
     return;
   }
-  if (!el.form.reportValidity()) return;
 
   const id = requestId();
   const payload = buildPayload(el.form, id);
@@ -276,13 +268,11 @@ async function onSubmit(event) {
     id,
     startedAt: Date.now(),
     child: payload.child.name || "your child",
-    zone: payload.last_seen.zone,
     mode: result.mode,
   };
 
   el.missionPhoto.src = photo.dataUrl;
   el.missionChild.textContent = mission.child;
-  el.missionZone.textContent = mission.zone || "zone not given";
   el.missionId.textContent = id;
   el.missionMode.textContent = result.mode === "live" ? "Request sent to the robot" : "Demo mode · no robot endpoint set";
   el.missionMode.dataset.mode = result.mode;
@@ -328,15 +318,6 @@ function onPhase(phase) {
 
 /* ------------------------------------------------------------------- setup */
 
-function fillZones() {
-  for (const zone of CONFIG.zones || []) {
-    const option = document.createElement("option");
-    option.value = zone;
-    option.textContent = zone;
-    el.zone.append(option);
-  }
-}
-
 function wirePhotoInput() {
   el.photoInput.addEventListener("change", (event) => acceptPhoto(event.target.files?.[0]));
   el.photoClear.addEventListener("click", clearPhoto);
@@ -366,7 +347,6 @@ function wirePhotoInput() {
 function init() {
   el.eventName.textContent = CONFIG.eventName || "this event";
   el.year.textContent = String(new Date().getFullYear());
-  fillZones();
   wirePhotoInput();
   clearPhoto();
 
