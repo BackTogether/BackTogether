@@ -65,6 +65,75 @@ Pushing to `main` with changes under `web/` deploys it through
 [.github/workflows/pages.yml](.github/workflows/pages.yml). **Once, by a repo admin:**
 Settings → Pages → Build and deployment → Source: **GitHub Actions**.
 
+## Ethernet connection (drone laptop ↔ robot laptop)
+The laptop that flies the drone has its Wi-Fi on the drone (`HoverX1_060039`, no internet), so it
+cannot reach the robot. A second laptop on the event Wi-Fi carries its child reports to the robot,
+joined to it by an Ethernet cable (the robot drives away, so the cable never goes to the robot):
+
+```
+drone ── drone Wi-Fi ── LAPTOP A (<LAPTOP_A_IP>) ══ Ethernet ══ LAPTOP B (<LAPTOP_B_IP>) ── event Wi-Fi ── robot :8001
+```
+
+Laptop A sends to `<LAPTOP_B_IP>:8001`; laptop B forwards that port to `child_goal_server` on the robot
+through ssh (as `bobac3`, see [bobac/SSH.md](bobac/SSH.md)). Both laptops are Windows here; the
+robot must run a launch with `child_goal_server` on port 8001.
+
+**Once, on both laptops** (PowerShell **as administrator**; `Get-NetAdapter` gives the adapter's
+name, `Ethernet` below). Fixed IPs with no gateway, so each keeps its own Wi-Fi for everything else:
+```powershell
+New-NetIPAddress -InterfaceAlias "Ethernet" -IPAddress <LAPTOP_A_IP> -PrefixLength 24   # A; <LAPTOP_B_IP> on B
+New-NetFirewallRule -DisplayName "cable ping" -Direction Inbound -Protocol ICMPv4 -IcmpType 8 -RemoteAddress <ETHERNET_SUBNET>/24 -Profile Any -Action Allow
+```
+
+**Once, on laptop B:**
+1. Port 8001 open to the cable only (as administrator):
+   ```powershell
+   New-NetFirewallRule -DisplayName "robot tunnel 8001" -Direction Inbound -Protocol TCP -LocalPort 8001 -LocalAddress <LAPTOP_B_IP> -RemoteAddress <ETHERNET_SUBNET>/24 -Profile Any -Action Allow
+   ```
+2. The robot in `%USERPROFILE%\.ssh\config`, with a key the robot accepts and **no passphrase**
+   (the tunnel cannot type one). Check with `ssh bobac-robot`:
+   ```
+   Host bobac-robot
+       HostName <ROBOT_IP>
+       User bobac3
+       IdentityFile ~/.ssh/bobac_robot
+       IdentitiesOnly yes
+       ServerAliveInterval 15
+       ServerAliveCountMax 3
+       ExitOnForwardFailure yes
+   ```
+3. The tunnel, `%USERPROFILE%\robot-tunnel.ps1`. It listens only on the cable and localhost
+   (never on the event Wi-Fi: nobody else can send the robot a goal) and reconnects by itself:
+   ```powershell
+   while ($true) {
+       ssh -N -o BatchMode=yes -L <LAPTOP_B_IP>:8001:127.0.0.1:8001 -L 127.0.0.1:8001:127.0.0.1:8001 bobac-robot
+       Start-Sleep 3
+   }
+   ```
+4. Optional, start it at login: `Win+R` → `shell:startup` → new shortcut to
+   `powershell -NoProfile -ExecutionPolicy Bypass -WindowStyle Minimized -File "%USERPROFILE%\robot-tunnel.ps1"`.
+
+**Every time:**
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File "$HOME\robot-tunnel.ps1"   # B: leave it open
+curl.exe http://127.0.0.1:8001/status                                          # B: "state": "idle"
+Test-NetConnection <LAPTOP_B_IP> -Port 8001                                        # A: TcpTestSucceeded : True
+```
+```bash
+python3 -m drone.report_child --to http://<LAPTOP_B_IP>:8001 --ping    # A, WSL, repo root
+python3 -m drone.report_child --to http://<LAPTOP_B_IP>:8001 --watch   # A: before drone/find
+```
+
+| Symptom | Cause |
+|---|---|
+| `curl` on B gets no answer | tunnel down (its window says why), or the robot runs no `child_goal_server` on 8001 |
+| A's `Test-NetConnection` fails | cable not up on both (`Get-NetAdapter`), IPs, or B's firewall rule |
+| B loses internet | the cable got a gateway: `Remove-NetRoute -InterfaceAlias "Ethernet" -DestinationPrefix 0.0.0.0/0` |
+| Robot IP changed | `hostname -I` on the robot, then `HostName` in B's ssh config |
+
+The robot must not move between the drone's takeoff and the report: the drone reports the child
+relative to where the robot stood at takeoff.
+
 ## Protecting `main` on GitHub (repo admin, once)
 Settings → Rules → Rulesets → **New branch ruleset**:
 - Target: default branch (`main`), Enforcement: **Active**, no bypass list.
