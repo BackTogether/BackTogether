@@ -8,10 +8,15 @@ Needs the pad model (drone/identify/pad.py: photos in drone/identify/base/, then
 `python -m drone.identify.pad train`). Client-side, over the HTTP API, like find_child.py:
 
 0. takes control (resumes /move: it was started on purpose) and climbs to --alt above the
-   takeoff point if it is lower (POST /goto where it is).
+   takeoff point if it is lower (POST /goto where it is). With the robot's expected position
+   (--robot, or drone/dock_robot.py: the robot's live pose, where it went, or the takeoff point)
+   it first flies to ROBOT_VIEW_M short of it and turns to face it (POST /goto, /turn).
 1. searching: camera to --tilt (diagonal); if the pad is not in view, turn slowly on the spot
    (one full turn at most, then "pad not found" and hover: it never lands blind). Two detections
    that agree confirm the pad; one that is not confirmed in time is dropped and the turn goes on.
+   Meanwhile the robot detector (drone/identify/robot.py, if trained) looks for the robot itself,
+   visible from farther than its pad: two agreeing detections (its floor contact placed on the
+   floor) and the drone flies to ROBOT_VIEW_M of it, where the pad comes into view.
 2. approaching: each detection is placed on the pad's plane with its own frame's pose and camera
    tilt (X-Drone-Pose: the video latency does not matter) and kept in the takeoff frame; the
    drone steers toward it continuously (turns to face it far away, slides near it). /move cannot
@@ -51,6 +56,7 @@ import numpy as np
 
 from drone.identify.feed import DroneServer
 from drone.identify.pad import PAD_SIDE_M, TILT_DEG, Pad, PadDetector
+from drone.identify.robot import Robot, RobotDetector
 from drone.sdk import camera
 from drone.sdk.client import DroneApiError, DroneClient
 from drone.sdk.estimate import wrap_deg
@@ -79,6 +85,10 @@ TURN_STICK = 0.6  # ~15 deg/s: the X1 turns 24 deg/s at full stick (estimate.py)
 FULL_TURN_DEG = 360.0
 AGREE_M = 0.4  # two detections this close are the same pad
 CONFIRM_S = 1.5  # ...if this close in time; an unconfirmed one is dropped after it
+# The robot (seen from farther than its pad)
+ROBOT_VIEW_M = 1.5  # fly to this far from the robot: its pad is then in the diagonal view
+ROBOT_AGREE_M = 0.8  # two robot detections this close are the same robot (its box is coarse)
+GOTO_MIN_M = 1.0  # expected robot position this much farther than ROBOT_VIEW_M: fly there first
 # Steering (stick fractions of the speed cap; /move applies the server's max speed)
 GAIN = 0.4  # horizontal stick per metre to the pad
 MAX_STICK = 0.25
@@ -112,6 +122,7 @@ MIN_SEARCH_ALT_M = 0.5
 log = logging.getLogger("land")
 
 Detect = Callable[[np.ndarray], Pad | None]
+DetectRobot = Callable[[np.ndarray], Robot | None]
 
 
 class Ended(Exception):
@@ -130,6 +141,7 @@ class LandSettings:
     search_tilt_deg: float = SEARCH_TILT_DEG
     search_alt_m: float = SEARCH_ALT_M  # above the takeoff point; higher already: stays there
     alt_source: str = ALT_SOURCES[0]  # see the module docstring
+    robot_xy: tuple[float, float] | None = None  # where the robot should be (takeoff frame)
 
 
 @dataclass(frozen=True)
@@ -158,10 +170,39 @@ class Sighting:
         return min(abs(self.height_m - reading) for reading in chosen)
 
 
-def land_on_pad(client: DroneClient, detect: Detect, settings: LandSettings | None = None) -> str:
+@dataclass(frozen=True)
+class Seen:
+    """What one frame showed: the pad, else (when asked) the robot."""
+
+    pad: Pad | None
+    robot: Robot | None
+    ms: float
+
+
+@dataclass(frozen=True)
+class RobotSighting:
+    point: tuple[float, float]  # the robot's floor contact, takeoff frame
+    seen_at: float  # the frame's time
+
+
+def land_on_pad(
+    client: DroneClient,
+    detect: Detect,
+    settings: LandSettings | None = None,
+    detect_robot: DetectRobot | None = None,
+) -> str:
     """Land the hovering drone on the pad: LANDED, or why not (then it hovers, or the server's
-    safety rules or the page have it)."""
-    return Lander(client, detect, settings or LandSettings()).run()
+    safety rules or the page have it). `detect_robot` finds the robot while the pad is not seen."""
+    return Lander(client, detect, settings or LandSettings(), detect_robot).run()
+
+
+def load_robot_detector() -> DetectRobot | None:
+    """The robot detector if it was trained, else None (then only the pad is looked for)."""
+    try:
+        return RobotDetector().detect
+    except FileNotFoundError as error:
+        log.info("no robot detector (%s): looking for the pad only", error)
+        return None
 
 
 def floor_height(pose: dict[str, Any], settings: LandSettings) -> float:
@@ -236,36 +277,50 @@ def newest_frame(client: DroneClient, after: float) -> Frame | None:
     return None if image is None else Frame(frame_time, meta["pose"], image)
 
 
-def detect_shown(detect: Detect, overlay: DroneServer, frame: Frame) -> tuple[Pad | None, float]:
-    """(the pad or None, ms) in a frame, also posted to the page's video overlay."""
+def detect_shown(
+    detect: Detect, overlay: DroneServer, frame: Frame, detect_robot: DetectRobot | None = None
+) -> Seen:
+    """The pad in a frame, else the robot (with `detect_robot`); posted to the page's overlay."""
     started = time.perf_counter()
     pad = detect(frame.image)
-    ms = (time.perf_counter() - started) * 1000
-    post_overlay(overlay, frame.time, pad, frame.image.shape, ms)
-    return pad, ms
+    robot = detect_robot(frame.image) if pad is None and detect_robot is not None else None
+    seen = Seen(pad, robot, (time.perf_counter() - started) * 1000)
+    post_overlay(overlay, frame.time, seen, frame.image.shape)
+    return seen
 
 
 def post_overlay(
-    server: DroneServer, frame_time: float, pad: Pad | None, shape: tuple[int, ...], ms: float
+    server: DroneServer, frame_time: float, seen: Seen, shape: tuple[int, ...]
 ) -> None:
-    """The pad's box on the page's video (POST /vision), as a locked target."""
+    """The pad's (else the robot's) box on the page's video (POST /vision), as a locked target."""
+    found = seen.pad or seen.robot
     target = None
-    if pad is not None:
-        bbox = pad.bbox(shape)
-        target = {"bbox": bbox, "kind": "body", "confidence": round(pad.score, 3), "source": "pad"}
-    state = "searching" if pad is None else "locked"
-    body = {"frame_time": frame_time, "state": state, "name": OVERLAY_NAME, "ms": round(ms, 1)}
+    if found is not None:
+        source = "pad" if seen.pad is not None else "robot"
+        target = {"bbox": found.bbox(shape), "kind": "body",
+                  "confidence": round(found.score, 3), "source": source}  # fmt: skip
+    state = "searching" if found is None else "locked"
+    body = {"frame_time": frame_time, "state": state, "name": OVERLAY_NAME, "ms": round(seen.ms, 1)}
     server.post("/vision", {**body, "faces": [], "persons": [], "target": target})
 
 
 class Lander:
-    def __init__(self, client: DroneClient, detect: Detect, settings: LandSettings) -> None:
+    def __init__(
+        self,
+        client: DroneClient,
+        detect: Detect,
+        settings: LandSettings,
+        detect_robot: DetectRobot | None = None,
+    ) -> None:
         self.client = client
         self.detect = detect
+        self.detect_robot = detect_robot
         self.settings = settings
         self.overlay = DroneServer(client.base_url)
         self.fix: Sighting | None = None
         self.candidate: Sighting | None = None
+        self.robot: RobotSighting | None = None  # confirmed: two detections agreed
+        self.robot_candidate: RobotSighting | None = None
         self._streak: list[Sighting] = []  # overhead detections in a row
         self._agreed: tuple[float, float] | None = None  # (height, frame time) they agreed on
         self._frame_time = 0.0
@@ -279,6 +334,7 @@ class Lander:
         try:
             self._move(resume=True)  # started on purpose: take control after any earlier STOP
             self._climb()
+            self._go_near_robot()
             self._search()
             self._approach_and_descend()
         except Ended as end:
@@ -309,8 +365,31 @@ class Lander:
         self.client.goto(pose["x"], pose["y"], alt)
         self._wait("goto")
 
+    def _go_near_robot(self) -> None:
+        """Fly to ROBOT_VIEW_M short of where the robot should be, facing it (if it is known and
+        farther than that)."""
+        robot = self.settings.robot_xy
+        if robot is None:
+            return
+        pose, _tilt = self._hover()
+        dx, dy = robot[0] - pose["x"], robot[1] - pose["y"]
+        distance = math.hypot(dx, dy)
+        bearing = math.degrees(math.atan2(dy, dx))
+        if distance > ROBOT_VIEW_M + GOTO_MIN_M:
+            keep = (distance - ROBOT_VIEW_M) / distance
+            x, y = pose["x"] + dx * keep, pose["y"] + dy * keep
+            self._note("to the robot", f"flying to the robot: {distance:.1f} m, stopping "
+                       f"{ROBOT_VIEW_M:.1f} m short at ({x:.1f}, {y:.1f})")  # fmt: skip
+            self.client.goto(x, y, max(pose["alt"], self.settings.search_alt_m))
+            self._wait("goto")
+            self._hover()
+        self._note("facing", f"turning to face the robot ({bearing:.0f} deg)")
+        self.client.turn(heading=bearing)
+        self._wait("turn")
+
     def _search(self) -> None:
-        """Camera diagonal, then turn on the spot until two detections agree."""
+        """Camera diagonal, then turn on the spot until two detections agree; a confirmed robot
+        without its pad in view: fly to ROBOT_VIEW_M of it."""
         self._tilt(self.settings.search_tilt_deg)
         turned, last_heading = 0.0, None
         while True:
@@ -324,6 +403,11 @@ class Lander:
                 self._move()
                 continue
             self.candidate = None  # not confirmed in time: a false detection, turn on
+            robot = self.robot
+            if robot is not None and time.time() - robot.seen_at <= LOST_TIMEOUT_S:
+                self._toward_robot(pose, robot)
+                turned, last_heading = 0.0, None  # the turn starts again if the robot is lost
+                continue
             if last_heading is not None:
                 turned += abs(wrap_deg(pose["heading_deg"] - last_heading))
             last_heading = pose["heading_deg"]
@@ -331,6 +415,23 @@ class Lander:
                 raise Ended("pad not found after a full turn")
             self._note("turning", f"pad not in view: turning ({turned:.0f} deg so far)")
             self._move(turn=TURN_STICK)
+
+    def _toward_robot(self, pose: dict[str, Any], robot: RobotSighting) -> None:
+        """Steer to ROBOT_VIEW_M of the robot, facing it; there, hover until the pad is seen."""
+        fwd, right = frame_to_body(
+            robot.point[0] - pose["x"], robot.point[1] - pose["y"], pose["heading_deg"]
+        )
+        distance = math.hypot(fwd, right)
+        if distance <= ROBOT_VIEW_M:
+            self._note("at the robot", f"{distance:.1f} m from the robot, looking for its pad")
+            bearing = math.degrees(math.atan2(right, fwd))
+            self._move(turn=max(-MAX_TURN, min(MAX_TURN, bearing * YAW_GAIN)))
+            return
+        self._note("robot seen", f"robot seen {distance:.1f} m away: flying to it")
+        left = distance - ROBOT_VIEW_M  # to the viewing point, along the line to the robot
+        scale = left / distance
+        move_fwd, move_right, turn = _steer(fwd * scale, right * scale, left, False)
+        self._move(move_fwd, move_right, 0.0, turn)
 
     def _approach_and_descend(self) -> None:
         while True:
@@ -399,7 +500,13 @@ class Lander:
         pose = frame.pose
         if pose is None or pose.get("tilt_deg") is None or time.time() - frame.time > FRESH_S:
             return
-        pad, _ms = detect_shown(self.detect, self.overlay, frame)
+        looking_for_robot = self.fix is None  # once the pad is found, only the pad matters
+        seen = detect_shown(
+            self.detect, self.overlay, frame, self.detect_robot if looking_for_robot else None
+        )
+        pad = seen.pad
+        if seen.robot is not None:
+            self._keep_robot(self._place_robot(seen.robot, frame))
         sighting = self._place(pad, frame) if pad is not None else None
         kept = sighting is not None and self._keep(sighting)
         if pose["tilt_deg"] <= OVERHEAD_TILT_DEG:
@@ -419,6 +526,31 @@ class Lander:
             self._note("rejected", f"detection ignored: {_heights(sighting)} disagree")
             return None
         return sighting
+
+    def _place_robot(self, robot: Robot, frame: Frame) -> RobotSighting | None:
+        """The robot's floor contact (the bottom middle of its box) on the floor, takeoff frame."""
+        pose = frame.pose
+        h, w = frame.image.shape[:2]
+        x, y, bw, bh = robot.box
+        camera_above_floor = max(pose["alt"] + self.settings.takeoff_height_m, MIN_HEIGHT_M)
+        ground = ground_offset((x + bw / 2) / w, (y + bh) / h, pose["tilt_deg"], camera_above_floor)
+        if ground is None:
+            return None
+        dx, dy = body_to_frame(*ground, pose["heading_deg"])
+        return RobotSighting((pose["x"] + dx, pose["y"] + dy), frame.time)
+
+    def _keep_robot(self, sighting: RobotSighting | None) -> None:
+        """Like _keep for the pad: a second agreeing detection confirms the robot."""
+        if sighting is None:
+            return
+        for known in (self.robot, self.robot_candidate):
+            agrees = known is not None and math.dist(sighting.point, known.point) <= ROBOT_AGREE_M
+            if agrees and (known is self.robot or sighting.seen_at - known.seen_at <= CONFIRM_S):
+                if self.robot is None:
+                    self._note("robot found", "robot confirmed")
+                self.robot, self.robot_candidate = sighting, None
+                return
+        self.robot_candidate = sighting
 
     def _keep(self, sighting: Sighting) -> bool:
         """A detection near the pad becomes the fix (True); one elsewhere needs a second that
@@ -542,9 +674,14 @@ def _apart(a: Sighting, b: Sighting) -> float:
     return math.hypot(a.point[0] - b.point[0], a.point[1] - b.point[1])
 
 
-def watch(client: DroneClient, detect: Detect, settings: LandSettings) -> None:
-    """No flight (never moves the drone): the pad on the live video, a line about twice a
-    second, and its box on the page."""
+def watch(
+    client: DroneClient,
+    detect: Detect,
+    settings: LandSettings,
+    detect_robot: DetectRobot | None = None,
+) -> None:
+    """No flight (never moves the drone): the pad (else the robot) on the live video, a line
+    about twice a second, and its box on the page."""
     overlay = DroneServer(client.base_url)
     last_time = last_log = 0.0
     while True:
@@ -558,16 +695,19 @@ def watch(client: DroneClient, detect: Detect, settings: LandSettings) -> None:
             time.sleep(TICK_S)
             continue
         last_time = frame.time
-        pad, ms = detect_shown(detect, overlay, frame)
+        seen = detect_shown(detect, overlay, frame, detect_robot)
         if time.monotonic() - last_log >= WATCH_LOG_S:
             last_log = time.monotonic()
-            log.info("%s (%.0f ms)", _watch_line(pad, frame, settings), ms)
+            log.info("%s (%.0f ms)", _watch_line(seen, frame, settings), seen.ms)
 
 
-def _watch_line(pad: Pad | None, frame: Frame, settings: LandSettings) -> str:
+def _watch_line(seen: Seen, frame: Frame, settings: LandSettings) -> str:
     pose = frame.pose
     tilt = None if pose is None else pose.get("tilt_deg")
     camera_text = "camera tilt unknown" if tilt is None else f"camera {tilt:.0f} deg"
+    pad = seen.pad
+    if pad is None and seen.robot is not None:
+        return f"no pad; robot at {seen.robot.box} px, score {seen.robot.score:.2f}, {camera_text}"
     if pad is None:
         return f"no pad, {camera_text}"
     pixels = f"pad at ({pad.centre[0]:.0f}, {pad.centre[1]:.0f}) px, score {pad.score:.2f}"
@@ -600,6 +740,13 @@ def main() -> None:
         default=ALT_SOURCES[0],
         help="odometry height above the pad: floor = alt + takeoff - pad height, pad = alt",
     )
+    parser.add_argument(
+        "--robot",
+        type=float,
+        nargs=2,
+        metavar=("X", "Y"),
+        help="where the robot should be, takeoff frame metres: fly near it first",
+    )
     parser.add_argument("--watch", action="store_true", help="no flight: detect on the video")
     args = parser.parse_args()
     low, high = -TILT_DEG[1], -TILT_DEG[0]  # the detector's training range
@@ -617,8 +764,10 @@ def main() -> None:
         detect = PadDetector().detect
     except FileNotFoundError as error:
         raise SystemExit(str(error)) from error
+    detect_robot = load_robot_detector()
+    robot_xy = tuple(args.robot) if args.robot else None
     settings = LandSettings(
-        args.pad_height, args.takeoff_height, args.tilt, args.alt, args.alt_source
+        args.pad_height, args.takeoff_height, args.tilt, args.alt, args.alt_source, robot_xy
     )
     if args.watch:
         if not telemetry["in_flight"] and not telemetry["manual_session"]:
@@ -627,12 +776,12 @@ def main() -> None:
             except DroneApiError as error:
                 log.warning("manual control: %s (press MANUAL CONTROL in the page)", error)
         try:
-            watch(client, detect, settings)
+            watch(client, detect, settings, detect_robot)
         except KeyboardInterrupt:
             print("stopped watching")
         return
     try:
-        result = land_on_pad(client, detect, settings)
+        result = land_on_pad(client, detect, settings, detect_robot)
     except KeyboardInterrupt:
         stop(client)  # Ctrl+C is the human's STOP: always sent
         print("stopped: the drone hovers where it is")
