@@ -54,6 +54,17 @@ uv run --offline --with opencv-contrib-python-headless python -m drone.identify.
     --frames recordings/frames/<session> --first 40 --count 90 --out /tmp/annotated
 ```
 
+## Landing pad
+`pad` finds the landing pad on the robot (white square, grey circle, orange H) in drone frames,
+seen diagonally from 0.6-4 m. Put a few photos of the pad in `drone/identify/base/` (not in git),
+then train once (a few minutes; the video adds frames without the pad as negatives):
+```bash
+uv run --with opencv-python-headless python -m drone.identify.pad train --negatives <video>
+uv run --with opencv-python-headless python -m drone.identify.pad check <image or folder>
+```
+`train` saves `models/pad_check.jpg`: check that the pad is marked in every photo. Set
+`PAD_SIDE_M` in pad.py to the real side of the white square first.
+
 ## On recorded flights
 ```bash
 uv run --with opencv-python-headless python -m drone.identify.survey recordings/frames

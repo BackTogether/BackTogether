@@ -3,3 +3,5 @@
 people/*
 !people/.gitkeep
 models/
+# Photos of the landing pad (training data) and the training check image.
+base/
