@@ -6,15 +6,15 @@ kid_care.launch`) through kid_care_node.py, which loads the keys from the packag
 .env first. The HTTP API:
 
     GET  /status        contract fields + "care" (the details of the episode)
-    POST /care/start    {"zone": str, "found_time": epoch seconds (optional)} -> the robot
-                        reached the lost child in that zone
+    POST /care/start    {"found_time": epoch seconds (optional)} -> the robot reached the
+                        lost child
     POST /ui/answer     {"answer": "ok" | "help" | "yes" | "no"}, for the child's answers
     POST /stop
 
 Also runs on its own, on the robot (system Python 3.8) or on a laptop:
 
     python3 care_server.py --port 8090
-    curl -X POST localhost:8090/care/start -d '{"zone": "park"}'
+    curl -X POST localhost:8090/care/start -d '{}'
     curl localhost:8090/status
 
 Messages to the parents go through ntfy if NTFY_TOPIC is set (no account needed, see
@@ -218,7 +218,7 @@ class CareServer(ThreadingHTTPServer):
         self.session_thread = None
         self.session_lock = threading.Lock()
 
-    def start_session(self, zone: str, found_time: float) -> bool:
+    def start_session(self, found_time: float) -> bool:
         with self.session_lock:
             if self.session_thread and self.session_thread.is_alive():
                 return False
@@ -226,7 +226,6 @@ class CareServer(ThreadingHTTPServer):
                 self.telegram.skip_backlog()
             self.session = care.CareSession(
                 self.profile,
-                zone,
                 found_time,
                 speech,
                 self.telegram,
@@ -268,11 +267,10 @@ class Handler(BaseHTTPRequestHandler):
         self._send_json(204, None)
 
     def _start(self, body: dict) -> None:
-        zone = body.get("zone")
         found_time = body.get("found_time", time.time())
-        if not isinstance(zone, str) or not zone or not isinstance(found_time, (int, float)):
-            self._send_json(400, {"error": "zone (str) required, found_time must be a number"})
-        elif self.server.start_session(zone, float(found_time)):
+        if not isinstance(found_time, (int, float)):
+            self._send_json(400, {"error": "found_time must be a number"})
+        elif self.server.start_session(float(found_time)):
             self._send_json(202, {"accepted": True})
         else:
             self._send_json(409, {"error": "busy"})
@@ -290,7 +288,7 @@ class Handler(BaseHTTPRequestHandler):
         status = {
             # contract fields; the ones the real bridge fills from the robot stay null here
             "state": care_status["state"],
-            "place": care_status["care"]["zone"] if care_status["care"] else None,
+            "place": None,  # contract field: there are no named places in this demo
             "person_found": session is not None,
             "answer": care_status["answer"],
             "battery_v": None,
