@@ -6,21 +6,32 @@ feet) is what the mission places on the floor (drone/sdk/mission_geometry.floor_
 whatever the child's height.
 
 Every frame: faces (YuNet + SFace, faces.py and people.py) and persons (YOLOX, persons.py).
-- searching: the target's face in CONFIRM_FRAMES frames in a row locks it. The body is the
-  smallest person box that contains the face centre (in a crowd a big box may take in several
-  people). No such box (too close, or the body cut by the image edge): the head box is tracked
-  until a person box takes it in.
-- locked: the body is the person box that overlaps the tracker's box best (IoU >= MIN_IOU),
+- searching: the target's face in LOCK_FACE_FRAMES frames within the last FACE_WINDOW_S locks
+  it (gaps allowed: a face seen on and off while the drone turns or the child moves still
+  adds up; `face_frames` in each result says how far it is, 0 once locked). The body is the
+  smallest person box that contains the face centre in its top HEAD_ZONE (in a crowd a big box
+  may take in several people, and a person sitting behind reaches down to the face). No such
+  box (too close, or the body cut by the image edge): the head box is tracked until a person
+  box takes it in.
+- locked: the body is the person box that overlaps the tracker's box (IoU >= MIN_IOU),
   checked with the clothes' colour (an HSV histogram learned at the lock and updated slowly,
-  because the view turns from the side to the top during the approach). CSRT (MIL without
+  because the view turns from the side to the top during the approach). Two such boxes (people
+  sitting together): the one clearly better in overlap + colour, else neither (the tracker keeps
+  the current box: better no confirmation than a hop to the neighbour). CSRT (MIL without
   opencv-contrib) bridges the frames the detector misses, for BRIDGE_S at most: alone it drifts
-  onto the background. After that the body is taken back only by its face, or by a person box
-  overlapping the last confirmed one (colours are not enough: on our recordings a stranger in a
-  similar hoodie passed the check once the camera had turned). The target's face seen again
+  onto the background. After that, until LOST_S, the body is taken back by its face or by a
+  person box overlapping the last confirmed one. The target's face seen again
   re-confirms, in whichever person box contains it (this fixes a swap; outside the current box
-  only after CONFIRM_FRAMES in a row, so one look-alike frame cannot move the lock). A
-  recognised face of someone else inside the box, without the target's: the lock is dropped.
-  No confirmation (face or detector) for LOST_S: searching again.
+  only after CONFIRM_FRAMES in a row, so one look-alike frame cannot move the lock). Someone
+  else's face recognised with OTHER_FACE_SIMILARITY inside the box: the lock is dropped (a weak
+  match is not enough: from the drone, strangers often score just above the threshold).
+  No confirmation (face or detector) for LOST_S: lost, the face is not needed again yet. The
+  target's face re-confirms as when locked; without it, the body is taken back only by a person
+  box near the last confirmed one with clearly the target's colours (REACQUIRE_COLOUR,
+  REACQUIRE_REACH; it must be the only such box) and no other face on top. Colours alone are
+  weak (a stranger in a similar hoodie, a black jacket next to a grey one, pass MIN_COLOUR),
+  hence the stricter check. Only after FORGET_S without any confirmation: searching again, by
+  the face. A head lock (no body yet) has no colours to take it back: searching after LOST_S.
 - with a body model (body_model.py, trained on photos of the target's clothes): while searching,
   the same person recognised by their body in BODY_CONFIRM_FRAMES frames in a row also locks
   (from behind or above, without the face); while locked, an overlapping box passes if it is
@@ -32,6 +43,7 @@ like the live feed.
 
 import logging
 import time
+from collections import deque
 from dataclasses import dataclass
 
 import cv2
@@ -45,15 +57,25 @@ from .persons import Person, PersonDetector
 
 HEAD_GROW = 1.6  # head box = face box scaled by this, around the face centre...
 HEAD_LIFT = 0.15  # ...and moved up by this fraction of the face height (hair)
+# A body's face is in the top HEAD_ZONE of its box; lower down, the box is someone else's
+# reaching down to the face (a person sitting behind the target)
+HEAD_ZONE = 0.5
 TRACK_WIDTH = 640  # the tracker runs on a copy this wide (speed)
+FACE_WINDOW_S = 4.0  # the target's face frames count this long for the lock...
+LOCK_FACE_FRAMES = 5  # ...and this many of them lock on the target
 BRIDGE_S = 0.7  # the tracker alone is trusted this long after the last confirmation
-LOST_S = 2.0  # no face or detector confirmation this long: back to searching
+LOST_S = 2.0  # no face or detector confirmation this long: lost, taken back by colours...
+FORGET_S = 10.0  # ...and after this long: back to searching by the face
 MIN_IOU = 0.3  # a person box must overlap the tracked box this much to be the target
 REINIT_IOU = 0.7  # the tracker restarts on the detector's box when they overlap less
 HIST_BINS = (18, 8)  # hue, saturation
 HIST_RANGES = (0, 180, 0, 256)
 HIST_INSET = 0.2  # fraction of the box cut on each side: less floor and background
 MIN_COLOUR = 0.2  # correlation with the target's colours to accept an overlapping box
+AMBIGUOUS_MARGIN = 0.15  # two boxes this close in overlap + colour: neither is taken (no hop)
+REACQUIRE_COLOUR = 0.7  # lost: correlation with the target's colours to take a box back...
+REACQUIRE_REACH = 1.5  # ...its centre within this many body sizes of the last confirmed box
+OTHER_FACE_SIMILARITY = 0.4  # someone else's face this sure inside the box drops the lock
 MAX_SIZE_CHANGE = 1.5  # ...and its size (sqrt of the area) within this factor of the last one:
 # the approach changes it slowly, two people merged into one box or a swap make it jump
 COLOUR_LEARN = 0.1  # weight of a new frame in the target's colour histogram
@@ -97,6 +119,7 @@ class FrameResult:
     persons: list[Person]
     target: Target | None
     ms: float  # time to process the frame
+    face_frames: int = 0  # the target's face frames within FACE_WINDOW_S (LOCK_FACE_FRAMES lock)
 
 
 def make_tracker() -> cv2.Tracker:
@@ -121,6 +144,7 @@ class BodyTracker:
         self.detector = detector
         self.body_model = body_model
         self._now = 0.0  # the frame time of the frame being processed
+        self._face_times: deque[float] = deque()  # frame times of the target's face, searching
         self._unlock()
 
     @property
@@ -135,14 +159,25 @@ class BodyTracker:
         persons = self.detector.persons(image)
         target_face = max((f for f in faces if f.target), key=lambda f: f.similarity, default=None)
         self._in_a_row = self._in_a_row + 1 if target_face else 0
+        # counted only while searching: the lock needs them, a locked target does not
+        face_frames = 0 if self.locked else self._count_face(target_face is not None)
         if self.locked:
             target = self._follow(image, faces, persons, target_face)
-        elif target_face and self._in_a_row >= CONFIRM_FRAMES:
+        elif target_face and face_frames >= LOCK_FACE_FRAMES:
             target = self._lock(image, target_face, persons)
         else:
             target = self._lock_by_body(image, faces, persons)
         ms = (time.monotonic() - started) * 1000
-        return FrameResult(LOCKED if self.locked else SEARCHING, faces, persons, target, ms)
+        state = LOCKED if self.locked else SEARCHING
+        return FrameResult(state, faces, persons, target, ms, face_frames)
+
+    def _count_face(self, seen: bool) -> int:
+        """The target's face frames within the last FACE_WINDOW_S, this one included."""
+        if seen:
+            self._face_times.append(self._now)
+        while self._face_times and self._face_times[0] < self._now - FACE_WINDOW_S:
+            self._face_times.popleft()
+        return len(self._face_times)
 
     # --- states -----------------------------------------------------------------------------
 
@@ -194,21 +229,26 @@ class BodyTracker:
             self._seen_face(target_face)
             self._place_on_face(image, target_face, persons, tracked)
             return self._result(self._box, FACE_CONFIDENCE, "face")
-        if self._kind == HEAD:
+        lost = unconfirmed > LOST_S
+        if self._kind == HEAD and not lost:
             body = _containing(_centre(tracked or self._box), persons)
             if body is not None:  # the head's body came into view: track the body from now
                 self._set(image, body, BODY)
                 self._colour = colour_histogram(image, body)
                 return self._checked(faces, self._result(body, DETECTOR_CONFIDENCE, "detector"))
-        match = self._match(image, persons, tracked)
+        if lost:  # the last confirmed box is stale: only the strict check
+            match = self._reacquire(image, faces, persons)
+        else:
+            match = self._match(image, persons, tracked)
         if match is not None:
             self._set(image, match, BODY, tracked)
             self._learn_colour(image, match)
             return self._checked(faces, self._result(match, DETECTOR_CONFIDENCE, "detector"))
         if tracked is not None:
             return self._checked(faces, self._result(tracked, TRACKER_CONFIDENCE, "tracker"))
-        if unconfirmed > LOST_S:
-            log.info("%s not confirmed for %.0f s: searching again", self.target, LOST_S)
+        forget_s = FORGET_S if self._kind == BODY else LOST_S
+        if unconfirmed > forget_s:
+            log.info("%s not confirmed for %.0f s: searching again", self.target, forget_s)
             self._unlock()
         return None
 
@@ -233,9 +273,12 @@ class BodyTracker:
         self._set(image, head_box(face.box, image.shape), HEAD, tracked)
 
     def _checked(self, faces: list[FaceSeen], target: Target) -> Target | None:
-        """None (and the lock dropped) if someone else's face is inside the target's box."""
+        """None (and the lock dropped) if someone else's face, surely theirs, is inside the
+        target's box."""
         for face in faces:
-            if face.name not in (None, self.target) and _inside(_centre(face.box), target.box):
+            other = face.name not in (None, self.target)
+            sure = other and face.similarity >= OTHER_FACE_SIMILARITY
+            if sure and _inside(_centre(face.box), target.box):
                 log.info("%s's face in the tracked box: lock dropped", face.name)
                 self._unlock()
                 return None
@@ -244,25 +287,54 @@ class BodyTracker:
     # --- association ------------------------------------------------------------------------
 
     def _match(self, image: np.ndarray, persons: list[Person], tracked: Box | None) -> Box | None:
-        """The person box that is the target: best overlap with the tracked box (or, without
-        a tracker, the last confirmed box), size and colours alike."""
+        """The person box that is the target: overlapping the tracked box (or, without a
+        tracker, the last confirmed box), size and colours alike; of several, the one clearly
+        best in overlap + colour."""
         reference = tracked or self._box
-        best, best_iou = None, MIN_IOU
+        scored = []
         for person in persons:
             overlap = iou(person.box, reference)
-            if overlap < best_iou or not _similar_size(person.box, self._box):
+            if overlap < MIN_IOU or not _similar_size(person.box, self._box):
                 continue
-            if self._colour_ok(image, person.box):
-                best, best_iou = person.box, overlap
-        return best
+            colour = self._colour_similarity(image, person.box)
+            if colour >= MIN_COLOUR:
+                scored.append((overlap + colour, person.box))
+        best = _clear_best(scored)
+        return None if best is None else best[1]
 
-    def _colour_ok(self, image: np.ndarray, box: Box) -> bool:
+    def _reacquire(
+        self, image: np.ndarray, faces: list[FaceSeen], persons: list[Person]
+    ) -> Box | None:
+        """Lost: the person box near the last confirmed one, of a similar size, clearly the
+        closest to the target's colours (or the target's body) of those, and above
+        REACQUIRE_COLOUR. A box with a face that is not the target's on top is someone else:
+        dark clothes look alike in colour (on the 04:35 flight a man in a black jacket scored
+        as high as the target's grey hoodie), a face does not."""
+        if self._kind != BODY or self._colour is None:
+            return None
+        reach = REACQUIRE_REACH * _size(self._box)
+        scored = []
+        for person in persons:
+            near = _distance(_centre(person.box), _centre(self._box)) <= reach
+            if near and _similar_size(person.box, self._box):
+                scored.append((self._colour_similarity(image, person.box), person.box))
+        best = _clear_best(scored)
+        if best is None or best[0] < REACQUIRE_COLOUR:
+            return None
+        box = best[1]
+        if any(not f.target and _in_head_zone(_centre(f.box), box) for f in faces):
+            return None
+        log.info("%s taken back by the colours", self.target)
+        return box
+
+    def _colour_similarity(self, image: np.ndarray, box: Box) -> float:
+        """Correlation of the box's colours with the target's (1 for the target's body, or
+        when no colours were learned yet)."""
         if self.body_model is not None and self.body_model.is_target(image, box):
-            return True
+            return 1.0
         if self._colour is None:
-            return True
-        similarity = cv2.compareHist(self._colour, colour_histogram(image, box), cv2.HISTCMP_CORREL)
-        return similarity >= MIN_COLOUR
+            return 1.0
+        return cv2.compareHist(self._colour, colour_histogram(image, box), cv2.HISTCMP_CORREL)
 
     def _learn_colour(self, image: np.ndarray, box: Box) -> None:
         histogram = colour_histogram(image, box)
@@ -319,15 +391,17 @@ class BodyTracker:
         self._similarity: float | None = None
         self._face_at: float | None = None
         self._in_a_row = 0
+        self._face_times.clear()
         self._scale = 1.0
         self._body_candidate: Box | None = None  # the body model's pick while searching
         self._body_in_a_row = 0
 
 
 def body_for_face(face: Box, persons: list[Person]) -> Box | None:
-    """The smallest person box that contains the face centre and is wider than the face."""
+    """The smallest person box that contains the face centre in its top HEAD_ZONE and is
+    wider than the face."""
     centre = _centre(face)
-    boxes = [p.box for p in persons if _inside(centre, p.box) and p.box[2] > face[2]]
+    boxes = [p.box for p in persons if _in_head_zone(centre, p.box) and p.box[2] > face[2]]
     return min(boxes, key=lambda box: box[2] * box[3], default=None)
 
 
@@ -361,9 +435,28 @@ def iou(a: Box, b: Box) -> float:
     return inter / union if union > 0 else 0.0
 
 
+def _clear_best(scored: list[tuple[float, Box]]) -> tuple[float, Box] | None:
+    """The (score, box) with the highest score, or None if another one comes within
+    AMBIGUOUS_MARGIN."""
+    ranked = sorted(scored, key=lambda item: item[0], reverse=True)
+    if not ranked:
+        return None
+    if len(ranked) > 1 and ranked[0][0] - ranked[1][0] < AMBIGUOUS_MARGIN:
+        return None
+    return ranked[0]
+
+
 def _similar_size(box: Box, reference: Box) -> bool:
-    ratio = np.sqrt((box[2] * box[3]) / max(reference[2] * reference[3], 1))
+    ratio = _size(box) / max(_size(reference), 1.0)
     return 1 / MAX_SIZE_CHANGE <= ratio <= MAX_SIZE_CHANGE
+
+
+def _size(box: Box) -> float:
+    return float(np.sqrt(box[2] * box[3]))
+
+
+def _distance(a: tuple[float, float], b: tuple[float, float]) -> float:
+    return float(np.hypot(a[0] - b[0], a[1] - b[1]))
 
 
 def _containing(point: tuple[float, float], persons: list[Person]) -> Box | None:
@@ -373,6 +466,11 @@ def _containing(point: tuple[float, float], persons: list[Person]) -> Box | None
 
 def _centre(box: Box) -> tuple[float, float]:
     return box[0] + box[2] / 2, box[1] + box[3] / 2
+
+
+def _in_head_zone(point: tuple[float, float], box: Box) -> bool:
+    """Inside the box, in its top HEAD_ZONE (where the box's own face is)."""
+    return _inside(point, box) and point[1] <= box[1] + HEAD_ZONE * box[3]
 
 
 def _inside(point: tuple[float, float], box: Box) -> bool:
