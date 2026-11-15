@@ -29,14 +29,16 @@ from drone.patrol.dvd import (
 from drone.patrol.floor_boundary import Status
 from drone.patrol.sdkdrone import DroneState
 from drone.sdk.estimate import wrap_deg
+from drone.sdk.mission_geometry import Alignment
 
 # Align
 ALIGN_M = 3.0  # straight, no yaw, before the lane axis is fixed
 ALIGN_MAX_M = 6.0  # ...or longer while the SDK heading is still unsure
 ALIGN_SIGMA_DEG = 10.0  # SDK heading uncertainty that ends the align leg at ALIGN_M
 ALIGN_MIN_M = 1.0  # shorter (blocked at once): the SDK heading is the axis
+MISSION_AXIS_TOLERANCE_DEG = 15.0  # heading this close to the mission's leg: it goes on
 # Lanes and crossings
-HOVER_S = 1.0  # at the end of every leg
+HOVER_S = 0.5  # at the end of every leg
 HEADING_GAIN = 1 / 40  # yaw input per degree of heading error
 MAX_HOLD_YAW = 0.25  # yaw input while holding a heading (small: keeps the SDK's travel fix on)
 CROSS_TRACK_GAIN = 0.12  # roll input per metre off the line
@@ -48,8 +50,8 @@ STICKS_SLOW_AFTER_S = 10.0  # heading on the stick model this long: --sticks-spe
 WIDTH_TOLERANCE_M = 0.3
 MAX_LEGS = 60  # a guard against a sweep that never ends
 # Turns (relative, measured with the best heading: dvd.current_heading)
-TURN_GAIN = 1 / 30  # yaw input per degree still to turn
-MIN_TURN_YAW = 0.2
+TURN_GAIN = 1 / 15  # yaw input per degree still to turn: full input until the last 15 deg
+MIN_TURN_YAW = 0.35
 TURN_TOLERANCE_DEG = 3.0
 TURN_TIMEOUT_S = 25.0
 # Probing the next lane's side, obstacles
@@ -182,9 +184,12 @@ class SweepPatrol:
         view: CameraView,
         spacing_m: float,
         alt_target_m: float | None,
+        alignment: Alignment | None = None,
     ) -> None:
+        """`alignment`: the mission's aligning leg, flown just before: ALIGN goes on from it."""
         self.args, self.perception, self.view, self.spacing = args, perception, view, spacing_m
         self.alt_target = alt_target_m
+        self.alignment = alignment
         # the floor boundary cannot measure nearer than the bottom of the image: an obstacle
         # still seen there, in the corridor, is about to pass under it
         self.stop_m = max(args.stop_at, view.near_m() + NEAR_EDGE_MARGIN_M)
@@ -207,6 +212,7 @@ class SweepPatrol:
         self.turn: Turn | None = None
         self.since = time.monotonic()
         self.align_start: tuple[float, float] | None = None
+        self.align_m = ALIGN_M  # straight travel before the axis is fixed (and the heading sure)
         self.sticks_since: float | None = None
         self.heading_error = 0.0
         self.cross_track = 0.0
@@ -300,7 +306,9 @@ class SweepPatrol:
         self.since = step.began = time.monotonic()
         note = ""
         if step.phase is Phase.ALIGN:
-            self.align_start = state.pose_xy
+            self.align_start, self.align_m = state.pose_xy, ALIGN_M
+            if self.alignment is not None:
+                self._continue_mission_leg(state)
         elif step.phase is Phase.TURN:
             amount = wrap_deg(self.frame.axis_deg + step.heading_deg - state.heading_deg)
             self.turn = Turn(amount)
@@ -310,7 +318,7 @@ class SweepPatrol:
             self.legs += 1
             note = self._leg_note(step)
         elif step.phase is Phase.HOVER:
-            note = f"{step.seconds:.0f} s"
+            note = f"{step.seconds:.1f} s"
         print(f"-> {step.phase.value} {note}".rstrip(), flush=True)
 
     def _next(self) -> None:
@@ -362,7 +370,7 @@ class SweepPatrol:
         sure = sigma is None or sigma <= ALIGN_SIGMA_DEG
         front, unsure = nearest_front(self.perception.readings.since(now - WINDOW_S))
         blocked = front is not None and front < self.stop_m
-        if blocked or (travel >= ALIGN_M and sure) or travel >= ALIGN_MAX_M:
+        if blocked or (travel >= self.align_m and sure) or travel >= ALIGN_MAX_M:
             axis = math.degrees(math.atan2(dy, dx)) if travel >= ALIGN_MIN_M else state.heading_deg
             self.frame = LaneFrame(self.align_start, axis)
             print(
@@ -375,6 +383,31 @@ class SweepPatrol:
             self.plan.appendleft(Step(Phase.LANE, ALONG))
             return {}
         return {"pitch": self._speed(front, unsure, now)}
+
+    def _continue_mission_leg(self, state: DroneState) -> None:
+        """The mission's aligning leg (odometry displacement, atan2(dy, dx) like ALIGN's) ended
+        here: if the drone still faces along it, ALIGN goes on from that leg's start (about one
+        leg back), so it ends at once when the SDK heading is sure, else flies on straight.
+        Turned since (a look-around, an approach) or too short: ALIGN's own leg from here."""
+        axis, leg = self.alignment.forward_deg, self.alignment.leg_m
+        off = wrap_deg(state.heading_deg - axis)
+        if leg < ALIGN_MIN_M or abs(off) > MISSION_AXIS_TOLERANCE_DEG:
+            print(
+                f"mission's aligning leg not used ({leg:.1f} m at {axis:+.1f} deg, heading "
+                f"{off:+.0f} deg off it): aligning from here",
+                flush=True,
+            )
+            return
+        self.align_start = (
+            state.pose_xy[0] - leg * math.cos(math.radians(axis)),
+            state.pose_xy[1] - leg * math.sin(math.radians(axis)),
+        )
+        self.align_m = ALIGN_MIN_M  # the mission's leg is the distance flown
+        print(
+            f"continuing the mission's {leg:.1f} m aligning leg ({axis:+.1f} deg, heading "
+            f"{off:+.0f} deg off it)",
+            flush=True,
+        )
 
     def _fly(self, step: Step, state: DroneState, now: float) -> dict[str, float]:
         leg = step.leg

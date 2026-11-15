@@ -7,7 +7,9 @@ point, y to the right of them (heading 0 = along, 90 = right).
 
 1. ALIGN: a few metres straight ahead, no yaw: the odometry displacement is the lane axis in the
    odometry frame (whose axes are not the drone's), and the SDK's heading learns the same angle
-   from the direction of travel (estimate.py) before any heading is held.
+   from the direction of travel (estimate.py) before any heading is held. After the mission's
+   own aligning leg (GET /mission "alignment"), with the drone still facing along it, ALIGN
+   goes on from that leg: no second leg once the SDK heading is sure.
 2. LANE: fly the lane, holding the heading (the SDK heading) and the cross-track offset
    (odometry, gentle roll), until the floor boundary (floor_boundary.py) shows something within
    --corridor of the path closer than --stop-at (at least the image's near edge + 0.15 m: the
@@ -27,8 +29,10 @@ point, y to the right of them (heading 0 = along, 90 = right).
    the largest unseen patches are revisited with straight legs (--revisit) and reported.
 
 Mission (drone/sdk/mission.py): in-process as MissionConfig(patrol=MissionSweep([...])), or
-over HTTP with strategy "external": a detection hands the drone to the mission, and the sweep
-resumes where it was if the mission patrols again.
+over HTTP with strategy "external": start the sweep with the mission (it loads its depth model
+while the mission takes off, climbs and aligns, and sends nothing until the mission patrols); a
+detection hands the drone to the mission, and the sweep resumes where it was if the mission
+patrols again.
 
 Safety: everything goes through drone.sdk (sdkdrone.py): STOP / LAND ends the sweep (no
 auto-resume), link/telemetry/video loss hovers then lands, geofence and low battery bring it
@@ -47,6 +51,7 @@ Stop it with Ctrl+C (neutral + STOP), or STOP / LAND in the web page.
 import argparse
 import time
 from collections.abc import Callable, Sequence
+from typing import Any
 
 from drone.patrol.coverage import DEFAULT_OVERLAP, CameraView, lane_spacing
 from drone.patrol.dvd import Perception, loop, new_parser, parse_patrol_args, setup_camera
@@ -54,8 +59,10 @@ from drone.patrol.sdkdrone import DroneState, LocalDrone, PatrolDrone, RemoteDro
 from drone.patrol.sweep_patrol import SweepFinished, SweepPatrol, camera_pitch
 from drone.sdk import Navigator
 from drone.sdk.mission import END_STATES
+from drone.sdk.mission_geometry import Alignment
 
-MISSION_POLL_S = 1.0
+MISSION_POLL_S = 0.2  # the drone hovers from the handover until the sweep's first command
+MISSION_STARTING = "starting"  # the step of a mission prepared but not flying yet (mission.py)
 
 
 def plan_view(
@@ -86,10 +93,17 @@ def run(
     on_start: Callable[[SweepPatrol], None] | None = None,
 ) -> str:
     """Fly the sweep until it is done, --duration, STOP or a safety rule."""
+    # the depth model loads (seconds) while a mission still takes off, climbs and aligns
+    perception = Perception(drone, args, args.corridor)
+    handover = wait_for_handover(drone)
+    if handover is None:
+        return "the mission ended before handing the drone over"
     setup_camera(args, drone)
     view, spacing, alt = plan_view(args, drone.state())
-    perception = Perception(drone, args, args.corridor)
-    patrol = SweepPatrol(args, perception, view, spacing, alt)
+    alignment = handover.get("alignment")
+    patrol = SweepPatrol(
+        args, perception, view, spacing, alt, Alignment(**alignment) if alignment else None
+    )
     if on_start:
         on_start(patrol)
     while True:
@@ -98,7 +112,7 @@ def run(
         except SweepFinished as done:
             return f"sweep done: {done}"
         except Stopped:
-            if not wait_for_mission(drone):
+            if wait_for_mission(drone) is None:
                 print(f"sweep so far: {patrol.summary()}", flush=True)
                 raise
             patrol.resume(drone.state())
@@ -107,24 +121,39 @@ def run(
             raise
 
 
-def wait_for_mission(drone: PatrolDrone) -> bool:
-    """The SDK said stop: if a mission (strategy "external") took the drone for an approach,
-    wait until it hands it back (True); False for a real STOP or the mission's end."""
+def wait_for_handover(drone: PatrolDrone) -> dict[str, Any] | None:
+    """Before the first command: a mission (strategy "external") that is still taking off,
+    climbing or aligning keeps the drone until it patrols. Its status then; {} without a
+    running mission (the sweep flies on its own); None if the mission ends first."""
+    if not isinstance(drone, RemoteDrone) or not _running(drone.client.mission()):
+        return {}
+    return wait_for_mission(drone)
+
+
+def wait_for_mission(drone: PatrolDrone) -> dict[str, Any] | None:
+    """While a mission (strategy "external") flies the drone itself (takeoff, climb, aligning
+    leg, an approach after a detection), wait until it hands the drone over: the mission's
+    status then; None for a real STOP or the mission's end."""
     if not isinstance(drone, RemoteDrone):
-        return False
+        return None
     said = ""
     while True:
         mission = drone.client.mission()
         if mission.get("accepts_moves"):
-            print("the mission hands the drone back: sweeping on", flush=True)
-            return True
+            print("the mission hands the drone over: sweeping", flush=True)
+            return mission
+        if not _running(mission):
+            return None
         state = mission.get("state")
-        if state in END_STATES:
-            return False
         if state != said:
             print(f"the mission flies the drone ({state}): waiting", flush=True)
             said = state
         time.sleep(MISSION_POLL_S)
+
+
+def _running(mission: dict[str, Any]) -> bool:
+    """Prepared (idle, "starting", until its flight begins) or flying."""
+    return mission.get("state") not in END_STATES or mission.get("step") == MISSION_STARTING
 
 
 class MissionSweep:
