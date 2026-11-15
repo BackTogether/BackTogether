@@ -1,0 +1,8 @@
+#!/usr/bin/env bash
+# Save the parents' web page photos where drone/find reads faces: drone/identify/people/<NAME>/
+# (scripts/web_inbox.py). Start it before the parent sends the request: only requests sent while
+# it runs are saved. Then: drone/find <NAME>.
+# Usage: drone/inbox
+set -euo pipefail
+cd "$(dirname "$0")/.."
+exec python3 scripts/web_inbox.py --out drone/identify/people "$@"
