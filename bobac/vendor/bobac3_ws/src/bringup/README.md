@@ -16,6 +16,7 @@ One launch file that starts every block of the demo. Add one include / node per 
 | `scripts/splash.py` | covers the whole screen (terminals, rviz) with the face gifs of `assets/`, played full screen and centred, one after another in random order |
 | `assets/robot_*.gif` | the robot face animations `splash` plays, one after another in random order |
 | `src/bringup/state.py` | `StateClient`: how a node reads the state and asks for the next one. A module, not a script: `catkin_install_python` gives every installed script a devel space wrapper that exports nothing, so scripts cannot import each other |
+| `systemd/ngrok.service`, `systemd/web-inbox.service` | user services kept up from boot: the drone laptop's ngrok link to `child_goal_server`, and `scripts/web_inbox.py` saving the parents' web photos in `~/.reinovo/face_data/<NAME>/` for face_rec (install steps in each file) |
 | `package.xml`, `CMakeLists.txt`, `setup.py` | catkin package definition; `setup.py` plus `catkin_python_setup()` is what makes `src/bringup/` importable from `scripts/` |
 
 ## Run
