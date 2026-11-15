@@ -99,6 +99,8 @@ class FaceCheck:
                 return
 
     def start_search(self, reason):
+        if self.machine.state == CARE_STATE:
+            return  # already with the child: never turn away from them
         rospy.loginfo("face_check: %s, searching for '%s'", reason, self.person)
         self.new_goal.clear()
         self.search_requested.set()
@@ -215,7 +217,11 @@ class FaceCheck:
                 continue
             self.search_requested.clear()
             self.machine.set(SEARCHING_STATE)
-            if self.search():
+            found = self.search()
+            # one search per arrival: the arrival comes twice (/child_goal/reached and the
+            # arrived state), and the second request must not start a new turn after this one
+            self.search_requested.clear()
+            if found:
                 rospy.loginfo("face_check: found '%s', following them", self.person)
                 self.found.publish(String(data=self.person))
                 self.machine.set(CARE_STATE)
