@@ -5,3 +5,6 @@ people/*
 models/
 # Photos of the landing pad (training data) and the training check image.
 base/
+# Photos of the target's body (personal data) and of the robot: training data, local only.
+body/
+robot/
