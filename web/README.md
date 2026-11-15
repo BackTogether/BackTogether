@@ -92,13 +92,16 @@ A minimal receiver, enough to plug the real drone in later:
 from http.server import BaseHTTPRequestHandler, HTTPServer
 import base64, json, pathlib
 
+
 class Handler(BaseHTTPRequestHandler):
     def _cors(self):
         self.send_header("Access-Control-Allow-Origin", "*")
         self.send_header("Access-Control-Allow-Headers", "Content-Type, Authorization")
 
     def do_OPTIONS(self):
-        self.send_response(204); self._cors(); self.end_headers()
+        self.send_response(204)
+        self._cors()
+        self.end_headers()
 
     def do_POST(self):
         request = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
@@ -106,9 +109,12 @@ class Handler(BaseHTTPRequestHandler):
         pathlib.Path(f"{request['request_id']}.jpg").write_bytes(photo)
         print("search for", request["child"]["name"], "in", request["last_seen"]["zone"])
         # TODO: hand request_id + the photo to the drone
-        self.send_response(202); self._cors()
-        self.send_header("Content-Type", "application/json"); self.end_headers()
+        self.send_response(202)
+        self._cors()
+        self.send_header("Content-Type", "application/json")
+        self.end_headers()
         self.wfile.write(b'{"accepted": true}')
+
 
 HTTPServer(("0.0.0.0", 8080), Handler).serve_forever()
 ```
