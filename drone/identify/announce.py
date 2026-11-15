@@ -6,6 +6,7 @@ import struct
 import subprocess
 import sys
 import tempfile
+import time
 import wave
 from pathlib import Path
 
@@ -42,6 +43,9 @@ def _write_tones(path: Path, tones_hz: tuple) -> None:
 
 def play(found: bool) -> None:
     """Two rising beeps when the person was found, one low beep when the search failed."""
+    if sys.platform == "win32":  # no command-line player there; the stdlib has the beeps
+        _play_windows(found)
+        return
     player = next((command for command in PLAYERS if shutil.which(command[0])), None)
     if player is None:
         sys.stdout.write("\a")  # terminal bell: better than silence
@@ -51,6 +55,14 @@ def play(found: bool) -> None:
         sound = Path(folder) / "beep.wav"
         _write_tones(sound, FOUND_TONES_HZ if found else FAILED_TONES_HZ)
         subprocess.run([*player, str(sound)], timeout=PLAY_TIMEOUT_S, check=False)
+
+
+def _play_windows(found: bool) -> None:
+    import winsound
+
+    for tone in FOUND_TONES_HZ if found else FAILED_TONES_HZ:
+        winsound.Beep(tone, int(BEEP_S * 1000))
+        time.sleep(GAP_S)
 
 
 def save_evidence(sighting: Sighting, name: str, path: Path) -> bool:

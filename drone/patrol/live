@@ -1,0 +1,51 @@
+#!/usr/bin/env bash
+# Live patrol tests against the running app (drone/fly = drone.sdk serve), offline-safe.
+# Usage: drone/patrol/live feed <name> | mission | mission-sweep | status | abort | spin [sticks] | tilt <deg> | alt <m> | distance | dry | bounce | dvd-dry | dvd | clear-dry | clear | sweep-dry | sweep  [extra args]
+#   spin      yaw calibration: one exact turn per stick value (default 100 80 60), then LANDS
+#   tilt      set the camera tilt through the SDK (needs Manual control)
+#   alt       climb or descend smoothly to <m> above takeoff where the drone is (in flight)
+#   distance  perception only: prints the front distance, sends nothing
+#   dry       bounce patrol decisions (FORWARD/HOVER/TURN), sends nothing
+#   bounce    REAL autonomous bounce. Stop: Ctrl+C here, or STOP / Space in the page.
+#   dvd-dry   DVD patrol (reflection turns, floor-boundary distance) decisions, sends nothing
+#   dvd       REAL DVD patrol. Start drone/fly with --fence 15 in a big hall (default 8 m fence
+#             makes the SDK fly home and land). DVD_TAKEOFF_HEIGHT: 0 = took off from the floor.
+#   clear-dry clear patrol (turn always the same way until clear, dvd's perception), sends nothing
+#   clear     REAL clear patrol; same --fence and DVD_TAKEOFF_HEIGHT as dvd.
+#   sweep-dry lawnmower sweep (lanes, turns, coverage) decisions, sends nothing
+#   sweep     REAL lawnmower sweep: start facing along the hall. drone/fly --fence 20 for a
+#             30 x 20 m hall; a small test: sweep --length 5 --width 5 (2 lanes)
+set -euo pipefail
+cd "$(dirname "$0")/../.."
+SDK="${SDK:-http://127.0.0.1:8077}"  # SDK=<url> to point it at the simulator
+# metres above the floor where the drone took off. The 2026-11-14 flight took off from the floor
+# (camera at the odometry's 1.72 m), so 1.0 put the camera 1 m too high: ~+1 m on every distance.
+# bounce's STOP_AT/CLEAR_AT stopgap below was tuned with it, so bounce keeps it; dvd uses 0.
+TAKEOFF_HEIGHT="${TAKEOFF_HEIGHT:-1.0}"
+# The depth model read ~2.2-2.5 m at ~1 m from a wall (2026-11-14): stop/clear thresholds in model metres
+STOP_AT="${STOP_AT:-2.5}"; CLEAR_AT="${CLEAR_AT:-3.3}"
+DEPS=(--offline --no-project --python 3.11 --with numpy --with pillow --with torch --with transformers)
+export HF_HUB_OFFLINE="${HF_HUB_OFFLINE:-1}"  # model is cached; the drone Wi-Fi has no internet
+mode="${1:-}"; shift || true
+case "$mode" in
+  feed)     exec uv run --offline --with opencv-contrib-python-headless --with numpy python -m drone.identify.feed "${1:?child name: a folder in drone/identify/people/}" --url "$SDK" "${@:2}" ;;
+  mission)  # small test mission: square 2-4 m ahead of the launch, until found, then overhead fix, 1 orbit, land
+            curl -s -X POST "$SDK/mission/start" -H 'Content-Type: application/json' -d "{\"waypoints\": [{\"x\": 2, \"y\": -1.5}, {\"x\": 4, \"y\": -1.5}, {\"x\": 4, \"y\": 1.5}, {\"x\": 2, \"y\": 1.5}], \"loops\": 0, \"orbit_turns\": ${ORBIT_TURNS:-1}, \"launch_height_m\": ${DVD_TAKEOFF_HEIGHT:-0}}"; echo ;;
+  mission-sweep)  # the mission watches for the child while `live sweep` flies the lawnmower
+            curl -s -X POST "$SDK/mission/start" -H 'Content-Type: application/json' -d "{\"waypoints\": [{\"x\": 2, \"y\": 0}], \"strategy\": \"external\", \"patrol_tilt_deg\": -40, \"orbit_turns\": ${ORBIT_TURNS:-1}, \"launch_height_m\": ${DVD_TAKEOFF_HEIGHT:-0}}"; echo ;;
+  abort)    curl -s -X POST "$SDK/mission/abort"; echo ;;
+  status)   curl -s "$SDK/mission" | python3 -c "import json,sys; m=json.load(sys.stdin); c=m.get('child') or {}; print(m['state'], '|', m['step'], '|', m.get('message'), '| child:', c.get('drone'), c.get('map'))" ;;
+  spin)     exec uv run --offline --no-project --python 3.11 --with numpy --with pillow python -m drone.calibration.spin "$@" ;;
+  tilt)     curl -s -X POST -H 'Content-Type: application/json' -d "{\"deg\": ${1:?degrees}}" "$SDK/tilt"; echo ;;
+  alt)      python3 -c 'import sys; from drone.sdk.client import DroneClient as C; c = C(sys.argv[1]); p = c.status()["telemetry"]["pose"]; print(c.goto(p["x"], p["y"], float(sys.argv[2])))' "$SDK" "${1:?metres above takeoff}" ;;
+  distance) exec uv run "${DEPS[@]}" python -m drone.patrol.front_distance --sdk "$SDK" --takeoff-height "$TAKEOFF_HEIGHT" "$@" ;;
+  dry)      exec uv run "${DEPS[@]}" python -m drone.patrol.bounce --sdk "$SDK" --dry-run --takeoff-height "$TAKEOFF_HEIGHT" --geofence 4 --tilt -30 --stop-at "$STOP_AT" --clear-at "$CLEAR_AT" "$@" ;;
+  bounce)   exec uv run "${DEPS[@]}" python -m drone.patrol.bounce --sdk "$SDK" --takeoff-height "$TAKEOFF_HEIGHT" --speed 0.3 --geofence 4 --tilt -30 --stop-at "$STOP_AT" --clear-at "$CLEAR_AT" "$@" ;;
+  dvd-dry)  exec uv run "${DEPS[@]}" python -m drone.patrol.dvd --sdk "$SDK" --dry-run --takeoff-height "${DVD_TAKEOFF_HEIGHT:-0}" --tilt -30 "$@" ;;
+  dvd)      exec uv run "${DEPS[@]}" python -m drone.patrol.dvd --sdk "$SDK" --takeoff-height "${DVD_TAKEOFF_HEIGHT:-0}" --tilt -30 "$@" ;;
+  clear-dry) exec uv run "${DEPS[@]}" python -m drone.patrol.clear --sdk "$SDK" --dry-run --takeoff-height "${DVD_TAKEOFF_HEIGHT:-0}" --tilt -30 "$@" ;;
+  clear)    exec uv run "${DEPS[@]}" python -m drone.patrol.clear --sdk "$SDK" --takeoff-height "${DVD_TAKEOFF_HEIGHT:-0}" --tilt -30 "$@" ;;
+  sweep-dry) exec uv run "${DEPS[@]}" python -m drone.patrol.sweep --sdk "$SDK" --dry-run --takeoff-height "${DVD_TAKEOFF_HEIGHT:-0}" --tilt -30 "$@" ;;
+  sweep)    exec uv run "${DEPS[@]}" python -m drone.patrol.sweep --sdk "$SDK" --takeoff-height "${DVD_TAKEOFF_HEIGHT:-0}" --tilt -30 "$@" ;;
+  *) sed -n '2,17p' "$0"; exit 1 ;;
+esac

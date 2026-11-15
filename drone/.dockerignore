@@ -1,0 +1,11 @@
+**/__pycache__/
+**/captures/
+**/recordings/
+**/*:Zone.Identifier
+docker/
+# Personal data and local model weights (see identify/.gitignore): mounted at run time, never baked.
+identify/people/
+identify/models/
+identify/base/
+identify/body/
+identify/robot/

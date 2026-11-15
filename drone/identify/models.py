@@ -1,9 +1,10 @@
-"""The two ONNX models, from the OpenCV Zoo. Downloaded once into drone/identify/models/.
+"""The three ONNX models, from the OpenCV Zoo. Downloaded once into drone/identify/models/.
 
-    uv run --with opencv-python-headless python -m drone.identify.models
+    uv run --with opencv-contrib-python-headless python -m drone.identify.models
 
-YuNet (face detection, MIT, 0.2 MB) and SFace (face recognition, Apache-2.0, 37 MB).
-Download them before the demo: the venue Wi-Fi is slow.
+YuNet (face detection, MIT, 0.2 MB), SFace (face recognition, Apache-2.0, 37 MB) and YOLOX-S
+(person detection for the body tracker, Apache-2.0, 34 MB). Download them before the demo: the
+venue Wi-Fi is slow.
 """
 
 import urllib.request
@@ -13,6 +14,7 @@ MODELS_DIR = Path(__file__).resolve().parent / "models"
 ZOO_URL = "https://github.com/opencv/opencv_zoo/raw/main/models"
 DETECTOR = "face_detection_yunet/face_detection_yunet_2023mar.onnx"
 RECOGNIZER = "face_recognition_sface/face_recognition_sface_2021dec.onnx"
+PERSON_DETECTOR = "object_detection_yolox/object_detection_yolox_2022nov.onnx"
 DOWNLOAD_TIMEOUT_S = 600
 
 
@@ -34,7 +36,7 @@ def download(zoo_path: str) -> Path:
 
 
 def main() -> None:
-    for zoo_path in (DETECTOR, RECOGNIZER):
+    for zoo_path in (DETECTOR, RECOGNIZER, PERSON_DETECTOR):
         path = download(zoo_path)
         print(f"{path.name}: {path.stat().st_size / 1e6:.1f} MB")
 

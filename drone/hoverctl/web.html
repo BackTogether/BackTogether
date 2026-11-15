@@ -1,0 +1,2156 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, user-scalable=no">
+<title>hoverctl</title>
+<!-- Loaded without blocking: offline on the drone's Wi-Fi it fails and the system fonts stay. -->
+<link rel="stylesheet" media="print" onload="this.media='all'"
+  href="https://fonts.googleapis.com/css2?family=Geist:wght@400;500;600&family=Geist+Mono:wght@400;500&display=swap">
+<style>
+  :root {
+    --bg: #07080b; --panel: #0c0e13; --ink: #e9ecf1; --muted: #9199a6; --faint: #5a616d;
+    --line: #e9ecf1; --rule: #252932; --red: #b4443e;
+    --sans: "Geist", ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
+    --mono: "Geist Mono", ui-monospace, "SFMono-Regular", Menlo, monospace;
+    --gap: 16px; --side: clamp(330px, 25vw, 372px); --pip-w: 300px;
+    --pip-clear: calc(var(--pip-w) * 9 / 16 + var(--gap));
+    --controls-h: clamp(236px, 31vh, 300px); --legend-h: 64px;
+    color-scheme: dark;
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; height: 100%; background: var(--bg); color: var(--ink); }
+  body { font: 14px/1.5 var(--sans); -webkit-font-smoothing: antialiased; padding: var(--gap);
+    height: 100dvh; overflow: hidden; user-select: none; -webkit-user-select: none; }
+  .mono { font-family: var(--mono); font-size: 11px; letter-spacing: .08em; text-transform: uppercase; }
+  button, summary { all: unset; cursor: pointer; }
+  [hidden] { display: none !important; }
+
+  .frame { height: 100%; display: grid; grid-template-rows: auto minmax(0, 1fr);
+    border: 1px solid var(--line); background: var(--panel); }
+
+  /* top bar: chips for what the drone does, icons for the links */
+  .top { display: flex; align-items: stretch; border-bottom: 1px solid var(--line); min-height: 42px; }
+  .brand { display: flex; align-items: baseline; gap: 10px; padding: 11px 18px; border-right: 1px solid var(--line); }
+  .brand b { font-weight: 600; font-size: 13px; letter-spacing: .14em; text-transform: uppercase; }
+  .brand span { color: var(--faint); }
+  .chips { display: flex; align-items: center; gap: 6px; padding: 0 12px; flex: 1; min-width: 0; }
+  .chip { padding: 3px 8px; border: 1px solid var(--faint); color: var(--muted); white-space: nowrap; }
+  .chip.on { background: var(--ink); border-color: var(--ink); color: var(--bg); }
+  .chip.warn { border-color: var(--red); color: var(--red); }
+  .chip.dim { color: var(--faint); border-color: var(--rule); }
+  .stats { display: flex; }
+  .stat { display: flex; align-items: center; gap: 7px; padding: 0 14px; border-left: 1px solid var(--line);
+    color: var(--muted); white-space: nowrap; font-variant-numeric: tabular-nums; }
+  .stat svg { width: 16px; height: 16px; flex: none; fill: none; stroke: currentColor; stroke-width: 1.25; }
+  .stat svg .fill { fill: currentColor; stroke: none; }
+  .stat b { color: var(--ink); font-weight: 500; }
+  .stat.warn, .stat.warn b { color: var(--red); }
+  .stat.dim, .stat.dim b { color: var(--faint); }
+  button.stat:hover { color: var(--ink); }
+
+  .main { display: grid; grid-template-columns: minmax(0, 1fr) var(--side); min-height: 0; }
+  .stage { position: relative; display: grid; grid-template-rows: minmax(0, 1fr) var(--controls-h); min-height: 0; }
+  body.mini .stage { grid-template-rows: minmax(0, 1fr); }
+
+  /* video and what floats over it */
+  .video { position: relative; min-height: 0; background: var(--bg); overflow: hidden; }
+  .video img { width: 100%; height: 100%; object-fit: contain; display: block; }
+  /* vision overlay (drone.sdk server + drone/identify/feed.py): boxes drawn on the shown frame */
+  .video canvas.vision { position: absolute; inset: 0; width: 100%; height: 100%; pointer-events: none; }
+  .vision-chip { position: absolute; left: 10px; top: 10px; z-index: 1; max-width: calc(100% - 20px);
+    padding: 4px 8px; background: rgba(7, 8, 11, .72); color: var(--ink); font-size: 11.5px;
+    line-height: 1.45; pointer-events: none; white-space: pre-line; }
+  .vision-chip b { color: #ff6a5f; font-weight: 600; }
+  body.mini .vision-chip, body.map-open .vision-chip { display: none; }
+  body.mini .video { position: absolute; z-index: 2; top: var(--gap); left: var(--gap);
+    width: var(--pip-w); height: auto; aspect-ratio: 16 / 9; border: 1px solid var(--line); cursor: pointer; }
+  .no-video { position: absolute; inset: 0; display: grid; place-content: center; gap: 8px;
+    text-align: center; padding: 24px; background: var(--panel); }
+  .no-video .big { font-size: 30px; font-weight: 500; letter-spacing: -.02em; line-height: 1.1; }
+  .no-video .mono { color: var(--muted); }
+  body.mini .no-video .big { font-size: 15px; }
+  body.mini .no-video .mono { display: none; }
+  .notices { position: absolute; left: 50%; top: 10px; transform: translateX(-50%); z-index: 1;
+    display: grid; gap: 6px; justify-items: center; pointer-events: none; }
+  .notice { padding: 4px 10px; border: 1px solid var(--red); background: var(--panel); color: var(--red); white-space: nowrap; }
+  .notice.ok { border-color: var(--ink); background: var(--ink); color: var(--bg); padding: 8px 16px; }
+  body.mini .notices { display: none; }
+  .takeoff { position: absolute; left: 50%; bottom: 16px; transform: translateX(-50%); z-index: 1;
+    display: grid; gap: 4px; padding: 10px 18px; text-align: center; background: var(--ink); color: var(--bg); }
+  .takeoff b { font: 600 22px var(--mono); letter-spacing: .16em; }
+  body.mini .takeoff { bottom: 8px; padding: 4px 8px; }
+  body.mini .takeoff b { font-size: 13px; }
+  body.mini .takeoff span { display: none; }
+  .capture { position: absolute; left: 8px; bottom: 8px; z-index: 1; display: flex; align-items: center; }
+  .capture .btn { height: 28px; padding: 0 10px; margin-right: -1px; gap: 6px; background: var(--panel);
+    grid-auto-flow: column; }
+  .capture .btn kbd { min-width: 0; height: 16px; padding: 0 4px; font-size: 10px; }
+  .capture .btn.rec-on, .capture .btn.rec-on kbd { border-color: var(--red); color: var(--red); }
+  .rec-dot { display: inline-block; width: 8px; height: 8px; margin-right: 4px; border-radius: 50%;
+    background: var(--red); vertical-align: middle; }
+  .capture-status { margin-left: 10px; padding: 2px 6px; background: var(--panel); color: var(--muted);
+    max-width: 360px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .capture-status.warn { color: var(--red); }
+  body.mini .capture { display: none; }
+
+  /* sticks: left = W A S D (move), right = I J K L (height, turn), like the keyboard */
+  .controls { container-type: size; display: grid; grid-template-columns: 1fr minmax(210px, 250px) 1fr;
+    align-items: center; justify-items: center; gap: var(--gap); padding: 14px 24px;
+    border-top: 1px solid var(--line); min-height: 0; }
+  body.mini .controls { border-top: 0; padding-top: var(--pip-clear); }
+  .stick { --pad: min(24cqw, calc(100cqh - var(--legend-h))); display: grid; gap: 10px; justify-items: center; }
+  body.mini .stick { --pad: min(32cqw, calc(100cqh - var(--legend-h)), 440px); }
+  .pad { position: relative; width: var(--pad); height: var(--pad); border: 1px solid var(--line);
+    touch-action: none; cursor: crosshair; }
+  .pad::before, .pad::after { content: ""; position: absolute; background: var(--rule); }
+  .pad::before { left: 50%; top: 0; bottom: 0; width: 1px; }
+  .pad::after { top: 50%; left: 0; right: 0; height: 1px; }
+  .pad .dir { position: absolute; color: var(--faint); font-size: 9.5px; pointer-events: none; padding: 0 3px;
+    background: var(--panel); line-height: 1.4; }
+  .pad .dir.n { top: 5px; left: 50%; transform: translateX(-50%); }
+  .pad .dir.s { bottom: 5px; left: 50%; transform: translateX(-50%); }
+  .pad .dir.w { left: 6px; top: 50%; transform: translateY(-50%); }
+  .pad .dir.e { right: 6px; top: 50%; transform: translateY(-50%); }
+  .knob { position: absolute; left: 50%; top: 50%; width: 14%; aspect-ratio: 1; z-index: 1;
+    transform: translate(-50%, -50%); border: 1px solid var(--line); background: var(--panel); }
+  .stick.live .knob { background: var(--ink); }
+  .controls.locked .stick { opacity: .3; }
+  .keys { display: grid; grid-template-columns: repeat(3, 26px); grid-auto-rows: 22px; gap: 4px; }
+  kbd { display: grid; place-items: center; min-width: 26px; padding: 0 5px; border: 1px solid var(--faint);
+    color: var(--muted); font: 500 11px var(--mono); text-transform: uppercase; }
+  kbd.held { background: var(--ink); border-color: var(--ink); color: var(--bg); }
+  .keys .up { grid-column: 2; } .keys .left { grid-column: 1; grid-row: 2; }
+  .keys .down { grid-column: 2; grid-row: 2; } .keys .right { grid-column: 3; grid-row: 2; }
+
+  .center { display: grid; gap: 12px; width: 100%; }
+  .lock { padding: 6px 10px; border: 1px solid var(--line); text-align: center; }
+  #stop { display: grid; place-content: center; gap: 2px; height: 84px; text-align: center; background: var(--red);
+    border: 1px solid var(--red); color: #fff; touch-action: none; }
+  #stop b { font: 600 22px var(--mono); letter-spacing: .24em; padding-left: .24em; }
+  #stop span { font-size: 10px; opacity: .85; }
+  #stop.stopped { background: var(--ink); border-color: var(--ink); color: var(--bg); }
+  .legend { display: grid; grid-template-columns: auto 1fr; gap: 5px 10px; align-items: center; color: var(--faint); }
+  .legend .caps { display: flex; gap: 4px; }
+  .legend kbd { min-width: 22px; height: 20px; font-size: 10px; }
+
+  /* side panel: the flight view first, everything else under "details" */
+  .side { border-left: 1px solid var(--line); overflow-y: auto; min-height: 0; display: flex; flex-direction: column; }
+  .side > section { border-bottom: 1px solid var(--line); }
+  .label { color: var(--faint); font-size: 10.5px; }
+  .compass { position: relative; padding: 10px 16px 6px; }
+  .compass .head { display: flex; justify-content: space-between; align-items: center; }
+  .est-tag { padding: 0 6px; border: 1px solid var(--muted); color: var(--muted); }
+  .dial { position: relative; width: min(100%, 236px); margin: 2px auto 0; aspect-ratio: 1; }
+  .dial svg { position: absolute; inset: 0; width: 100%; height: 100%; overflow: visible; }
+  .dial .readout { position: absolute; inset: 0; display: grid; place-content: center; text-align: center; gap: 2px; }
+  .dial .deg { font: 500 34px/1 var(--sans); letter-spacing: -.02em; font-variant-numeric: tabular-nums; }
+  .dial .deg small { font-size: 18px; font-weight: 500; margin-left: 4px; color: var(--muted); letter-spacing: 0; }
+  .dial .sd { color: var(--faint); }
+  .dial .sd.warn { color: var(--red); }
+  #ring { transition: transform 250ms linear; transform-origin: 0 0; }
+  #ring text { transition: transform 250ms linear; transform-box: fill-box; transform-origin: center; }
+  .tick { stroke: var(--faint); stroke-width: 1; vector-effect: non-scaling-stroke; }
+  .tick.major { stroke: var(--ink); }
+  .ring-text { fill: var(--faint); font: 500 9px var(--mono); }
+  .ring-text.card { fill: var(--ink); font: 600 14px var(--sans); }
+  .heading-line { stroke: var(--ink); stroke-width: 2.5; }
+  .sigma { fill: none; stroke: var(--muted); stroke-width: 3; opacity: .55; }
+  .travel { fill: var(--ink); }
+
+  .readouts { display: grid; grid-template-columns: 1.1fr 1fr 1fr; }
+  .readouts > div { padding: 9px 14px 10px; min-width: 0; }
+  .readouts > div + div { border-left: 1px solid var(--rule); }
+  .readouts output { display: block; font: 500 21px/26px var(--sans); letter-spacing: -.02em; white-space: nowrap;
+    overflow: hidden; text-overflow: ellipsis; font-variant-numeric: tabular-nums; }
+  .readouts output small { font-size: 13px; color: var(--muted); letter-spacing: 0; margin-left: 2px; }
+  .readouts .note { display: block; color: var(--faint); font-size: 10px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .readouts output.dim { color: var(--faint); font-size: 16px; }
+  .autopilot { grid-column: 1 / -1; border-top: 1px solid var(--rule); border-left: 0 !important;
+    display: flex; gap: 10px; align-items: baseline; }
+  .autopilot output { font: 12px/1.4 var(--mono); letter-spacing: 0; white-space: normal; }
+  .autopilot output.warn { color: var(--red); }
+
+  .row { display: grid; align-items: center; padding: 10px 16px; }
+  .row + .row { padding-top: 0; }
+  .row > .label { padding-right: 10px; }
+  .btn { display: grid; place-items: center; height: 34px; padding: 0 12px; border: 1px solid var(--line);
+    font: 500 11px var(--mono); letter-spacing: .1em; text-transform: uppercase; white-space: nowrap; }
+  .btn:hover { background: var(--rule); }
+  .btn.on { background: var(--ink); color: var(--bg); }
+  .btn.armed { background: var(--red); border-color: var(--red); color: #fff; }
+  .btn:disabled, .btn.off { opacity: .35; cursor: default; pointer-events: none; }
+  .seg .btn { height: 28px; padding: 0 4px; margin-left: -1px; letter-spacing: .02em; }
+  .actions { grid-template-columns: 1fr 1fr; gap: 8px; padding-top: 12px; }
+  .speed { grid-template-columns: 48px repeat(5, 1fr) auto; }
+  .speed #sport { margin-left: 8px; padding: 0 9px; letter-spacing: .08em; }
+  .speed #sport.on { background: var(--red); border-color: var(--red); color: #fff; }
+  .tilt { grid-template-columns: 48px repeat(5, 1fr); }
+  .tilt form { grid-column: 2 / -1; display: grid; grid-template-columns: 1fr auto; margin-top: 6px; }
+  .tilt input { height: 28px; }
+  .tilt form .btn { margin-left: -1px; padding: 0 12px; }
+  .vid { grid-template-columns: 48px 1fr 1fr 12px 1fr 1fr; }
+  .vid .gap { grid-column: 4; }
+  input[type=password], input[type=text] { all: unset; box-sizing: border-box; height: 34px; padding: 0 10px;
+    border: 1px solid var(--faint); font: 12px var(--mono); user-select: text; -webkit-user-select: text; min-width: 0; }
+  input:focus { border-color: var(--line); }
+  .wifi { grid-template-columns: 1fr auto; padding-top: 0; }
+  .wifi .btn { margin-left: -1px; }
+  .msg { padding: 0 16px 10px; min-height: 26px; color: var(--muted); }
+  .msg.warn, .msg .warn { color: var(--red); }
+  .nolink { padding: 12px 16px; color: var(--muted); }
+
+  /* details: diagnostics, closed by default */
+  details { border-bottom: 0 !important; }
+  summary { display: flex; justify-content: space-between; padding: 11px 16px; color: var(--muted); }
+  summary:hover { color: var(--ink); }
+  summary::after { content: "+"; font: 13px var(--mono); }
+  details[open] summary::after { content: "−"; }
+  details h3 { margin: 0; padding: 7px 16px; border-top: 1px solid var(--rule); border-bottom: 1px solid var(--rule);
+    color: var(--faint); font-weight: 500; display: flex; justify-content: space-between; background: var(--bg); }
+  .kv { display: grid; grid-template-columns: 1fr 1fr; }
+  .kv > div { padding: 7px 16px 8px; border-bottom: 1px solid var(--rule); min-width: 0; }
+  .kv > div:nth-child(odd):not(.wide) { border-right: 1px solid var(--rule); }
+  .kv > div:last-child { border-bottom: 0; }
+  .kv .wide { grid-column: 1 / -1; border-right: 0 !important; }
+  .kv label { display: block; color: var(--faint); font-size: 10px; }
+  .kv output { display: block; font: 12px/1.5 var(--mono); overflow: hidden; text-overflow: ellipsis;
+    white-space: nowrap; font-variant-numeric: tabular-nums; }
+  .kv output.warn { color: var(--red); }
+  .kv output.wrap { white-space: normal; overflow-wrap: anywhere; }
+  .kv output.dim, .group.stale output { color: var(--faint); }
+  #hex { margin: 4px 0 0; color: var(--muted); font: 10.5px/1.6 var(--mono); white-space: pre-wrap; word-break: break-all; }
+  .meters { display: grid; grid-template-columns: max-content 1fr 64px; align-items: center; gap: 10px 12px; padding: 12px 16px; }
+  .meters span { color: var(--muted); }
+  .meters output { font: 500 12px var(--mono); text-align: right; font-variant-numeric: tabular-nums; }
+  .meter { position: relative; height: 10px; border: 1px solid var(--faint); }
+  .meter::before { content: ""; position: absolute; left: 50%; top: -4px; bottom: -4px; width: 1px; background: var(--muted); }
+  .meter i { position: absolute; top: 0; bottom: 0; left: 50%; width: 0; background: var(--ink); }
+  .meter .cap { position: absolute; top: -4px; bottom: -4px; width: 1px; background: var(--faint); }
+  .map { padding: 10px 16px 12px; }
+  .map svg { display: block; width: 100%; max-width: 240px; margin: 6px auto 0; aspect-ratio: 1; overflow: hidden; }
+  .ln { fill: none; stroke: var(--ink); stroke-width: 1; vector-effect: non-scaling-stroke; }
+  .ln.faint { stroke: var(--faint); }
+  .ln.rule { stroke: var(--rule); }
+  .ln.dash { stroke-dasharray: 3 3; }
+  .ink { fill: var(--ink); stroke: none; }
+  .svg-text { fill: var(--muted); font-family: var(--mono); }
+  .note-text { padding: 8px 16px 12px; color: var(--faint); }
+
+  @media (max-width: 900px) {
+    body { height: auto; overflow: auto; padding: 0; }
+    .frame { height: auto; border: 0; }
+    .main { grid-template-columns: 1fr; }
+    .stage { height: 100svh; }
+    .side { border-left: 0; border-top: 1px solid var(--line); }
+    .brand span, #st-video, #st-wifi { display: none; }
+    .controls { grid-template-columns: 1fr 1fr; padding: 12px var(--gap); --controls-h: 360px; }
+    .center { grid-column: 1 / -1; grid-row: 1; }
+    .stick { --pad: min(40cqw, calc(100cqh - var(--legend-h) - 110px)); }
+    .legend { display: none; }
+  }
+
+  /* map view (drone.sdk server only, map_view.py): opened with M or MAP in the top bar; it takes
+     the video's place and the video shrinks to a corner, like "mini video" */
+  .mapview { position: relative; min-height: 0; overflow: hidden; background: var(--bg); }
+  body.map-open .stage { grid-template-rows: minmax(0, 1fr) var(--controls-h); }
+  body.map-open .controls { border-top: 1px solid var(--line); padding-top: 14px; }
+  body.map-open .stick { --pad: min(24cqw, calc(100cqh - var(--legend-h))); }
+  body.map-open .video { position: absolute; z-index: 2; top: var(--gap); left: var(--gap);
+    width: var(--pip-w); height: auto; aspect-ratio: 16 / 9; border: 1px solid var(--line); cursor: pointer; }
+  body.map-open .no-video .big { font-size: 15px; }
+  body.map-open .no-video .mono, body.map-open .notices, body.map-open .capture,
+  body.map-open .takeoff span { display: none; }
+  body.map-open .takeoff { bottom: 8px; padding: 4px 8px; }
+  body.map-open .takeoff b { font-size: 13px; }
+  #toggle-map.on { background: var(--ink); color: var(--bg); }
+  #toggle-map.on kbd { border-color: var(--bg); color: var(--bg); }
+  #mv-svg { position: absolute; inset: 0; width: 100%; height: 100%; display: block; touch-action: none; cursor: grab; }
+  #mv-svg.dragging { cursor: grabbing; }
+  #mv-svg image { image-rendering: pixelated; }
+  .mv-text { fill: var(--muted); font-family: var(--mono); letter-spacing: .04em; }
+  .mv-text.ink { fill: var(--ink); }
+  .mv-text.red { fill: var(--red); }
+  .ln.red { stroke: var(--red); }
+  .ln.thick { stroke-width: 2; }
+  .mv-dot { fill: var(--panel); stroke: var(--ink); stroke-width: 1; vector-effect: non-scaling-stroke; }
+  .mv-panel { position: absolute; top: var(--gap); right: var(--gap); z-index: 1; width: 220px;
+    border: 1px solid var(--line); background: var(--panel); }
+  .mv-head { display: flex; justify-content: space-between; align-items: center; padding: 8px 10px;
+    border-bottom: 1px solid var(--rule); }
+  .mv-layer { display: grid; grid-template-columns: 9px auto 1fr; gap: 9px; align-items: center;
+    box-sizing: border-box; width: 100%; padding: 5px 10px; color: var(--faint); }
+  .mv-layer::before { content: ""; width: 9px; height: 9px; box-sizing: border-box; border: 1px solid var(--faint); }
+  .mv-layer:hover { color: var(--ink); }
+  .mv-layer.on { color: var(--ink); }
+  .mv-layer.on::before { background: var(--ink); border-color: var(--ink); }
+  .mv-layer small { justify-self: end; color: var(--faint); font: 10px var(--mono); letter-spacing: .02em;
+    text-transform: none; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-width: 0; }
+  .mv-layer small.warn { color: var(--red); }
+  #mv-layers { padding: 4px 0; }
+  .mv-tools { display: grid; grid-template-columns: repeat(3, 1fr); border-top: 1px solid var(--rule); }
+  .mv-tools .btn { height: 28px; border: 0; }
+  .mv-tools .btn + .btn { border-left: 1px solid var(--rule); }
+  #mv-splat-tools { border-top: 1px solid var(--rule); padding: 4px 0; }
+  .mv-align { display: grid; grid-template-columns: auto 1fr auto 1fr; gap: 5px 6px; align-items: center; padding: 4px 10px 8px; }
+  .mv-align label { color: var(--faint); font-size: 10px; }
+  .mv-align input[type=text] { height: 26px; padding: 0 8px; }
+  .mv-align .btn { grid-column: 1 / -1; height: 26px; }
+  .mv-align .msg { grid-column: 1 / -1; padding: 0; min-height: 0; overflow-wrap: anywhere; }
+  .mv-note { position: absolute; left: 50%; bottom: var(--gap); transform: translateX(-50%); z-index: 1;
+    max-width: 34%; padding: 4px 10px; border: 1px solid var(--muted); background: var(--panel); color: var(--muted); text-align: center; }
+  .mv-foot { position: absolute; left: var(--gap); bottom: var(--gap); z-index: 1; display: flex; align-items: flex-end; gap: 14px;
+    pointer-events: none; }
+  .mv-axes { width: 46px; height: 46px; overflow: visible; }
+  .mv-scale { display: grid; gap: 4px; color: var(--muted); }
+  .mv-scale i { display: block; height: 6px; border: 1px solid var(--ink); border-top: 0; }
+  .mv-coords { position: absolute; right: var(--gap); bottom: var(--gap); z-index: 1; display: grid; gap: 2px; justify-items: end;
+    color: var(--muted); font-variant-numeric: tabular-nums; text-transform: none; }
+  .mv-coords b { color: var(--ink); font-weight: 500; user-select: text; -webkit-user-select: text; cursor: text; }
+</style>
+</head>
+<body>
+<div class="frame">
+  <header class="top">
+    <div class="brand"><b>hoverctl</b><span class="mono">HoverAir X1</span></div>
+    <div class="chips">
+      <span class="chip mono dim" id="chip-mode" title="the drone's mode">—</span>
+      <span class="chip mono dim" id="chip-state" title="the drone's flight state">—</span>
+      <span class="chip mono on" id="chip-dry" hidden title="--dry-run: nothing is sent to the drone">dry run</span>
+      <span class="chip mono warn" id="chip-tabs" hidden></span>
+    </div>
+    <div class="stats">
+      <span class="stat mono" id="st-battery" title="battery">
+        <svg viewBox="0 0 16 16"><rect x="1" y="4.5" width="12" height="7"></rect><rect class="fill" x="13.5" y="6.5" width="1.5" height="3"></rect><rect class="fill" id="bat-level" x="2.5" y="6" width="0" height="4"></rect></svg><b>—</b></span>
+      <span class="stat mono" id="st-link" title="bluetooth link to the drone">
+        <svg viewBox="0 0 16 16"><path d="M4 5 L11.5 11 L8 14 V2 L11.5 5 L4 11"></path></svg><b>—</b></span>
+      <span class="stat mono" id="st-wifi" title="the drone's Wi-Fi">
+        <svg viewBox="0 0 16 16"><path d="M1.5 6.5 a9 9 0 0 1 13 0 M3.8 9 a5.8 5.8 0 0 1 8.4 0 M6.1 11.4 a2.6 2.6 0 0 1 3.8 0"></path><circle class="fill" cx="8" cy="13.6" r="1"></circle></svg><b>—</b></span>
+      <span class="stat mono" id="st-video" title="decoded video">
+        <svg viewBox="0 0 16 16"><rect x="1" y="4" width="9.5" height="8"></rect><path d="M10.5 7 L15 4.8 V11.2 L10.5 9"></path></svg><b>—</b></span>
+      <button class="stat mono" id="toggle-map" type="button" hidden title="map view: the drone, the robot, the child and the robot's map"><kbd>M</kbd><span>map</span></button>
+      <button class="stat mono" id="toggle-video" type="button"><kbd>V</kbd><span id="toggle-label">mini video</span></button>
+    </div>
+  </header>
+
+  <main class="main">
+    <section class="stage">
+      <div class="video" id="video" title="">
+        <img id="stream" alt="">
+        <canvas class="vision" id="vision-canvas"></canvas>
+        <div class="vision-chip mono" id="vision-chip" hidden></div>
+        <div class="no-video" id="no-video">
+          <div class="big">No video</div>
+          <div class="mono" id="no-video-detail">waiting for the server</div>
+        </div>
+        <div class="notices">
+          <span class="notice ok mono" id="stopped-banner" hidden></span>
+          <span class="notice mono" id="stall" hidden></span>
+        </div>
+        <div class="takeoff" id="takeoff" hidden><b id="takeoff-title"></b><span class="mono" id="takeoff-hint"></span></div>
+        <div class="capture" id="capture" hidden>
+          <button class="btn" id="c-photo" type="button" title="Save the current frame on the Mac (recordings/)"><kbd>P</kbd>photo</button>
+          <button class="btn" id="c-record" type="button" title="Record the live stream to an MP4 on the Mac (recordings/), no re-encode"><kbd>R</kbd><span id="c-record-label">rec</span></button>
+          <button class="btn" id="c-drone-photo" type="button" title="Full-quality photo on the drone's SD card (camera_take_photo_request)">photo on drone</button>
+          <button class="btn" id="c-drone-record" type="button" title="Recording on the drone's SD card (camera_start_video_request)">rec on drone</button>
+          <span class="capture-status mono" id="c-status" hidden></span>
+        </div>
+      </div>
+
+      <section class="mapview" id="mapview" hidden>
+        <svg id="mv-svg" aria-label="map view: drag to pan, wheel to zoom, click for coordinates">
+          <g id="mv-grid-g"><image id="mv-grid" preserveAspectRatio="none"></image></g>
+          <g id="mv-splat-g"><image id="mv-splat" preserveAspectRatio="none"></image></g>
+          <g id="mv-rules"></g>
+          <g id="mv-live"></g>
+        </svg>
+        <div class="mv-note mono" id="mv-note" hidden></div>
+        <div class="mv-panel">
+          <div class="mv-head"><span class="label mono">map view</span><span class="chip mono" id="mv-frame" title="the frame of every coordinate here">—</span></div>
+          <div id="mv-layers"></div>
+          <div class="mv-tools">
+            <button class="btn" id="mv-fit" type="button" title="fit everything and follow it">fit</button>
+            <button class="btn" id="mv-in" type="button" title="zoom in (or the wheel)">+</button>
+            <button class="btn" id="mv-out" type="button" title="zoom out">−</button>
+          </div>
+          <div id="mv-splat-tools" hidden>
+            <button class="mv-layer mono" id="mv-align" type="button" title="Register the splat in map: drag it, or type the numbers; save writes them next to the splat file"><span>align splat</span><small>drag moves it</small></button>
+            <form class="mv-align" id="mv-align-form" autocomplete="off" hidden>
+              <label class="mono" for="mv-s-scale">scale</label><input type="text" inputmode="decimal" id="mv-s-scale" title="map metres per splat unit">
+              <label class="mono" for="mv-s-rot">rot°</label><input type="text" inputmode="decimal" id="mv-s-rot" title="counter-clockwise, degrees">
+              <label class="mono" for="mv-s-x">x</label><input type="text" inputmode="decimal" id="mv-s-x" title="metres: where the splat's origin lands in map">
+              <label class="mono" for="mv-s-y">y</label><input type="text" inputmode="decimal" id="mv-s-y" title="metres">
+              <button class="btn" type="submit">save registration</button>
+              <div class="msg mono" id="mv-s-msg"></div>
+            </form>
+          </div>
+        </div>
+        <div class="mv-foot">
+          <svg class="mv-axes" viewBox="-6 -40 46 46" aria-label="axes">
+            <path class="ln" d="M 0 0 H 30 M 25 -4 L 30 0 L 25 4 M 0 0 V -30 M -4 -25 L 0 -30 L 4 -25"></path>
+            <text class="mv-text ink" x="33" y="4" font-size="10">x</text>
+            <text class="mv-text ink" x="5" y="-31" font-size="10">y</text>
+          </svg>
+          <div class="mv-scale"><i id="mv-scale-bar"></i><span class="mono" id="mv-scale-label"></span></div>
+        </div>
+        <div class="mv-coords mono" id="mv-coords"><span id="mv-hover"></span><span id="mv-pin">click the map for coordinates</span></div>
+      </section>
+      <div class="controls">
+        <div class="stick">
+          <div class="pad" id="pad-left" data-x="roll" data-y="pitch"><div class="knob"></div></div>
+          <div class="keys" id="keys-left"></div>
+        </div>
+        <div class="center">
+          <div class="lock mono" id="lock" hidden></div>
+          <button id="stop" type="button"><b>STOP</b><span class="mono" id="stop-note">space · all neutral</span></button>
+          <div class="legend mono" id="legend"></div>
+        </div>
+        <div class="stick">
+          <div class="pad" id="pad-right" data-x="yaw" data-y="thrust"><div class="knob"></div></div>
+          <div class="keys" id="keys-right"></div>
+        </div>
+      </div>
+    </section>
+
+    <aside class="side">
+      <section class="compass" id="estimate" hidden>
+        <div class="head"><span class="label mono">heading</span><span class="est-tag mono" id="heading-source" title="Not a real compass: N is the takeoff frame's +x, from the yaw stick and the direction of travel">estimated</span></div>
+        <div class="dial">
+          <svg viewBox="-110 -110 220 220" aria-label="estimated heading">
+            <path class="sigma" id="sigma"></path>
+            <g id="ring"></g>
+            <line class="heading-line" x1="0" y1="-109" x2="0" y2="-80"></line>
+          </svg>
+          <div class="readout">
+            <div class="deg" id="heading">—</div>
+            <div class="sd mono" id="heading-sd"></div>
+          </div>
+        </div>
+      </section>
+
+      <section class="readouts">
+        <div><span class="label mono">altitude</span><output id="r-alt">—</output><span class="note mono" id="r-alt-note"></span></div>
+        <div><span class="label mono">tilt</span><output id="r-tilt">—</output><span class="note mono" id="r-tilt-note"></span></div>
+        <div><span class="label mono">speed</span><output id="r-speed">—</output><span class="note mono" id="r-speed-note"></span></div>
+        <div class="autopilot" id="r-task-cell" hidden><span class="label mono">autopilot</span><output id="r-task">—</output></div>
+      </section>
+
+      <section id="drone">
+        <div class="nolink mono" id="d-nolink" hidden></div>
+        <div class="row actions" id="d-actions">
+          <button class="btn" id="d-manual" type="button" title="What the app does on Manual Control: Wi-Fi heartbeat, preview, manual flag, video">Manual control</button>
+          <button class="btn" id="d-land" type="button" title="Press twice within 3 s">Land</button>
+        </div>
+        <div class="row speed seg" id="speed" title="Speed cap: how far the sticks go, in % of full stick. Keys - and =">
+          <span class="label mono">speed</span>
+        </div>
+        <div class="row tilt seg" id="d-tilt" hidden title="Camera tilt, estimated and open loop (drone/sdk/tilt.py): anchors at the top stop first if unknown. STOP or any flight key cancels">
+          <span class="label mono">tilt</span>
+          <button class="btn" type="button" data-tilt="15">+15</button>
+          <button class="btn" type="button" data-tilt="0">0</button>
+          <button class="btn" type="button" data-tilt="-30">−30</button>
+          <button class="btn" type="button" data-tilt="-45">−45</button>
+          <button class="btn" type="button" data-tilt="-90">−90</button>
+          <form id="d-tilt-form" autocomplete="off">
+            <input type="text" inputmode="decimal" id="d-tilt-deg" placeholder="any angle, +15 … −90">
+            <button class="btn" type="submit">tilt</button>
+          </form>
+        </div>
+        <div class="row vid seg" id="d-video-row">
+          <span class="label mono">video</span>
+          <button class="btn" id="d-video" type="button" title="Restarts the drone's preview: press it if the video stalls">start</button>
+          <button class="btn" id="d-video-stop" type="button">stop</button>
+          <!-- No SD/HD switch: the X1 only streams 1280x720, and asking for HD stopped its
+               preview for minutes (2026-11-14 23:47, recordings/hover_video_20261114-233542). -->
+        </div>
+        <form class="row wifi" id="d-wifi" autocomplete="off" hidden>
+          <input type="password" id="d-wifi-pw" placeholder="drone wi-fi password (8+)" autocomplete="off">
+          <button class="btn" id="d-wifi-set" type="submit">Set wi-fi</button>
+        </form>
+        <div class="msg mono" id="d-action-status"></div>
+      </section>
+
+      <details id="details">
+        <summary class="mono">details</summary>
+        <h3 class="mono"><span>Link</span><span id="x-link-age"></span></h3>
+        <div class="kv">
+          <div class="wide"><label class="mono">bluetooth</label><output class="wrap" id="x-link">—</output></div>
+          <div class="wide"><label class="mono">wi-fi · app announce</label><output class="wrap" id="x-wifi">—</output></div>
+          <div class="wide"><label class="mono">manual control steps</label><output class="wrap" id="x-manual">—</output></div>
+          <div class="wide"><label class="mono">page ↔ server · last state</label><output id="x-poll">—</output></div>
+        </div>
+        <div id="d-groups"></div>
+        <h3 class="mono"><span>Sticks · output</span><span id="max-label"></span></h3>
+        <div class="meters" id="meters"></div>
+        <div class="kv">
+          <div><label class="mono">output</label><output id="s-mode">—</output></div>
+          <div><label class="mono">gate</label><output id="s-gate">—</output></div>
+          <div><label class="mono">packets sent</label><output id="s-sent">—</output></div>
+          <div><label class="mono">non-neutral sent</label><output id="s-non-neutral">—</output></div>
+          <div><label class="mono">errors</label><output id="s-errors">—</output></div>
+          <div><label class="mono">target</label><output id="s-target">—</output></div>
+          <div><label class="mono">control source</label><output id="s-source">—</output></div>
+          <div><label class="mono">sport (is_sport_mode)</label><output id="s-sport">—</output></div>
+          <div class="wide"><label class="mono">last packet sent · our signs</label><output id="s-last-axes">—</output></div>
+          <div class="wide"><label class="mono">last packet · packet values</label><output class="wrap" id="s-last-packet">—</output></div>
+          <div class="wide"><label class="mono">last packet · hex</label><output class="wrap" id="s-last-hex">—</output></div>
+          <div class="wide"><label class="mono">last error</label><output class="wrap" id="s-last-error">—</output></div>
+        </div>
+        <h3 class="mono"><span>Video</span><span id="v-port"></span></h3>
+        <div class="kv">
+          <div><label class="mono">decoded size</label><output id="v-size">—</output></div>
+          <div><label class="mono">decoder fps · page fps</label><output id="v-fps">—</output></div>
+          <div><label class="mono">decode lag · queued</label><output id="v-lag">—</output></div>
+          <div class="wide"><label class="mono">quality · asked / drone</label><output class="wrap" id="v-quality">—</output></div>
+          <div><label class="mono">packets</label><output id="v-packets">—</output></div>
+          <div><label class="mono">pkt/s · KB/s</label><output id="v-rate">—</output></div>
+          <div><label class="mono">frames</label><output id="v-frames">—</output></div>
+          <div><label class="mono">kind · codec</label><output id="v-kind">—</output></div>
+          <div class="wide"><label class="mono">senders</label><output class="wrap" id="v-senders">—</output></div>
+          <div class="wide"><label class="mono">dump</label><output class="wrap" id="v-dump">—</output></div>
+          <div class="wide" id="hex-cell" hidden><label class="mono">first datagrams (hex)</label><pre id="hex"></pre></div>
+        </div>
+        <div id="e-details" hidden>
+          <h3 class="mono"><span>Position · estimated</span><span id="e-source"></span></h3>
+          <div class="kv">
+            <div class="wide"><label class="mono">position x y · ± 1 sd</label><output id="e-position">—</output></div>
+            <div class="wide"><label class="mono">velocity x y z</label><output id="e-velocity">—</output></div>
+            <div class="wide"><label class="mono">camera tilt · range that still fits</label><output id="e-tilt">—</output></div>
+          </div>
+          <div class="map">
+            <span class="label mono" style="display:flex;justify-content:space-between"><span>path since takeoff</span><span id="e-scale"></span></span>
+            <svg id="map" viewBox="-5 -5 10 10" aria-label="estimated path"></svg>
+          </div>
+          <div class="mono note-text" id="e-note"></div>
+        </div>
+      </details>
+    </aside>
+  </main>
+</div>
+
+<script>
+const BINDINGS = /*KEY_BINDINGS*/{};
+const DIRECTIONS = /*AXIS_DIRECTIONS*/{};  // axis -> [name of +, name of -], e.g. pitch: fwd / back
+const AXES = ["roll", "pitch", "thrust", "yaw", "gimbal"];
+const AXIS_LIMIT = 100;       // wire range of every axis, -100..100
+const SEND_MS = 50;           // the server turns sticks neutral 300 ms after the last post
+const POLL_MS = 250;
+const CLOCK_MS = 100;         // refresh of the freshness readouts
+const STALE_MS = 1000;        // no state update for this long: link lost
+const VIDEO_STALL_MS = 2000;  // decoded frames stopped for this long: video stalled
+const DECODE_LAG_WARN_MS = 150;  // arrival -> decoded frame; normal is ~10-40 ms
+const FPS_WINDOW_MS = 2000;
+const RETRY_VIDEO_MS = 2000;
+const KNOB_TRAVEL = 0.42;     // knob reach from the pad centre, as a fraction of the pad width
+const HEX_LINES = 6;
+const DATA_STALE_S = 5;       // drone data older than this is greyed out
+const LAND_ARM_MS = 3000;     // LAND needs a second click within this time
+const STATUS_MS = 6000;       // how long an action result stays on screen
+const STOP_FEEDBACK_S = 4;    // how long "STOPPED · hovering" stays on screen
+const MIN_WIFI_PASSWORD = 8;
+const LOW_BATTERY_PCT = 25;   // the SDK's default low_battery_pct: it returns home and lands
+const MANUAL_STEPS = ["connect", "wifi", "preview", "manual", "video"];  // the order enter_manual() runs them
+const CONTROL_SOURCE_NAMES = { 1: "app (1)", 6: "cross-key (6)" };  // packet control_source_type
+const GATE_LIVE = "live";
+const DRONE_NETWORK_PREFIX = "<DRONE_SUBNET>.";  // the laptop's address here means it is on the drone's Wi-Fi
+const KIB_PER_GIB = 1024 ** 2;  // the drone's storage fields are named bytes but read as KiB (32 GB card = 33554432)
+const STOP_KEY = " ";
+const VIDEO_KEY = "v";
+const PHOTO_KEY = "p";        // photo / recording on the Mac (drone.sdk server only)
+const RECORD_KEY = "r";
+const SPORT_KEY_CODES = ["Backslash", "Tab"];  // toggle is_sport_mode; Tab would move the focus
+const MODE_MANUAL = "MANUAL";
+// compass: a ring of ticks every 2°, long ones every 30°, turned so the heading is at the top
+const RING_TICK_DEG = 2, RING_MAJOR_DEG = 30;
+const RING_R = 97, RING_MINOR_IN = 90, RING_MAJOR_IN = 83, RING_LABEL_R = 69, SIGMA_R = 104;
+const CARDINALS = ["N", "NE", "E", "SE", "S", "SW", "W", "NW"];
+const HEADING_UNSURE_DEG = 45;  // ± more than this: the heading readout turns red
+const TRAVEL_MIN_SPEED = 0.1; // m/s: below this no direction-of-travel mark
+const MAP_MIN_HALF_M = 3;     // the map shows at least ±3 m
+const MAP_MARGIN_M = 1;
+// Takeoff states, shown large over the video: the drone flies these on its own.
+const TAKEOFF_STATES = {
+  pre_takeoff: ["PRE-TAKEOFF", "rotors starting · hands clear"],
+  taking_off: ["TAKING OFF", "the drone's own climb (~2 s), it may move by itself · sticks after FLYING MANUAL"],
+};
+
+const $ = (id) => document.getElementById(id);
+const clamp = (v) => Math.max(-1, Math.min(1, v));
+const signed = (v, digits) => (v < 0 ? "-" : "+") + Math.abs(v).toFixed(digits);
+const keys = new Set();
+// Readouts say "fwd 28" or "back 28", never a sign: the packet's signs differ from ours.
+const axisLabel = (axis) => DIRECTIONS[axis].join("/");
+const describe = (axis, value, digits) =>
+  `${DIRECTIONS[axis][value > 0 ? 0 : 1]} ${Math.abs(value).toFixed(digits)}`;
+
+// ---- input: pointer pads + keyboard, merged into one set of axes ----
+
+function makePad(element) {
+  const pad = { element, xAxis: element.dataset.x, yAxis: element.dataset.y, x: 0, y: 0, pointer: null };
+  pad.knob = element.querySelector(".knob");
+  const [up, down] = DIRECTIONS[pad.yAxis], [right, left] = DIRECTIONS[pad.xAxis];
+  element.insertAdjacentHTML("beforeend", `<span class="dir mono n">${up}</span><span class="dir mono s">${down}</span>` +
+    `<span class="dir mono w">${left}</span><span class="dir mono e">${right}</span>`);
+  const move = (event) => {
+    const rect = element.getBoundingClientRect();
+    const reach = rect.width * KNOB_TRAVEL;
+    pad.x = clamp((event.clientX - rect.left - rect.width / 2) / reach);
+    pad.y = clamp((rect.top + rect.height / 2 - event.clientY) / reach);
+    drawInput();
+  };
+  pad.release = () => { pad.pointer = null; pad.x = 0; pad.y = 0; };
+  element.addEventListener("pointerdown", (event) => {
+    pad.pointer = event.pointerId;
+    element.setPointerCapture(event.pointerId);
+    move(event);
+  });
+  element.addEventListener("pointermove", (event) => { if (event.pointerId === pad.pointer) move(event); });
+  for (const type of ["pointerup", "pointercancel", "lostpointercapture"]) {
+    element.addEventListener(type, (event) => {
+      if (event.pointerId === pad.pointer) { pad.release(); drawInput(); }
+    });
+  }
+  return pad;
+}
+
+const pads = [makePad($("pad-left")), makePad($("pad-right"))];
+
+function inputAxes() {
+  const axes = Object.fromEntries(AXES.map((axis) => [axis, 0]));
+  for (const pad of pads) { axes[pad.xAxis] += pad.x; axes[pad.yAxis] += pad.y; }
+  for (const key of keys) {
+    const [axis, direction] = BINDINGS[key];
+    axes[axis] += direction;
+  }
+  for (const axis of AXES) axes[axis] = clamp(axes[axis]);
+  return axes;
+}
+
+// The knobs show the merged input, so held keys move them too.
+function drawInput() {
+  const axes = inputAxes();
+  for (const pad of pads) {
+    const x = axes[pad.xAxis], y = axes[pad.yAxis];
+    pad.knob.style.left = `${50 + x * KNOB_TRAVEL * 100}%`;
+    pad.knob.style.top = `${50 - y * KNOB_TRAVEL * 100}%`;
+    pad.element.parentElement.classList.toggle("live", x !== 0 || y !== 0);
+  }
+  for (const cap of document.querySelectorAll("kbd[data-key]")) {
+    cap.classList.toggle("held", keys.has(cap.dataset.key));
+  }
+}
+
+// ---- key caps under each stick and the legend, built from the server's bindings ----
+
+const keyFor = (axis, direction) =>
+  Object.keys(BINDINGS).find((key) => BINDINGS[key][0] === axis && BINDINGS[key][1] === direction);
+const keyCap = (key, extra = "") => `<kbd class="${extra}" data-key="${key}">${key}</kbd>`;
+
+for (const [pad, id] of [[pads[0], "keys-left"], [pads[1], "keys-right"]]) {
+  $(id).innerHTML = keyCap(keyFor(pad.yAxis, 1), "up") + keyCap(keyFor(pad.xAxis, -1), "left") +
+    keyCap(keyFor(pad.yAxis, -1), "down") + keyCap(keyFor(pad.xAxis, 1), "right");
+}
+$("legend").innerHTML =
+  `<span class="caps">${keyCap(keyFor("gimbal", 1))}${keyCap(keyFor("gimbal", -1))}</span><span>camera up / down</span>` +
+  `<span class="caps"><kbd>-</kbd><kbd>=</kbd></span><span>speed down / up</span>` +
+  `<span class="caps"><kbd>\\</kbd><kbd>tab</kbd></span><span>sport on / off</span>`;
+
+// ---- sending ----
+
+function post(path, body) {
+  return fetch(path, { method: "POST", body: body ? JSON.stringify(body) : "", keepalive: true })
+    .catch(() => {});
+}
+
+function releaseKeys() {
+  keys.clear();
+  drawInput();
+}
+
+// STOP: local keys and pads off at once, then the server cancels any autopilot action (patrol,
+// goto, tilt, a /move stream) and sends neutral: the drone hovers. The page says so until
+// STOP_FEEDBACK_S, and says it loudly if the server never confirmed.
+const stopPress = { at: 0, result: "", cancelled: "" };
+let runningTask = null;  // name of the autopilot action running at the last poll
+
+function stop() {
+  keys.clear();
+  for (const pad of pads) pad.release();
+  drawInput();
+  Object.assign(stopPress, { at: performance.now(), result: "sending", cancelled: runningTask ?? "" });
+  renderStopFeedback();
+  fetch("/api/stop", { method: "POST", body: "", keepalive: true })
+    .then((response) => { stopPress.result = response.ok ? "ok" : `server answered ${response.status}`; })
+    .catch(() => { stopPress.result = "server unreachable"; })
+    .finally(renderStopFeedback);
+}
+
+// Explicit STOPs from elsewhere (API, ROS, another tab) show too, from the server's clock.
+let serverStopAge = null;  // seconds since the server's last STOP, at the last poll
+
+function renderStopFeedback() {
+  const sincePoll = stateAt ? (performance.now() - stateAt) / 1000 : 0;
+  const localAge = stopPress.at ? (performance.now() - stopPress.at) / 1000 : null;
+  const remoteAge = serverStopAge === null ? null : serverStopAge + sincePoll;
+  const local = localAge !== null && localAge < STOP_FEEDBACK_S;
+  const remote = !local && remoteAge !== null && remoteAge < STOP_FEEDBACK_S;
+  const failed = local && stopPress.result !== "ok" && stopPress.result !== "sending";
+  const shown = (local || remote) && !failed;
+  $("stop").classList.toggle("stopped", shown);
+  $("stop").firstElementChild.textContent = shown ? "STOPPED" : "STOP";
+  const cancelled = local && stopPress.cancelled ? ` · ${stopPress.cancelled} cancelled` : "";
+  $("stop-note").textContent = failed ? `not confirmed · ${stopPress.result}` : shown ? "hovering" : "space · all neutral";
+  $("stopped-banner").hidden = !(local || remote);
+  $("stopped-banner").classList.toggle("ok", !failed);
+  $("stopped-banner").textContent = failed ? `STOP not confirmed · ${stopPress.result} · press again`
+    : `STOPPED · sticks neutral, hovering${cancelled}${remote ? " · from the API" : ""}`;
+}
+
+function toggleVideo() {
+  const mini = document.body.classList.toggle("mini");
+  $("toggle-label").textContent = mini ? "show video" : "mini video";
+  $("video").title = mini ? "click to restore" : "";
+}
+
+// Physical key positions, so Shift or a keyboard layout never changes what a key does.
+function keyName(event) {
+  if (event.code === "Space") return STOP_KEY;
+  return event.code.startsWith("Key") ? event.code.slice(3).toLowerCase() : "";
+}
+
+window.addEventListener("keydown", (event) => {
+  const key = keyName(event);
+  // Space is STOP even in the angle field (an angle has no space); a password may have one.
+  if (key === STOP_KEY && document.activeElement !== $("d-wifi-pw")) {
+    event.preventDefault();
+    if (!event.repeat) stop();
+    return;
+  }
+  if (event.key === "Escape" && typing()) { document.activeElement.blur(); return; }
+  if (typing()) return;
+  // macOS drops key-ups while Cmd is held, so any shortcut releases everything.
+  if (event.metaKey || event.ctrlKey || event.altKey) { releaseKeys(); return; }
+  if (key === VIDEO_KEY) { if (!event.repeat) toggleVideo(); return; }
+  if (key === PHOTO_KEY || key === RECORD_KEY) {
+    if (!event.repeat && captureAvailable) (key === PHOTO_KEY ? takePhoto : toggleRecord)();
+    return;
+  }
+  if (!(key in BINDINGS)) return;
+  event.preventDefault();
+  if (event.repeat) return;
+  keys.add(key);
+  drawInput();
+});
+window.addEventListener("keyup", (event) => {
+  keys.delete(keyName(event));
+  drawInput();
+});
+$("d-wifi-pw").addEventListener("focus", releaseKeys);
+// Losing focus releases this page's keys and pads at once (posting neutral), but is not STOP:
+// an autopilot action (patrol from ROS, the API) keeps flying while the window is in the back.
+function releaseAll() {
+  keys.clear();
+  for (const pad of pads) pad.release();
+  drawInput();
+  post(`/api/sticks?tab=${TAB_ID}`, inputAxes());
+}
+window.addEventListener("blur", releaseAll);
+document.addEventListener("visibilitychange", () => { if (document.hidden) releaseAll(); });
+
+$("stop").addEventListener("pointerdown", (event) => { event.preventDefault(); stop(); });
+$("toggle-video").addEventListener("click", toggleVideo);
+$("video").addEventListener("click", () => { if (document.body.classList.contains("mini")) toggleVideo(); });
+// Keep focus off buttons and the details toggle, so Space never "clicks" one.
+const keepFocusOff = (element) => element.addEventListener("mousedown", (event) => event.preventDefault());
+for (const element of document.querySelectorAll("button, summary")) keepFocusOff(element);
+
+// ---- speed cap ----
+// Presets in % of full stick; - and = step through them. The server holds the value.
+const SPEED_PRESETS = [20, 40, 60, 80, 100];
+let speed = 0;
+
+function setSpeed(value) {
+  renderSpeed(value);
+  post("/api/max", { max: value });
+}
+
+function stepSpeed(direction) {
+  const index = SPEED_PRESETS.findIndex((preset) => preset >= speed);
+  const current = index === -1 ? SPEED_PRESETS.length - 1 : index;
+  const next = Math.min(Math.max(current + direction, 0), SPEED_PRESETS.length - 1);
+  setSpeed(SPEED_PRESETS[next]);
+}
+
+function renderSpeed(value) {
+  speed = value;
+  for (const button of $("speed").querySelectorAll("button[data-value]")) {
+    button.classList.toggle("on", Number(button.dataset.value) === value);
+  }
+}
+
+function addButton(parent, text, onClick, attrs = {}) {
+  const button = Object.assign(document.createElement("button"), { className: "btn", type: "button", textContent: text });
+  Object.assign(button.dataset, attrs);
+  keepFocusOff(button);
+  button.addEventListener("click", onClick);
+  parent.append(button);
+  return button;
+}
+
+for (const preset of SPEED_PRESETS) addButton($("speed"), String(preset), () => setSpeed(preset), { value: preset });
+
+// ---- sport: is_sport_mode in every stick packet. The server holds it; off by default. ----
+let sport = false;
+const sportButton = addButton($("speed"), "sport", () => setSport(!sport));
+sportButton.id = "sport";
+sportButton.title = "is_sport_mode in the stick packets (the app never sets it). Keys \\ or Tab";
+
+function setSport(on) {
+  renderSport(on);
+  post("/api/sport", { on });
+}
+
+function renderSport(on) {
+  sport = on;
+  sportButton.textContent = on ? "sport on" : "sport";
+  sportButton.classList.toggle("on", on);
+}
+
+window.addEventListener("keydown", (event) => {
+  if (typing() || event.metaKey || event.ctrlKey || event.altKey) return;
+  if (SPORT_KEY_CODES.includes(event.code)) {
+    event.preventDefault();
+    if (!event.repeat) setSport(!sport);
+    return;
+  }
+  if (event.repeat) return;
+  if (event.code === "Minus") stepSpeed(-1);
+  if (event.code === "Equal") stepSpeed(1);
+});
+
+// Each tab tags its posts, so the server can ignore an idle tab's neutral posts while another flies.
+const TAB_ID = Math.random().toString(36).slice(2);
+setInterval(() => post(`/api/sticks?tab=${TAB_ID}`, inputAxes()), SEND_MS);
+drawInput();
+
+// ---- readout helpers ----
+
+function setText(id, text, warn = false) {
+  const element = $(id);
+  element.textContent = text;
+  element.classList.toggle("warn", warn);
+}
+
+function setStat(id, value, level = "", title) {
+  const element = $(id);
+  element.querySelector("b").textContent = value;
+  element.className = `stat mono ${level}`;
+  if (title !== undefined) element.title = title;
+}
+
+function setChip(id, text, level) {
+  $(id).textContent = text;
+  $(id).className = `chip mono ${level}`;
+}
+
+// ---- sticks (details) ----
+
+const meters = {};
+for (const axis of AXES) {
+  $("meters").insertAdjacentHTML("beforeend",
+    `<span class="mono">${axisLabel(axis)}</span>` +
+    `<div class="meter"><b class="cap"></b><b class="cap"></b><i></i></div><output>0</output>`);
+  const row = $("meters").lastElementChild;
+  meters[axis] = { meter: row.previousElementSibling, value: row };
+}
+
+function renderSticks(sticks) {
+  const capPercent = (sticks.max / AXIS_LIMIT) * 50;
+  for (const axis of AXES) {
+    const value = sticks.output[axis];
+    const width = (Math.min(Math.abs(value), AXIS_LIMIT) / AXIS_LIMIT) * 50;
+    const { meter, value: output } = meters[axis];
+    const [low, high] = meter.querySelectorAll(".cap");
+    low.style.left = `${50 - capPercent}%`;
+    high.style.left = `${50 + capPercent}%`;
+    meter.lastElementChild.style.left = `${value < 0 ? 50 - width : 50}%`;
+    meter.lastElementChild.style.width = `${width}%`;
+    output.textContent = value ? describe(axis, value, 0) : "0";
+  }
+  $("max-label").textContent = `±${AXIS_LIMIT} · cap ${sticks.max}`;
+  $("chip-dry").hidden = !sticks.dry_run;
+  setText("s-mode", sticks.dry_run ? "dry run (printed only)" : "live");
+  renderSpeed(sticks.max);
+  setText("s-sent", sticks.sent.toLocaleString());
+  setText("s-non-neutral", sticks.non_neutral_sent.toLocaleString());
+  // Only the tab that is flying should stay open: the others post neutral sticks too.
+  const extraTabs = sticks.open_tabs > 1;
+  $("chip-tabs").hidden = !extraTabs;
+  $("chip-tabs").textContent = `${sticks.open_tabs} tabs open · close the others`;
+  // Red when a key is held but the gate holds the sticks: the drone is not the problem then.
+  setText("s-gate", sticks.gate, keys.size > 0 && sticks.gate !== GATE_LIVE);
+  setText("s-errors", String(sticks.errors), sticks.errors > 0);
+  setText("s-target", sticks.target);
+  setText("s-source", CONTROL_SOURCE_NAMES[sticks.control_source] ?? String(sticks.control_source));
+  setText("s-sport", sticks.sport ? "on · field 2 = 1" : "off · like the app", sticks.sport);
+  renderSport(sticks.sport);
+  renderLastPacket(sticks.last_packet);
+  setText("s-last-error", sticks.last_error || "—", Boolean(sticks.last_error));
+}
+
+function renderLastPacket(packet) {
+  if (!packet) {
+    for (const id of ["s-last-axes", "s-last-packet", "s-last-hex"]) setText(id, "—");
+    return;
+  }
+  const moving = AXES.filter((axis) => packet.axes[axis]);
+  const axes = moving.map((axis) => describe(axis, packet.axes[axis], 0)).join(" · ") || "neutral";
+  setText("s-last-axes", `seq ${packet.seq} · ${axes}${packet.sport ? " · sport" : ""}`);
+  setText("s-last-packet", AXES.map((axis) => `${axis} ${signed(packet.packet[axis], 0)}`).join("  "));
+  setText("s-last-hex", packet.hex);
+}
+
+// ---- video ----
+
+const video = { last: null, samples: [], frameChangedAt: 0, fps: 0 };
+
+function noVideoReason(stats) {
+  if (!stats.decoding) return "decoding is off (--no-decode)";
+  if (!stats.packets) return `waiting for packets on UDP ${stats.port}`;
+  return `${stats.packets} packets · ${stats.kind || "payload not recognised"} · nothing decoded yet`;
+}
+
+function renderVideo(stats) {
+  const now = performance.now();
+  if (!video.last || stats.frames !== video.last.frames) video.frameChangedAt = now;
+  video.last = stats;
+  video.samples.push([now, stats.frames]);
+  while (now - video.samples[0][0] > FPS_WINDOW_MS) video.samples.shift();
+  const [firstTime, firstFrames] = video.samples[0];
+  video.fps = now > firstTime ? ((stats.frames - firstFrames) * 1000) / (now - firstTime) : 0;
+
+  $("no-video").hidden = stats.frames > 0;
+  $("no-video-detail").textContent = noVideoReason(stats);
+  const size = stats.width ? `${stats.width}×${stats.height}` : "";
+  setText("v-size", size || "—");
+  setText("v-fps", stats.decoding ? `${stats.fps.toFixed(1)} · ${video.fps.toFixed(1)}` : "—");
+  setText("v-lag", stats.decode_lag_ms == null ? "—" : `${stats.decode_lag_ms} ms · ${stats.decode_queued}`,
+    stats.decode_lag_ms > DECODE_LAG_WARN_MS);
+  $("v-port").textContent = `udp ${stats.port}`;
+  setText("v-packets", stats.packets.toLocaleString());
+  setText("v-rate", `${stats.pps.toFixed(1)} · ${(stats.bytes_per_s / 1024).toFixed(0)}`);
+  setText("v-frames", stats.frames.toLocaleString());
+  setText("v-kind", `${stats.kind || "—"} · ${stats.codec || (stats.decoding ? "detecting" : "off")}`);
+  setText("v-senders", stats.senders.join(", ") || "—");
+  setText("v-dump", stats.dump || "off");
+  $("hex-cell").hidden = stats.frames > 0 || !stats.previews.length;
+  $("hex").textContent = stats.previews.slice(0, HEX_LINES).join("\n");
+}
+
+// ---- drone (Bluetooth) ----
+
+const num = (value, digits = 0) => (value === null || value === undefined ? "—" : Number(value).toFixed(digits));
+const xyz = (v) => (v ? `${signed(v.x, 2)} ${signed(v.y, 2)} ${signed(v.z, 2)}` : "—");
+// Position is only meaningful in flight: its origin resets at takeoff (issue #13).
+const onGround = (d) => !d.flight_state.in_flight;
+const gigabytes = (kib) => (kib === null ? "—" : (kib / KIB_PER_GIB).toFixed(1));
+const stateName = (value) => value.replaceAll("_", " ");
+
+// Details: one block per message group, with its age (from the server clock) and its rows.
+// Mode, flight state, charge, altitude and tilt are in the main view, not here.
+const DRONE_GROUPS = [
+  { id: "battery", title: "Battery", ts: (d) => d.battery.ts, rows: [
+    ["charging", "", (d) => (d.battery.charging === null ? "—" : d.battery.charging ? "yes" : "no")],
+    ["voltage", "", (d) => num(d.battery.voltage)], ["current", "", (d) => num(d.battery.current)],
+    ["temp", "", (d) => num(d.battery.temp)]] },
+  { id: "odometry", title: "Odometry", ts: (d) => d.odometry.ts, rows: [
+    ["position x y z (z down) · frame resets at takeoff", "wide", (d) => xyz(d.odometry.position), onGround],
+    ["velocity x y z", "wide", (d) => xyz(d.odometry.velocity)],
+    ["motor rpm", "wide", (d) => (d.odometry.motors_rpm || []).join("  ") || "—"],
+    ["total current", "", (d) => num(d.odometry.total_current)]] },
+  { id: "storage", title: "Storage", ts: (d) => d.storage.ts, rows: [
+    ["free", "", (d) => `${gigabytes(d.storage.available_bytes)} GB`],
+    ["total", "", (d) => `${gigabytes(d.storage.total_bytes)} GB`]] },
+  { id: "exception", title: "Last exception", ts: (d) => d.exception.ts, rows: [
+    ["codes", "", (d) => (d.exception.errors ? d.exception.errors.join(", ") || "none" : "—")],
+    ["event", "", (d) => num(d.exception.event)]] },
+];
+
+for (const group of DRONE_GROUPS) {
+  const rows = group.rows.map(([label, cls], i) =>
+    `<div class="${cls}"><label class="mono">${label}</label><output id="d-${group.id}-${i}">—</output></div>`).join("");
+  $("d-groups").insertAdjacentHTML("beforeend",
+    `<div class="group" id="d-${group.id}"><h3 class="mono"><span>${group.title}</span><span></span></h3>` +
+    `<div class="kv">${rows}</div></div>`);
+}
+
+const age = (now, ts) => (ts === null ? null : Math.max(0, now - ts));
+const ageText = (seconds) => (seconds === null ? "no data" : `${seconds.toFixed(1)} s`);
+const isStale = (seconds) => seconds === null || seconds > DATA_STALE_S;
+
+function renderGroups(drone, now) {
+  for (const group of DRONE_GROUPS) {
+    const seconds = age(now, group.ts(drone));
+    const element = $(`d-${group.id}`);
+    element.classList.toggle("stale", isStale(seconds));
+    element.querySelector("h3 span:last-child").textContent = ageText(seconds);
+    group.rows.forEach(([, , value, dim], i) => {
+      const output = $(`d-${group.id}-${i}`);
+      output.textContent = value(drone);
+      output.classList.toggle("dim", Boolean(dim && dim(drone)));
+    });
+  }
+}
+
+function linkText(connection, note) {
+  if (note) return note;
+  if (connection.connected) return "connected";
+  return connection.error ? `error · ${connection.error}` : "searching";
+}
+
+// The SDK server (drone.sdk) estimates the camera tilt from the gimbal stick sent (sdk/tilt.py).
+let tiltEstimate = null;
+let tiltTask = null;  // the SDK's "tilt" action (presets), while it is the latest action
+let serverNow = null;
+const TILT_RESULT_S = 6;  // how long a stopped/failed tilt stays in the readout
+const degrees = (value) => `${value < 0 ? "−" : "+"}${Math.abs(value).toFixed(0)}°`;
+
+// [value, note] for the camera tilt readout.
+function tiltReadout(d) {
+  if (d && d.camera_tilt.degrees !== null) return [degrees(d.camera_tilt.degrees), "reported"];
+  if (!tiltEstimate) return ["—", d ? "not reported by the X1" : ""];
+  const now = tiltEstimate.anchored ? `≈ ${degrees(tiltEstimate.deg)}` : "unknown";
+  if (tiltTask && tiltTask.state === "running") {
+    return [`→ ${degrees(tiltTask.detail.target_deg)}`, tiltEstimate.anchored ? `now ${now}` : "anchoring at the top stop"];
+  }
+  const recent = tiltTask && tiltTask.ended_at && serverNow - tiltTask.ended_at < TILT_RESULT_S;
+  if (recent && tiltTask.state !== "done") return [now, `tilt ${tiltTask.state}${tiltTask.message ? `: ${tiltTask.message}` : ""}`];
+  if (!tiltEstimate.anchored) {
+    return ["unknown", "hold U or O"];
+  }
+  return [now, "estimated"];
+}
+
+// [value, note] for the altitude: the SDK's estimate, else the odometry (z down, zeroed at takeoff).
+function altitudeReadout(state) {
+  const pose = state.estimate ? state.estimate.pose : null;
+  const drone = state.drone;
+  if (pose) return pose.in_flight ? [`${pose.alt.toFixed(2)}`, "above takeoff"] : ["—", "on ground"];
+  if (!drone || !drone.odometry.position) return ["—", ""];
+  return onGround(drone) ? ["—", "on ground"] : [`${(-drone.odometry.position.z).toFixed(2)}`, "odometry"];
+}
+
+function setReadout(id, [value, note], unit = "") {
+  $(id).innerHTML = "";
+  $(id).append(value);
+  if (unit && value !== "—") $(id).insertAdjacentHTML("beforeend", `<small>${unit}</small>`);
+  $(id).classList.toggle("dim", value === "—" || value === "unknown");
+  $(`${id}-note`).textContent = note;
+}
+
+function wifiStat(wifi) {
+  if (!wifi || wifi.state === "off") return ["off", "dim"];
+  if (wifi.state === "on") return ["on", ""];
+  if (wifi.state === "error") return ["error", "warn"];
+  return ["starting", ""];
+}
+
+function renderLinkStats(state, drone) {
+  const connected = drone && drone.connection.connected;
+  const linkAge = connected ? drone.connection.last_message_age_s : null;
+  const linkTitle = drone ? linkText(drone.connection, state.ble_note) : state.ble_note || "bluetooth off";
+  if (connected) setStat("st-link", ageText(linkAge), isStale(linkAge) ? "warn" : "", `bluetooth · ${linkTitle}`);
+  else setStat("st-link", drone ? "searching" : "off", drone && drone.connection.error ? "warn" : "dim", `bluetooth · ${linkTitle}`);
+  const [wifi, wifiLevel] = wifiStat(drone ? drone.wifi : null);
+  const wifiTitle = drone && drone.wifi.state === "on" ? `wi-fi on · ${drone.wifi.ssid}` : `wi-fi ${wifi}`;
+  setStat("st-wifi", wifi, wifiLevel, drone && drone.wifi.error ? `wi-fi · ${drone.wifi.error}` : wifiTitle);
+  const battery = drone ? drone.battery.soc : null;
+  const old = !drone || isStale(age(state.now, drone.battery.ts));
+  const low = battery !== null && battery <= LOW_BATTERY_PCT;
+  setStat("st-battery", battery === null ? "—" : `${battery}%`, old ? "dim" : low ? "warn" : "");
+  $("bat-level").setAttribute("width", String(((battery ?? 0) / 100) * 9));
+}
+
+function renderDrone(state) {
+  const drone = state.drone, sticks = state.sticks;
+  tiltEstimate = state.estimate ? state.estimate.tilt : null;
+  tiltTask = state.estimate && state.estimate.task.name === "tilt" ? state.estimate.task : null;
+  serverNow = state.now;
+  const present = Boolean(drone);
+  renderTiltPresets(present && Boolean(state.estimate));
+  for (const id of ["d-actions", "d-video-row"]) $(id).hidden = !present;
+  $("d-nolink").hidden = present;
+  $("d-nolink").textContent = `no bluetooth link · ${state.ble_note || "bluetooth is off"}`;
+  // The Wi-Fi starts by itself on every Bluetooth connect; the form is only a fallback.
+  const wifi = present ? drone.wifi : null;
+  $("d-wifi").hidden = !wifi || wifi.state === "on" || wifi.state === "pending";
+  if (wifi && wifi.password && !$("d-wifi-pw").value) $("d-wifi-pw").value = wifi.password;
+  setText("x-wifi", [wifiText(wifi), announceText(present ? drone.app_announced : null)].filter(Boolean).join(" · ") || "—");
+  autoStartVideo(state);
+  renderManualSteps(state, present);
+  renderLinkStats(state, drone);
+  const connected = present && drone.connection.connected;
+  setText("x-link", linkText(present ? drone.connection : { connected: false }, state.ble_note) +
+    (connected ? ` · last message ${ageText(drone.connection.last_message_age_s)} · rssi ${num(drone.connection.rssi)}` : ""));
+  $("x-link-age").textContent = present ? (connected ? "connected" : "no link") : "off";
+  const mode = present && drone.mode.name && !isStale(age(state.now, drone.mode.ts)) ? drone.mode.name : null;
+  setChip("chip-mode", mode ?? "no mode", mode === MODE_MANUAL ? "on" : mode ? "" : "dim");
+  renderTakeoff(present ? drone : null, state.now);
+  renderQuality(present ? drone.video_quality : null);
+  if (present) renderGroups(drone, state.now);
+  setReadout("r-alt", altitudeReadout(state), "m");
+  setReadout("r-tilt", tiltReadout(drone));
+  renderLock(sticks, present);
+}
+
+// Flight state chip, and a banner over the video while the drone takes off by itself.
+function renderTakeoff(drone, now) {
+  const fresh = drone && drone.flight_state.value && !isStale(age(now, drone.flight_state.ts));
+  const value = fresh ? drone.flight_state.value : null;
+  const takeoff = TAKEOFF_STATES[value];
+  setChip("chip-state", value ? stateName(value) : "no state", takeoff ? "on" : value ? "" : "dim");
+  $("takeoff").hidden = !takeoff;
+  if (takeoff) [$("takeoff-title").textContent, $("takeoff-hint").textContent] = takeoff;
+}
+
+function renderQuality(quality) {
+  for (const button of document.querySelectorAll("button[data-quality]")) {
+    button.classList.toggle("on", Boolean(quality) && button.dataset.quality === quality.wanted);
+    button.classList.toggle("off", !quality);
+  }
+  if (!quality) { setText("v-quality", "needs the bluetooth link"); return; }
+  const drone = quality.applied ? `set to ${quality.applied}` : "untouched (the app's preview)";
+  const error = quality.error ? ` · ${quality.error}` : "";
+  setText("v-quality", `${quality.wanted} / ${drone}${error}`, Boolean(quality.error));
+}
+
+function renderLock(sticks, present) {
+  const locked = sticks.interlock && sticks.locked;
+  const reason = present ? "not MANUAL" : "no bluetooth link";
+  const sent = sticks.dry_run ? "dry run: still printed" : sticks.silent ? "nothing is sent" : "neutral is sent";
+  $("lock").hidden = sticks.interlock && !locked;
+  $("lock").textContent = sticks.interlock ? `LOCKED · ${reason} · ${sent}` : "interlock off · keys fly the drone";
+  document.querySelector(".controls").classList.toggle("locked", locked);
+}
+
+// ---- drone buttons ----
+
+function renderManualSteps(state, present) {
+  if (!present) { setText("x-manual", "—"); return; }
+  const entry = state.drone.manual_entry;
+  const onDroneWifi = state.simulated || (state.video.local_ip || "").startsWith(DRONE_NETWORK_PREFIX);
+  const ssid = state.drone.wifi.ssid ?? "the drone's Wi-Fi";
+  const marks = MANUAL_STEPS.map((step) => `${step} ${entry.steps.includes(step) ? "✓" : "·"}`).join(" / ");
+  const hint = onDroneWifi ? "" : `not on ${ssid} yet: Manual control joins it`;
+  setText("x-manual", `${marks}${entry.session ? " · session on" : ""}${entry.error ? ` · ${entry.error}` : ""}`, Boolean(entry.error));
+  // Problems only, under the buttons; the checklist is in the details.
+  manualProblem = [entry.error ? `manual control: ${entry.error}` : "", hint].filter(Boolean).join(" · ");
+  renderActionStatus();
+}
+
+// connect_type_request(APP) + clock, sent over Bluetooth on every connect like the app does
+function announceText(announced) {
+  if (!announced) return "";
+  if (announced.ok) return "app announced ✓";
+  return announced.error ? `app announce: ${announced.error}` : "";
+}
+
+function wifiText(wifi) {
+  if (!wifi || wifi.state === "off") return "";
+  if (wifi.state === "on") return `on · ${wifi.ssid}`;
+  if (wifi.state === "error") return wifi.error;
+  return "starting...";
+}
+
+// The line under the buttons: the last action's result for a while, else a standing problem.
+let actionStatus = { text: "", warn: false, until: 0 };
+let manualProblem = "";
+function showStatus(text, warn = false) {
+  actionStatus = { text, warn, until: performance.now() + STATUS_MS };
+  renderActionStatus();
+}
+
+function renderActionStatus() {
+  const recent = actionStatus.text && performance.now() < actionStatus.until;
+  setText("d-action-status", recent ? actionStatus.text : manualProblem, recent ? actionStatus.warn : Boolean(manualProblem));
+}
+
+async function droneAction(name, path, body) {
+  showStatus(`${name} · sending...`);
+  try {
+    const response = await fetch(path, { method: "POST", body: body ? JSON.stringify(body) : "" });
+    const result = await response.json();
+    showStatus(result.ok ? `${name} · ok` : `${name} · ${result.error || "failed"}`, !result.ok);
+  } catch (error) {
+    showStatus(`${name} · ${error.message}`, true);
+  }
+}
+
+let landArmedAt = 0;
+function disarmLand() {
+  landArmedAt = 0;
+  $("d-land").classList.remove("armed");
+  $("d-land").textContent = "Land";
+}
+$("d-manual").addEventListener("click", () => droneAction("manual", "/api/drone/manual"));
+$("d-land").addEventListener("click", () => {
+  if (landArmedAt && performance.now() - landArmedAt < LAND_ARM_MS) {
+    disarmLand();
+    droneAction("land", "/api/drone/land");
+    return;
+  }
+  landArmedAt = performance.now();
+  $("d-land").classList.add("armed");
+  $("d-land").textContent = "Confirm land";
+  setTimeout(disarmLand, LAND_ARM_MS);
+});
+$("d-video").addEventListener("click", () => droneAction("video", "/api/drone/video"));
+$("d-video-stop").addEventListener("click", () => droneAction("video stop", "/api/drone/video-stop"));
+for (const button of document.querySelectorAll("button[data-quality]")) {
+  button.addEventListener("click", () =>
+    droneAction(`video ${button.dataset.quality}`, "/api/drone/video-quality", { quality: button.dataset.quality }));
+}
+// Once: on the drone's Wi-Fi with no video packets yet, ask the drone to push video to us.
+let videoAutoStarted = false;
+function autoStartVideo(state) {
+  const onDroneWifi = (state.video.local_ip || "").startsWith(DRONE_NETWORK_PREFIX);
+  if (videoAutoStarted || !onDroneWifi || state.video.packets > 0) return;
+  if (!state.drone || !state.drone.connection.connected) return;
+  videoAutoStarted = true;
+  droneAction("video", "/api/drone/video");
+}
+$("d-wifi").addEventListener("submit", (event) => {
+  event.preventDefault();
+  const password = $("d-wifi-pw").value;
+  if (password.length < MIN_WIFI_PASSWORD) {
+    showStatus(`wifi · password needs ${MIN_WIFI_PASSWORD}+ characters`, true);
+    return;
+  }
+  $("d-wifi-pw").blur();
+  droneAction("wifi", "/api/drone/wifi", { password });
+});
+// Camera tilt presets: the SDK runs them (POST /api/drone/tilt); STOP or any flight key cancels.
+const TILT_TOP = 15, TILT_BOTTOM = -90;
+function setTilt(deg) {
+  droneAction(`tilt ${degrees(deg)}`, "/api/drone/tilt", { deg });
+}
+for (const button of $("d-tilt").querySelectorAll("button[data-tilt]")) {
+  button.addEventListener("click", () => setTilt(Number(button.dataset.tilt)));
+}
+$("d-tilt-form").addEventListener("submit", (event) => {
+  event.preventDefault();
+  const deg = Number($("d-tilt-deg").value.replace("−", "-"));
+  $("d-tilt-deg").blur();
+  if ($("d-tilt-deg").value.trim() === "" || !Number.isFinite(deg) || deg > TILT_TOP || deg < TILT_BOTTOM) {
+    showStatus(`tilt · give an angle from +${TILT_TOP} to ${TILT_BOTTOM}`, true);
+    return;
+  }
+  setTilt(deg);
+});
+$("d-tilt-deg").addEventListener("focus", releaseKeys);
+function renderTiltPresets(available) {
+  $("d-tilt").hidden = !available;
+  const running = tiltTask && tiltTask.state === "running" ? tiltTask.detail.target_deg : null;
+  for (const button of $("d-tilt").querySelectorAll("button[data-tilt]")) {
+    button.classList.toggle("on", running !== null && Number(button.dataset.tilt) === running);
+  }
+}
+
+// Typing a password or an angle must not fly the drone.
+const typing = () => [$("d-wifi-pw"), $("d-tilt-deg")].includes(document.activeElement);
+
+// ---- estimated pose: compass + path map (drone.sdk server only, from its Estimator) ----
+// Frame: the odometry's takeoff frame. Heading 0 = its +x, labelled N; + = clockwise (turn right).
+// So a frame point (x, y) is drawn at (y, -x).
+
+const SVG_NS = "http://www.w3.org/2000/svg";
+const svgEl = (tag, attrs, text) => {
+  const element = document.createElementNS(SVG_NS, tag);
+  for (const [key, value] of Object.entries(attrs)) element.setAttribute(key, value);
+  if (text !== undefined) element.textContent = text;
+  return element;
+};
+const onDial = (deg, r) => [r * Math.sin(deg * Math.PI / 180), -r * Math.cos(deg * Math.PI / 180)];
+const normalDeg = (deg) => ((deg % 360) + 360) % 360;
+// Whole degrees 0..359 for display: round first, then wrap (359.6 shows 0, never 360).
+const headingText = (deg) => `${normalDeg(Math.round(deg))}°`;
+const cardinal = (deg) => CARDINALS[Math.round(normalDeg(deg) / 45) % CARDINALS.length];
+
+const ringLabels = [];
+for (let deg = 0; deg < 360; deg += RING_TICK_DEG) {
+  const major = deg % RING_MAJOR_DEG === 0;
+  const [x1, y1] = onDial(deg, major ? RING_MAJOR_IN : RING_MINOR_IN), [x2, y2] = onDial(deg, RING_R);
+  $("ring").append(svgEl("line", { class: `tick${major ? " major" : ""}`, x1, y1, x2, y2 }));
+  if (!major) continue;
+  const card = deg % 90 === 0;
+  const [x, y] = onDial(deg, RING_LABEL_R);
+  const label = svgEl("text", { class: `ring-text${card ? " card" : ""}`, x, y, "text-anchor": "middle",
+    "dominant-baseline": "central" }, card ? CARDINALS[deg / 45] : String(deg));
+  $("ring").append(label);
+  ringLabels.push(label);
+}
+const travelMark = svgEl("polygon", { class: "travel", points: `0,${-RING_MINOR_IN + 1} -4,${-RING_R - 5} 4,${-RING_R - 5}` });
+$("ring").append(travelMark);
+
+let ringAngle = 0;  // unwrapped, so the ring turns the short way through 0
+function unwrap(previous, deg) {
+  return previous + ((((deg - previous) % 360) + 540) % 360) - 180;
+}
+
+// The heading's ± 1 sd, as an arc around the fixed heading line at the top.
+function sigmaPath(sigma) {
+  if (sigma >= 180) return `M 0 ${-SIGMA_R} A ${SIGMA_R} ${SIGMA_R} 0 1 1 0 ${SIGMA_R} A ${SIGMA_R} ${SIGMA_R} 0 1 1 0 ${-SIGMA_R}`;
+  const [x1, y1] = onDial(-sigma, SIGMA_R), [x2, y2] = onDial(sigma, SIGMA_R);
+  return `M ${x1} ${y1} A ${SIGMA_R} ${SIGMA_R} 0 ${sigma > 90 ? 1 : 0} 1 ${x2} ${y2}`;
+}
+
+function renderEstimate(estimate) {
+  $("estimate").hidden = !estimate;
+  $("e-details").hidden = !estimate;
+  $("r-task-cell").hidden = !estimate;
+  serverStopAge = estimate && estimate.stopped_at ? Math.max(0, serverNow - estimate.stopped_at) : null;
+  if (!estimate) { setReadout("r-speed", ["—", ""]); return; }
+  const pose = estimate.pose;
+  const [vx, vy, vz] = pose.velocity;
+  const speed = Math.hypot(vx, vy);
+  const travel = Math.atan2(vy, vx) * 180 / Math.PI;
+  ringAngle = unwrap(ringAngle, -pose.heading_deg);
+  $("ring").style.transform = `rotate(${ringAngle}deg)`;
+  for (const label of ringLabels) label.style.transform = `rotate(${-ringAngle}deg)`;  // labels stay upright
+  $("sigma").setAttribute("d", sigmaPath(pose.heading_sigma_deg));
+  const moving = pose.in_flight && speed >= TRAVEL_MIN_SPEED;
+  travelMark.style.display = moving ? "" : "none";
+  travelMark.setAttribute("transform", `rotate(${travel})`);
+  $("heading").innerHTML = `${headingText(pose.heading_deg)}<small>${cardinal(pose.heading_deg)}</small>`;
+  setText("heading-sd", `± ${pose.heading_sigma_deg.toFixed(0)}°`, pose.heading_sigma_deg > HEADING_UNSURE_DEG);
+  renderHeadingSource(pose);
+  setReadout("r-speed", pose.in_flight ? [speed.toFixed(2), moving ? `→ ${headingText(travel)} ${cardinal(travel)}` : "hovering"]
+    : ["—", "on ground"], "m/s");
+  setText("e-position", pose.in_flight
+    ? `${signed(pose.x, 2)} ${signed(pose.y, 2)} · ±${pose.position_sigma_m.toFixed(1)} m` : "on ground");
+  setText("e-velocity", `${signed(vx, 2)} ${signed(vy, 2)} ${signed(vz, 2)} m/s`);
+  const tilt = estimate.tilt;
+  setText("e-tilt", `${tilt.source} · ${degrees(tilt.low_deg)} … ${degrees(tilt.high_deg)}${tilt.anchored ? " · anchored" : ""}`);
+  renderTask(estimate);
+  $("e-source").textContent = estimate.estimator;
+  $("e-note").textContent = `${estimate.estimator}: heading = yaw measured from the video where it is sure, else yaw stick × ` +
+    `${estimate.yaw_rate_dps?.toFixed(1) ?? "?"}°/s (re-calibrated by the video); + direction of travel; ` +
+    "position = 1 Hz odometry, extrapolated. Not a real compass: N (0°) is the takeoff frame's +x.";
+  renderMap(estimate);
+}
+
+// Where the heading comes from now: the video's measured yaw, or the yaw-stick model.
+function renderHeadingSource(pose) {
+  const video = pose.heading_source === "flow";
+  const rate = pose.flow_yaw_rate_dps, confidence = pose.flow_confidence;
+  $("heading-source").textContent = `estimated · ${video ? "video" : "sticks"}`;
+  $("heading-source").title = (rate == null
+    ? "Video yaw: no measurement (numpy missing, no video, or not flying)"
+    : `Video yaw ${signed(rate, 1)}°/s, confidence ${(confidence * 100).toFixed(0)} %`) +
+    ". Not a real compass: N is the takeoff frame's +x.";
+}
+
+function renderTask(estimate) {
+  const task = estimate.task;
+  runningTask = task.state === "running" ? task.name : null;
+  const progress = task.patrol && task.state === "running"
+    ? ` · loop ${task.patrol.loop} wp ${task.patrol.index ?? "—"} ${task.patrol.state}` : "";
+  const message = task.message && task.message !== task.state ? ` · ${task.message}` : "";
+  const locked = estimate.remote_locked ? " · /move locked until resume" : "";
+  setText("r-task", task.name ? `${task.name} · ${task.state}${progress}${message}${locked}` : `idle${locked}`,
+    task.state === "failed" || task.state === "landed");
+}
+
+function renderMap(estimate) {
+  const pose = estimate.pose;
+  const here = pose.in_flight ? [pose.x, pose.y] : [0, 0];
+  const points = [[0, 0], here, ...estimate.path, ...estimate.waypoints];
+  if (estimate.target) points.push(estimate.target.slice(0, 2));
+  const xs = points.map((p) => p[0]), ys = points.map((p) => p[1]);
+  const half = Math.max(MAP_MIN_HALF_M,
+    (Math.max(...xs) - Math.min(...xs)) / 2 + MAP_MARGIN_M, (Math.max(...ys) - Math.min(...ys)) / 2 + MAP_MARGIN_M);
+  const cx = (Math.max(...xs) + Math.min(...xs)) / 2, cy = (Math.max(...ys) + Math.min(...ys)) / 2;
+  const map = $("map");
+  map.setAttribute("viewBox", `${cy - half} ${-cx - half} ${2 * half} ${2 * half}`);
+  map.replaceChildren();
+  const grid = half > 8 ? 2 : 1;
+  $("e-scale").textContent = `grid ${grid} m`;
+  for (let v = Math.ceil((cy - half) / grid) * grid; v <= cy + half; v += grid) {
+    map.append(svgEl("line", { class: "ln rule", x1: v, y1: -cx - half, x2: v, y2: -cx + half }));
+  }
+  for (let v = Math.ceil((cx - half) / grid) * grid; v <= cx + half; v += grid) {
+    map.append(svgEl("line", { class: "ln rule", x1: cy - half, y1: -v, x2: cy + half, y2: -v }));
+  }
+  const [xMin, xMax, yMin, yMax] = estimate.fence;
+  map.append(svgEl("rect", { class: "ln faint dash", x: yMin, y: -xMax, width: yMax - yMin, height: xMax - xMin }));
+  const mark = half * 0.05, font = half * 0.09;
+  map.append(svgEl("path", { class: "ln faint", d: `M ${-mark} 0 H ${mark} M 0 ${-mark} V ${mark}` }));
+  map.append(svgEl("text", { class: "svg-text", x: mark * 1.4, y: font * 1.2, "font-size": font }, "takeoff"));
+  if (estimate.path.length > 1) {
+    map.append(svgEl("polyline", { class: "ln", points: estimate.path.map(([x, y]) => `${y},${-x}`).join(" ") }));
+  }
+  estimate.waypoints.forEach(([x, y], i) => {
+    map.append(svgEl("rect", { class: "ln", x: y - mark, y: -x - mark, width: 2 * mark, height: 2 * mark }));
+    map.append(svgEl("text", { class: "svg-text", x: y + mark * 1.5, y: -x - mark * 1.5, "font-size": font }, String(i)));
+  });
+  if (estimate.target) {
+    const [x, y] = estimate.target;
+    map.append(svgEl("circle", { class: "ln dash", cx: y, cy: -x, r: mark * 2 }));
+  }
+  if (!pose.in_flight) return;
+  map.append(svgEl("circle", { class: "ln faint", cx: pose.y, cy: -pose.x, r: Math.max(pose.position_sigma_m, mark) }));
+  map.append(svgEl("polygon", { class: "ink", points: `0,${-mark * 2.2} ${mark},${mark} ${-mark},${mark}`,
+    transform: `translate(${pose.y} ${-pose.x}) rotate(${pose.heading_deg})` }));
+}
+
+// ---- photos and recording on the Mac, and on the drone's SD card (drone.sdk server only) ----
+let captureAvailable = false;
+let recordingOn = false;
+let droneRecording = false;  // the drone does not report it: what we last asked
+let captureTimer = 0;
+
+function showCapture(text, warn = false) {
+  const element = $("c-status");
+  element.hidden = false;
+  element.textContent = text;
+  element.classList.toggle("warn", warn);
+  clearTimeout(captureTimer);
+  captureTimer = setTimeout(() => { element.hidden = true; }, STATUS_MS);
+}
+
+async function capture(label, path, body) {
+  try {
+    const response = await fetch(path, { method: "POST", body: JSON.stringify(body ?? {}) });
+    const result = await response.json();
+    const ok = response.ok && result.ok !== false;
+    showCapture(`${label} · ${ok ? result.path ?? "ok" : result.error ?? "failed"}`, !ok);
+    return ok ? result : null;
+  } catch (error) {
+    showCapture(`${label} · ${error.message}`, true);
+    return null;
+  }
+}
+
+const takePhoto = () => capture("photo", "/photo");
+const toggleRecord = () => capture(recordingOn ? "recording saved" : "recording", "/record", { on: !recordingOn });
+$("c-photo").addEventListener("click", takePhoto);
+$("c-record").addEventListener("click", toggleRecord);
+$("c-drone-photo").addEventListener("click", () => capture("photo on drone", "/drone/photo"));
+$("c-drone-record").addEventListener("click", async () => {
+  const on = !droneRecording;
+  if (await capture(on ? "rec on drone" : "rec on drone stopped", "/drone/record", { on })) droneRecording = on;
+});
+
+function renderCapture(state) {
+  captureAvailable = state.recording !== undefined;
+  $("capture").hidden = !captureAvailable;
+  if (!captureAvailable) return;
+  recordingOn = state.recording.on;
+  const seconds = Math.floor(state.recording.elapsed_s ?? 0);
+  const elapsed = `${Math.floor(seconds / 60)}:${String(seconds % 60).padStart(2, "0")}`;
+  $("c-record").classList.toggle("rec-on", recordingOn);
+  $("c-record-label").innerHTML = recordingOn
+    ? `<span class="rec-dot"></span> rec ${elapsed}${state.recording.writing ? "" : " · waiting for keyframe"}` : "rec";
+  $("c-drone-record").textContent = droneRecording ? "stop rec on drone" : "rec on drone";
+  $("c-drone-record").classList.toggle("rec-on", droneRecording);
+}
+
+let stateAt = 0;
+let serverLost = false;
+let seenFrames = 0;
+let lastState = null;
+
+// A finished MJPEG response leaves the <img> frozen on its last frame without firing
+// onerror, so reopen the stream when the server comes back or the decoder restarts.
+function reopenStreamIfNeeded(frames) {
+  const restarted = serverLost || frames < seenFrames || (seenFrames === 0 && frames > 0);
+  seenFrames = frames;
+  serverLost = false;
+  if (restarted) openStream();
+}
+
+async function poll() {
+  try {
+    const response = await fetch("/api/state", { cache: "no-store", signal: AbortSignal.timeout(STALE_MS) });
+    const state = await response.json();
+    stateAt = performance.now();
+    lastState = state;
+    reopenStreamIfNeeded(state.video.frames || 0);
+    renderSticks(state.sticks);
+    renderVideo(state.video);
+    renderDrone(state);
+    renderEstimate(state.estimate);
+    renderCapture(state);
+  } catch {
+    serverLost = true; // the freshness clock shows the link as lost
+  }
+  setTimeout(poll, POLL_MS);
+}
+
+// Freshness: of the page's own state (server lost overrides the Bluetooth age) and of the video.
+function renderClock() {
+  const now = performance.now();
+  renderStopFeedback();
+  renderActionStatus();
+  if (stateAt) {
+    const pollAge = (now - stateAt) / 1000;
+    const lost = now - stateAt > STALE_MS;
+    setText("x-poll", `${pollAge.toFixed(1)} s${lost ? " · lost" : ""}`, lost);
+    if (lost) setStat("st-link", `server lost ${pollAge.toFixed(1)} s`, "warn", "this page gets no state from the server");
+    else if (lastState) renderLinkStats(lastState, lastState.drone);
+  }
+  const stats = video.last;
+  if (!stats) return;
+  const stalledFor = now - video.frameChangedAt;
+  const stalled = stats.frames > 0 && stalledFor > VIDEO_STALL_MS;
+  $("stall").hidden = !stalled;
+  $("stall").textContent = `video stalled · ${(stalledFor / 1000).toFixed(1)} s`;
+  if (!stats.frames) setStat("st-video", "none", "dim");
+  else if (stalled) setStat("st-video", "stalled", "warn");
+  else if (stats.decode_lag_ms > DECODE_LAG_WARN_MS) setStat("st-video", `${video.fps.toFixed(0)} fps · lag ${stats.decode_lag_ms} ms`, "warn");
+  else setStat("st-video", `${video.fps.toFixed(0)} fps`);
+}
+
+const stream = $("stream");
+stream.onerror = () => setTimeout(openStream, RETRY_VIDEO_MS);
+
+// ---- vision overlay (drone.sdk server only): GET /vision, boxes on the frame they belong to ----
+// While a detector posts results (drone/identify/feed.py, or the simulator's fake one), the page
+// reads /video.mjpg itself to know each frame's X-Frame-Time, shows the video delayed by the
+// detector's latency and draws the result of that same frame: boxes never lag the picture.
+// Otherwise (or with B) the plain <img> stream, no delay. Colours: persons thin grey, faces
+// grey, the target's face white, the tracked body red.
+const VISION_KEY = "b";
+const VISION_POLL_MS = 200;
+const VISION_ACTIVE_MS = 3000;   // no result for this long: back to the plain stream
+const VISION_KEEP_S = 4;         // results and buffered frames kept, in frame time
+const VISION_MATCH_S = 0.25;     // a result is drawn on frames this close to its frame time
+const VISION_MAX_DELAY_S = 1.5;  // the video is never delayed more than this
+const VISION_DELAY_SMOOTH = 0.2; // new latency samples weigh this much
+const VISION_MARGIN_S = 0.03;
+const VISION_COLOURS = { person: "rgba(170,176,186,.55)", face: "#a9aeb8", targetFace: "#ffffff", body: "#ff4b3e" };
+const MJPEG_HEADER_END = new Uint8Array([13, 10, 13, 10]);
+const vision = {
+  enabled: true, available: true, timed: false, results: [], since: 0, lastAt: 0, mission: null,
+  delay: 0, frames: [], newest: 0, shownTime: null, shownUrl: null, reader: null,
+};
+
+function openStream() {
+  if (vision.timed) startTimedStream();
+  else { stopTimedStream(); stream.src = `/video.mjpg?${Date.now()}`; }
+}
+
+function setTimed(timed) {
+  if (timed === vision.timed) return;
+  vision.timed = timed;
+  openStream();
+}
+
+// The MJPEG stream read by hand: each part's X-Frame-Time and JPEG.
+async function startTimedStream() {
+  stopTimedStream();
+  const response = await fetch(`/video.mjpg?${Date.now()}`, { cache: "no-store" }).catch(() => null);
+  if (!response || !response.ok || !response.body) { setTimeout(openStream, RETRY_VIDEO_MS); return; }
+  const reader = response.body.getReader();
+  vision.reader = reader;
+  let buffer = new Uint8Array(0);
+  while (vision.reader === reader) {
+    const { value, done } = await reader.read().catch(() => ({ done: true }));
+    if (done) break;
+    const joined = new Uint8Array(buffer.length + value.length);
+    joined.set(buffer); joined.set(value, buffer.length);
+    buffer = takeParts(joined);
+  }
+  if (vision.reader === reader) { vision.reader = null; setTimeout(openStream, RETRY_VIDEO_MS); }
+}
+
+function stopTimedStream() {
+  const reader = vision.reader;
+  vision.reader = null;
+  if (reader) reader.cancel().catch(() => {});
+  vision.frames = [];
+}
+
+// Complete parts out of the buffer into vision.frames; returns what is left.
+function takeParts(buffer) {
+  for (;;) {
+    const headerEnd = indexOf(buffer, MJPEG_HEADER_END);
+    if (headerEnd < 0) return buffer;
+    const head = new TextDecoder().decode(buffer.subarray(0, headerEnd));
+    const length = Number((/content-length:\s*(\d+)/i.exec(head) || [])[1]);
+    const time = Number((/x-frame-time:\s*([\d.]+)/i.exec(head) || [])[1]);
+    const start = headerEnd + MJPEG_HEADER_END.length;
+    if (!length) return buffer.slice(start);
+    if (buffer.length < start + length) return buffer;
+    const jpeg = new Blob([buffer.slice(start, start + length)], { type: "image/jpeg" });
+    if (time) addFrame(time, jpeg);
+    buffer = buffer.slice(start + length);
+  }
+}
+
+function indexOf(buffer, pattern) {
+  outer: for (let i = 0; i + pattern.length <= buffer.length; i++) {
+    for (let j = 0; j < pattern.length; j++) if (buffer[i + j] !== pattern[j]) continue outer;
+    return i;
+  }
+  return -1;
+}
+
+function addFrame(time, jpeg) {
+  vision.frames.push({ time, jpeg });
+  vision.newest = Math.max(vision.newest, time);
+  while (vision.frames.length && vision.frames[0].time < vision.newest - VISION_KEEP_S) vision.frames.shift();
+}
+
+async function pollVision() {
+  if (!vision.available) return;
+  try {
+    const response = await fetch(`/vision?since=${vision.since}`, { cache: "no-store", signal: AbortSignal.timeout(STALE_MS) });
+    if (response.status === 404) { vision.available = false; return; }  // hoverctl alone: no detector
+    const reply = await response.json();
+    vision.mission = reply.mission;
+    if (reply.results.length) addResults(reply.results);
+  } catch { /* the server's state poll reports a lost server */ }
+  setTimeout(pollVision, VISION_POLL_MS);
+}
+
+function addResults(results) {
+  vision.results.push(...results);
+  vision.since = results[results.length - 1].frame_time;
+  vision.lastAt = performance.now();
+  vision.results = vision.results.filter((r) => r.frame_time > vision.since - VISION_KEEP_S);
+  if (vision.newest) {  // the detector's latency, in frame time: how far to delay the video
+    const behind = Math.min(Math.max(vision.newest - vision.since, 0), VISION_MAX_DELAY_S);
+    vision.delay += VISION_DELAY_SMOOTH * (behind - vision.delay);
+  }
+}
+
+// Every animation frame: the buffered frame to show, and the boxes of that frame.
+function renderVision() {
+  requestAnimationFrame(renderVision);
+  const active = vision.enabled && performance.now() - vision.lastAt < VISION_ACTIVE_MS;
+  setTimed(active);
+  if (vision.timed) showBufferedFrame();
+  drawVision(active ? nearestResult(vision.timed ? vision.shownTime : vision.since) : null);
+}
+
+function showBufferedFrame() {
+  if (!vision.frames.length) return;
+  const wanted = vision.newest - vision.delay - VISION_MARGIN_S;
+  let frame = vision.frames[0];
+  for (const candidate of vision.frames) if (candidate.time <= wanted) frame = candidate;
+  if (frame.time === vision.shownTime) return;
+  const previous = vision.shownUrl;
+  vision.shownUrl = URL.createObjectURL(frame.jpeg);
+  vision.shownTime = frame.time;
+  stream.src = vision.shownUrl;
+  if (previous) setTimeout(() => URL.revokeObjectURL(previous), RETRY_VIDEO_MS);
+}
+
+function nearestResult(time) {
+  if (time == null) return null;
+  let best = null;
+  for (const result of vision.results) {
+    if (!best || Math.abs(result.frame_time - time) < Math.abs(best.frame_time - time)) best = result;
+  }
+  return best && Math.abs(best.frame_time - time) <= VISION_MATCH_S ? best : null;
+}
+
+function drawVision(result) {
+  const canvas = $("vision-canvas");
+  const box = $("video").getBoundingClientRect();
+  const ratio = window.devicePixelRatio || 1;
+  canvas.width = Math.round(box.width * ratio);
+  canvas.height = Math.round(box.height * ratio);
+  const context = canvas.getContext("2d");
+  context.setTransform(ratio, 0, 0, ratio, 0, 0);
+  context.clearRect(0, 0, box.width, box.height);
+  const chip = $("vision-chip");
+  chip.hidden = !result;
+  if (!result || !stream.naturalWidth) return;
+  // The picture's rectangle inside the element (object-fit: contain).
+  const scale = Math.min(box.width / stream.naturalWidth, box.height / stream.naturalHeight);
+  const width = stream.naturalWidth * scale, height = stream.naturalHeight * scale;
+  const left = (box.width - width) / 2, top = (box.height - height) / 2;
+  const rect = (bbox) => [left + bbox[0] * width, top + bbox[1] * height, (bbox[2] - bbox[0]) * width, (bbox[3] - bbox[1]) * height];
+  const label = (text, x, y, colour) => {
+    context.font = "600 11.5px ui-monospace, Menlo, monospace";
+    const w = context.measureText(text).width + 8;
+    context.fillStyle = "rgba(7,8,11,.72)";
+    context.fillRect(x, y - 15, w, 16);
+    context.fillStyle = colour;
+    context.fillText(text, x + 4, y - 3);
+  };
+  context.lineWidth = 1;
+  context.setLineDash([4, 3]);
+  context.strokeStyle = VISION_COLOURS.person;
+  for (const person of result.persons) context.strokeRect(...rect(person.bbox));
+  context.setLineDash([]);
+  for (const face of result.faces) {
+    const colour = face.target ? VISION_COLOURS.targetFace : VISION_COLOURS.face;
+    context.lineWidth = face.target ? 2.5 : 1.5;
+    context.strokeStyle = colour;
+    const [x, y, w, h] = rect(face.bbox);
+    context.strokeRect(x, y, w, h);
+    const similarity = face.similarity == null ? "" : ` ${face.similarity.toFixed(2)}`;
+    label(`${face.name || "?"}${similarity}`, x, y, colour);
+  }
+  const target = result.target;
+  if (target) {
+    const [x, y, w, h] = rect(target.bbox);
+    context.lineWidth = 3;
+    context.strokeStyle = VISION_COLOURS.body;
+    context.strokeRect(x, y, w, h);
+    const confidence = target.confidence == null ? "" : ` ${target.confidence.toFixed(1)}`;
+    const below = y + h + 16 <= top + height ? y + h + 16 : y + h - 4;  // inside when no room below
+    label(`${result.name || "target"} · ${target.kind}${confidence} · ${target.source || ""}`, x, below, VISION_COLOURS.body);
+  }
+  renderVisionChip(chip, result);
+}
+
+// The state line over the video: lock, target, face match, timing, mission step (text nodes:
+// names come from the detector).
+function renderVisionChip(chip, result) {
+  const target = result.target;
+  const face = target && target.similarity != null
+    ? `face ${target.similarity.toFixed(2)}, ${target.face_age_s?.toFixed(1) ?? "?"} s ago` : "no face match yet";
+  const state = document.createElement("b");
+  state.textContent = result.state === "locked" ? "LOCKED" : "SEARCHING";
+  const lines = [
+    ` ${result.name || ""}` +
+      (target ? ` · ${target.kind} ${target.confidence?.toFixed(1) ?? ""} (${target.source || "?"}) · ${face}` : ""),
+    `${result.faces.length} faces · ${result.persons.length} persons` +
+      (result.ms != null ? ` · ${Math.round(result.ms)} ms` : "") +
+      (vision.timed ? ` · video delayed ${vision.delay.toFixed(2)} s to match` : ""),
+  ];
+  const mission = vision.mission;
+  if (mission && mission.state !== "idle") lines.push(`mission ${mission.state}${mission.step ? `: ${mission.step}` : ""}`);
+  chip.replaceChildren(state, document.createTextNode(lines.join("\n")));
+}
+
+window.addEventListener("keydown", (event) => {
+  if (keyName(event) !== VISION_KEY || event.repeat || typing() || event.metaKey || event.ctrlKey || event.altKey) return;
+  vision.enabled = !vision.enabled;
+});
+
+openStream();
+pollVision();
+requestAnimationFrame(renderVision);
+
+// ---- map view (drone.sdk server only): GET /map/state, every layer in one frame ----
+// World = the state's frame: the robot's `map` (or the drone's takeoff frame before the
+// alignment), x right, y up, metres, yaw counter-clockwise. Drawn at SVG (x, -y), so a world yaw
+// is an SVG rotate(-yaw). The panel polls only while it is open.
+const MAP_KEY = "m";
+const MAP_POLL_MS = 500;
+const MAP_MIN_SPAN_M = 6;        // auto-fit shows at least this much
+const MAP_FIT_MARGIN = 0.08;     // of the span, around the content
+const MAP_ZOOM_STEP = 1.4;
+const MAP_WHEEL_ZOOM = 0.0015;   // per wheel delta pixel
+const MAP_SCALE_LIMITS = [0.5, 2000];  // px per metre
+const MAP_CLICK_PX = 4;          // a press that moves less than this is a click
+const MAP_MARK_PX = 6;           // marker size, constant on screen
+const MAP_FONT_PX = 10.5;
+const MAP_ROBOT_RADIUS_M = 0.3;  // the robot's footprint, roughly
+const MAP_RULE_PX = 48;          // background grid lines (and the scale bar) at least this long
+const MAP_NICE_M = [0.05, 0.1, 0.2, 0.5, 1, 2, 5, 10, 20, 50, 100, 200, 500];
+const MAP_SPLAT_POST_MS = 300;
+const MAP_SPLAT_OPACITY = 0.6;   // the occupancy grid and the vectors show through the splat
+// Label corners around a point: x and y directions, text anchor. Each kind of marker has its
+// own, so labels of things close together (drone over the child, robot below) do not overlap.
+const MAP_LABEL_CORNERS = { ne: [1, 1, "start"], se: [1, -1, "start"], nw: [-1, 1, "end"], sw: [-1, -1, "end"] };
+const MAP_LAYERS = [["grid", "occupancy"], ["splat", "splat"], ["path", "path · patrol"],
+  ["robot", "robot"], ["drone", "drone"], ["child", "child"]];
+
+const mapView = {
+  open: false, state: null, follow: true, cx: 0, cy: 0, scale: 40, timer: 0, drag: null, pin: null,
+  layers: Object.fromEntries(MAP_LAYERS.map(([key]) => [key, true])),
+  gridVersion: null, splatShown: false, registration: null, align: false, splatPostTimer: 0,
+};
+const mvSvg = $("mv-svg");
+const mvRound = (v) => (Math.round(v * 100) / 100).toFixed(2);
+const mvXY = (x, y) => `x ${mvRound(x)}  y ${mvRound(y)}`;
+const mvDeg = (rad) => rad * 180 / Math.PI;
+
+for (const [key, label] of MAP_LAYERS) {
+  $("mv-layers").insertAdjacentHTML("beforeend",
+    `<button class="mv-layer mono on" type="button" data-layer="${key}"><span>${label}</span><small id="mv-l-${key}">—</small></button>`);
+}
+for (const button of document.querySelectorAll("#mv-layers .mv-layer")) {
+  keepFocusOff(button);
+  button.addEventListener("click", () => {
+    const key = button.dataset.layer;
+    mapView.layers[key] = !mapView.layers[key];
+    button.classList.toggle("on", mapView.layers[key]);
+    renderMapView();
+  });
+}
+
+function toggleMap() {
+  mapView.open = !mapView.open;
+  document.body.classList.toggle("map-open", mapView.open);
+  $("mapview").hidden = !mapView.open;
+  $("toggle-map").classList.toggle("on", mapView.open);
+  clearTimeout(mapView.timer);
+  if (mapView.open) pollMap();
+}
+
+async function pollMap() {
+  try {
+    const response = await fetch("/map/state", { cache: "no-store", signal: AbortSignal.timeout(STALE_MS) });
+    if (response.ok) {
+      mapView.state = await response.json();
+      renderMapView();
+    }
+  } catch { /* the server's freshness shows in the top bar */ }
+  if (mapView.open) mapView.timer = setTimeout(pollMap, MAP_POLL_MS);
+}
+
+// Only the drone.sdk server has a map view: the top-bar button appears when it answers.
+fetch("/map/state", { cache: "no-store" }).then((response) => { $("toggle-map").hidden = !response.ok; }).catch(() => {});
+
+function mapSize() {
+  const box = mvSvg.getBoundingClientRect();
+  return [Math.max(box.width, 1), Math.max(box.height, 1)];
+}
+
+function toWorld(clientX, clientY) {
+  const box = mvSvg.getBoundingClientRect();
+  const [w, h] = mapSize();
+  return [mapView.cx + (clientX - box.left - w / 2) / mapView.scale, mapView.cy - (clientY - box.top - h / 2) / mapView.scale];
+}
+
+const showMapLayers = () => mapView.state && mapView.state.frame === "map";
+
+function splatCorners(splat, reg) {
+  const [u0, v0, u1, v1] = splat.bounds;
+  const a = reg.rotation_deg * Math.PI / 180, c = Math.cos(a), s = Math.sin(a);
+  return [[u0, v0], [u1, v0], [u1, v1], [u0, v1]].map(([u, v]) =>
+    [reg.x + reg.scale * (c * u - s * v), reg.y + reg.scale * (s * u + c * v)]);
+}
+
+// Everything worth seeing, for "fit": the grid's rectangle (or the splat), then the live items.
+function contentPoints(st) {
+  const points = [];
+  if (showMapLayers()) {
+    if (st.grid && mapView.layers.grid) {
+      const { origin, size_m: [w, h] } = st.grid;
+      points.push([origin.x, origin.y], [origin.x + w, origin.y + h]);
+    }
+    if (st.splat?.available && mapView.layers.splat && !st.grid) points.push(...splatCorners(st.splat, mapView.registration));
+    for (const robot of [st.robot, st.robot_launch]) if (robot) points.push([robot.x, robot.y]);
+  }
+  if (st.drone) points.push([st.drone.x, st.drone.y]);
+  if (st.takeoff) points.push(st.takeoff);
+  if (st.child) points.push([st.child.x, st.child.y]);
+  points.push(...st.path, ...st.waypoints, ...st.planned);
+  return points.length ? points : [[0, 0]];
+}
+
+function fitView() {
+  const points = contentPoints(mapView.state);
+  const xs = points.map((p) => p[0]), ys = points.map((p) => p[1]);
+  const spanX = Math.max(Math.max(...xs) - Math.min(...xs), MAP_MIN_SPAN_M);
+  const spanY = Math.max(Math.max(...ys) - Math.min(...ys), MAP_MIN_SPAN_M);
+  const [w, h] = mapSize();
+  mapView.cx = (Math.max(...xs) + Math.min(...xs)) / 2;
+  mapView.cy = (Math.max(...ys) + Math.min(...ys)) / 2;
+  mapView.scale = Math.min(w / spanX, h / spanY) / (1 + 2 * MAP_FIT_MARGIN);
+}
+
+function applyView() {
+  const [w, h] = mapSize();
+  const { cx, cy, scale } = mapView;
+  mvSvg.setAttribute("viewBox", `${cx - w / 2 / scale} ${-cy - h / 2 / scale} ${w / scale} ${h / scale}`);
+  drawRules(w, h);
+  drawScaleBar();
+  drawMapLive();
+}
+
+const niceAtLeast = (m) => MAP_NICE_M.find((n) => n >= m) ?? MAP_NICE_M[MAP_NICE_M.length - 1];
+
+function drawRules(w, h) {
+  const g = $("mv-rules");
+  g.replaceChildren();
+  const step = niceAtLeast(MAP_RULE_PX / mapView.scale);
+  const x0 = mapView.cx - w / 2 / mapView.scale, x1 = mapView.cx + w / 2 / mapView.scale;
+  const y0 = mapView.cy - h / 2 / mapView.scale, y1 = mapView.cy + h / 2 / mapView.scale;
+  for (let x = Math.ceil(x0 / step) * step; x <= x1; x += step) {
+    g.append(svgEl("line", { class: `ln ${Math.abs(x) < step / 2 ? "faint" : "rule"}`, x1: x, y1: -y0, x2: x, y2: -y1 }));
+  }
+  for (let y = Math.ceil(y0 / step) * step; y <= y1; y += step) {
+    g.append(svgEl("line", { class: `ln ${Math.abs(y) < step / 2 ? "faint" : "rule"}`, x1: x0, y1: -y, x2: x1, y2: -y }));
+  }
+}
+
+// The scale bar is one grid cell long.
+function drawScaleBar() {
+  const metres = niceAtLeast(MAP_RULE_PX / mapView.scale);
+  $("mv-scale-bar").style.width = `${metres * mapView.scale}px`;
+  $("mv-scale-label").textContent = metres < 1 ? `${Math.round(metres * 100)} cm` : `${metres} m`;
+}
+
+function drawMapLive() {
+  const st = mapView.state, g = $("mv-live");
+  g.replaceChildren();
+  if (!st) return;
+  const px = 1 / mapView.scale, mark = MAP_MARK_PX * px, font = MAP_FONT_PX * px;
+  const pts = (list) => list.map(([x, y]) => `${x},${-y}`).join(" ");
+  const label = (x, y, text, cls = "", corner = "ne") => {
+    const [sx, sy, anchor] = MAP_LABEL_CORNERS[corner];
+    g.append(svgEl("text", { class: `mv-text ${cls}`, x: x + sx * mark * 1.7, y: -y - sy * mark * 1.2 + (sy < 0 ? font * 0.75 : 0),
+      "text-anchor": anchor, "font-size": font }, text));
+  };
+  const heading = (x, y, yaw, length, cls) =>
+    g.append(svgEl("line", { class: cls, x1: x, y1: -y, x2: x + length * Math.cos(yaw), y2: -y - length * Math.sin(yaw) }));
+  const layers = mapView.layers;
+  if (layers.path) {
+    if (st.fence) g.append(svgEl("polygon", { class: "ln faint dash", points: pts(st.fence) }));
+    if (st.planned.length) g.append(svgEl("polyline", { class: "ln faint dash", points: pts([...st.planned, st.planned[0]]) }));
+    for (const [x, y] of st.planned) g.append(svgEl("rect", { class: "ln faint", x: x - mark / 2, y: -y - mark / 2, width: mark, height: mark }));
+    st.waypoints.forEach(([x, y], i) => {
+      g.append(svgEl("rect", { class: "ln", x: x - mark * 0.7, y: -y - mark * 0.7, width: mark * 1.4, height: mark * 1.4 }));
+      label(x, y, String(i));
+    });
+    if (st.path.length > 1) g.append(svgEl("polyline", { class: "ln", points: pts(st.path) }));
+    if (st.target) g.append(svgEl("circle", { class: "ln dash", cx: st.target[0], cy: -st.target[1], r: mark * 1.8 }));
+    if (st.takeoff) {
+      const [x, y] = st.takeoff;
+      g.append(svgEl("path", { class: "ln faint", d: `M ${x - mark} ${-y} H ${x + mark} M ${x} ${-y - mark} V ${-y + mark}` }));
+      label(x, y, "takeoff", "", "sw");
+    }
+  }
+  if (layers.robot && showMapLayers()) {
+    const launch = st.robot_launch, robot = st.robot;
+    if (launch) {
+      const r = Math.max(MAP_ROBOT_RADIUS_M, mark);
+      g.append(svgEl("circle", { class: "ln faint dash", cx: launch.x, cy: -launch.y, r }));
+      heading(launch.x, launch.y, launch.yaw, r * 1.6, "ln faint");
+      if (!robot) label(launch.x, launch.y, "robot at launch", "", "se");
+    }
+    if (robot) {
+      const r = Math.max(MAP_ROBOT_RADIUS_M, mark * 1.2), cls = robot.stale ? "ln faint dash" : "ln thick";
+      g.append(svgEl("circle", { class: robot.stale ? "ln faint dash" : "mv-dot", cx: robot.x, cy: -robot.y, r }));
+      heading(robot.x, robot.y, robot.yaw, r * 1.8, cls);
+      label(robot.x + r, robot.y - r, robot.stale ? `robot · ${robot.age_s.toFixed(0)} s old` : "robot", robot.stale ? "" : "ink", "se");
+    }
+  }
+  if (layers.child && st.goal) {
+    const { x, y, yaw } = st.goal;
+    g.append(svgEl("rect", { class: "ln", x: x - mark * 0.6, y: -y - mark * 0.6, width: mark * 1.2, height: mark * 1.2 }));
+    heading(x, y, yaw, mark * 2.4, "ln");
+    label(x, y, "robot goal", "", "sw");
+  }
+  if (layers.child && st.child) {
+    const { x, y } = st.child;
+    g.append(svgEl("circle", { class: "ln red thick", cx: x, cy: -y, r: mark * 1.6 }));
+    g.append(svgEl("path", { class: "ln red", d: `M ${x - mark * 2.6} ${-y} H ${x + mark * 2.6} M ${x} ${-y - mark * 2.6} V ${-y + mark * 2.6}` }));
+    label(x - mark, y + mark, `child · ${mvXY(x, y)}`, "red", "nw");
+  }
+  if (layers.drone && st.drone) {
+    const { x, y, yaw } = st.drone;
+    if (st.drone.in_flight) g.append(svgEl("circle", { class: "ln faint", cx: x, cy: -y, r: Math.max(st.drone.sigma_m, mark) }));
+    g.append(svgEl("polygon", { class: "ink", points: `${mark * 2.4},0 ${-mark},${mark * 1.2} ${-mark * 0.4},0 ${-mark},${-mark * 1.2}`,
+      transform: `translate(${x} ${-y}) rotate(${-mvDeg(yaw)})` }));
+    label(x + mark, y, st.drone.in_flight ? `drone · ${st.drone.alt.toFixed(1)} m` : "drone · on ground", "ink");
+  }
+  if (mapView.pin) {
+    const [x, y] = mapView.pin;
+    g.append(svgEl("path", { class: "ln", d: `M ${x - mark * 2} ${-y} H ${x - mark / 2} M ${x + mark / 2} ${-y} H ${x + mark * 2} ` +
+      `M ${x} ${-y - mark * 2} V ${-y - mark / 2} M ${x} ${-y + mark / 2} V ${-y + mark * 2}` }));
+  }
+}
+
+// The two images: placed by their metadata, reloaded only when the server has a new one.
+function renderMapImages(st) {
+  const showLayers = showMapLayers();
+  const grid = st.grid;
+  $("mv-grid-g").style.display = showLayers && grid && mapView.layers.grid ? "" : "none";
+  if (grid) {
+    if (mapView.gridVersion !== grid.version) {
+      mapView.gridVersion = grid.version;
+      $("mv-grid").setAttribute("href", `/map/grid.png?v=${grid.version}&t=${grid.updated_at}`);
+    }
+    const { origin, size_m: [w, h] } = grid;
+    for (const [key, value] of Object.entries({ x: origin.x, y: -(origin.y + h), width: w, height: h })) $("mv-grid").setAttribute(key, value);
+    $("mv-grid-g").setAttribute("transform", `rotate(${-mvDeg(origin.yaw)} ${origin.x} ${-origin.y})`);
+  }
+  const splat = st.splat?.available ? st.splat : null;
+  $("mv-splat-g").style.display = showLayers && splat && mapView.layers.splat ? "" : "none";
+  if (splat && !mapView.splatShown) {
+    mapView.splatShown = true;
+    $("mv-splat").setAttribute("href", "/map/splat.png");
+    const [u0, v0, u1, v1] = splat.bounds;
+    for (const [key, value] of Object.entries({ x: u0, y: -v1, width: u1 - u0, height: v1 - v0 })) $("mv-splat").setAttribute(key, value);
+  }
+  if (splat) placeSplat();
+}
+
+function placeSplat() {
+  const reg = mapView.registration;
+  if (!reg) return;
+  $("mv-splat-g").setAttribute("transform", `translate(${reg.x} ${-reg.y}) rotate(${-reg.rotation_deg}) scale(${reg.scale})`);
+  $("mv-splat-g").style.opacity = MAP_SPLAT_OPACITY;
+}
+
+function renderMapPanel(st) {
+  const inMap = st.frame === "map";
+  $("mv-frame").textContent = inMap ? "frame · map" : "frame · takeoff";
+  $("mv-frame").className = `chip mono ${inMap ? "on" : "warn"}`;
+  $("mv-note").hidden = !st.note;
+  $("mv-note").textContent = st.note ?? "";
+  const grid = st.grid, splat = st.splat;
+  const rows = {
+    grid: grid ? [`${grid.width}×${grid.height} · ${Math.round(grid.resolution * 100)} cm`] : ["none · --map-yaml or ros_node"],
+    splat: !splat ? ["none · --splat"] : splat.available ? [`${(splat.gaussians / 1000).toFixed(0)} k · cut ${splat.z_max}`] : [splat.note, true],
+    path: [st.waypoints.length ? `${st.waypoints.length} waypoints` : st.planned.length ? `${st.planned.length} planned` : `${st.path.length} points`],
+    robot: [st.robot ? (st.robot.stale ? `stale ${st.robot.age_s.toFixed(0)} s` : `live · ${st.robot.age_s.toFixed(1)} s`)
+      : st.robot_launch ? "launch pose only" : "no pose yet"],
+    drone: [st.drone ? (st.drone.in_flight ? `${st.drone.alt.toFixed(1)} m` : "on ground") : "not aligned"],
+    child: [st.child ? `found · #${st.child.id}` : "not found"],
+  };
+  for (const [key, [text, warn]] of Object.entries(rows)) {
+    $(`mv-l-${key}`).textContent = text;
+    $(`mv-l-${key}`).title = text;
+    $(`mv-l-${key}`).classList.toggle("warn", Boolean(warn));
+  }
+  $("mv-splat-tools").hidden = !splat?.available || !inMap;
+}
+
+function renderMapView() {
+  const st = mapView.state;
+  if (!st || !mapView.open) return;
+  if (st.splat && !mapView.align) mapView.registration = { ...st.splat.registration };
+  renderMapPanel(st);
+  renderMapImages(st);
+  if (mapView.follow) fitView();
+  applyView();
+}
+
+// ---- pan, zoom, click for coordinates; with "align splat" a drag moves the splat ----
+mvSvg.addEventListener("pointerdown", (event) => {
+  if (event.button !== 0) return;
+  mvSvg.setPointerCapture(event.pointerId);
+  mapView.drag = { x: event.clientX, y: event.clientY, moved: false, splat: mapView.align && mapView.registration };
+});
+mvSvg.addEventListener("pointermove", (event) => {
+  const [x, y] = toWorld(event.clientX, event.clientY);
+  $("mv-hover").innerHTML = `cursor <b>${mvXY(x, y)}</b>`;
+  const drag = mapView.drag;
+  if (!drag) return;
+  const dx = event.clientX - drag.x, dy = event.clientY - drag.y;
+  if (!drag.moved && Math.hypot(dx, dy) < MAP_CLICK_PX) return;
+  drag.moved = true;
+  mvSvg.classList.add("dragging");
+  drag.x = event.clientX;
+  drag.y = event.clientY;
+  if (drag.splat) {
+    mapView.registration.x += dx / mapView.scale;
+    mapView.registration.y -= dy / mapView.scale;
+    placeSplat();
+    fillSplatInputs();
+    postSplatSoon();
+    return;
+  }
+  mapView.follow = false;
+  mapView.cx -= dx / mapView.scale;
+  mapView.cy += dy / mapView.scale;
+  applyView();
+});
+mvSvg.addEventListener("pointerup", (event) => {
+  const drag = mapView.drag;
+  mapView.drag = null;
+  mvSvg.classList.remove("dragging");
+  if (!drag || drag.moved) return;
+  mapView.pin = toWorld(event.clientX, event.clientY);
+  const frame = mapView.state?.frame ?? "map";
+  $("mv-pin").innerHTML = `pin · ${frame} <b>${mvXY(...mapView.pin)}</b>`;
+  drawMapLive();
+});
+mvSvg.addEventListener("pointerleave", () => { $("mv-hover").textContent = ""; });
+
+function zoomAt(factor, clientX, clientY) {
+  const [x, y] = toWorld(clientX, clientY);
+  const box = mvSvg.getBoundingClientRect();
+  const [w, h] = mapSize();
+  mapView.scale = Math.min(Math.max(mapView.scale * factor, MAP_SCALE_LIMITS[0]), MAP_SCALE_LIMITS[1]);
+  mapView.cx = x - (clientX - box.left - w / 2) / mapView.scale;
+  mapView.cy = y + (clientY - box.top - h / 2) / mapView.scale;
+  mapView.follow = false;
+  applyView();
+}
+const zoomCentre = (factor) => {
+  const box = mvSvg.getBoundingClientRect();
+  zoomAt(factor, box.left + box.width / 2, box.top + box.height / 2);
+};
+mvSvg.addEventListener("wheel", (event) => {
+  event.preventDefault();
+  zoomAt(Math.exp(-event.deltaY * MAP_WHEEL_ZOOM), event.clientX, event.clientY);
+}, { passive: false });
+$("mv-in").addEventListener("click", () => zoomCentre(MAP_ZOOM_STEP));
+$("mv-out").addEventListener("click", () => zoomCentre(1 / MAP_ZOOM_STEP));
+$("mv-fit").addEventListener("click", () => { mapView.follow = true; renderMapView(); });
+window.addEventListener("resize", () => { if (mapView.open) renderMapView(); });
+
+// ---- splat registration: numbers or drag, applied at once, sent to the server, saved on demand ----
+const SPLAT_INPUTS = { "mv-s-scale": "scale", "mv-s-rot": "rotation_deg", "mv-s-x": "x", "mv-s-y": "y" };
+
+function fillSplatInputs() {
+  for (const [id, key] of Object.entries(SPLAT_INPUTS)) {
+    if (document.activeElement !== $(id)) $(id).value = Number(mapView.registration[key].toFixed(key === "scale" ? 4 : 2));
+  }
+}
+
+function postSplatSoon(save = false) {
+  clearTimeout(mapView.splatPostTimer);
+  mapView.splatPostTimer = setTimeout(async () => {
+    try {
+      const response = await fetch("/map/splat/registration", { method: "POST", body: JSON.stringify({ ...mapView.registration, save }) });
+      const result = await response.json();
+      if (save) {
+        $("mv-s-msg").textContent = response.ok ? `saved · ${result.saved?.split("/").pop() ?? "nowhere"}` : result.error;
+        $("mv-s-msg").title = result.saved ?? "";
+      }
+      $("mv-s-msg").classList.toggle("warn", !response.ok);
+    } catch (error) {
+      $("mv-s-msg").textContent = error.message;
+    }
+  }, save ? 0 : MAP_SPLAT_POST_MS);
+}
+
+$("mv-align").addEventListener("click", () => {
+  mapView.align = !mapView.align;
+  $("mv-align").classList.toggle("on", mapView.align);
+  $("mv-align-form").hidden = !mapView.align;
+  $("mv-s-msg").textContent = "";
+  if (mapView.align && mapView.registration) fillSplatInputs();
+});
+for (const id of Object.keys(SPLAT_INPUTS)) {
+  const input = $(id);
+  input.addEventListener("input", () => {
+    const value = Number(input.value);
+    if (!input.value.trim() || !Number.isFinite(value) || (id === "mv-s-scale" && value <= 0)) return;
+    mapView.registration[SPLAT_INPUTS[id]] = value;
+    placeSplat();
+    postSplatSoon();
+  });
+  // Typing a number must not fly the drone or change the speed (Space still means STOP).
+  input.addEventListener("keydown", (event) => {
+    if (event.key === "Escape") input.blur();
+    if (event.key !== " ") event.stopPropagation();
+  });
+}
+$("mv-align-form").addEventListener("submit", (event) => { event.preventDefault(); postSplatSoon(true); });
+
+$("toggle-map").addEventListener("click", toggleMap);
+$("video").addEventListener("click", () => { if (mapView.open) toggleMap(); });
+window.addEventListener("keydown", (event) => {
+  if (keyName(event) !== MAP_KEY || event.repeat || typing() || event.metaKey || event.ctrlKey || event.altKey) return;
+  toggleMap();
+});
+
+poll();
+setInterval(renderClock, CLOCK_MS);
+</script>
+</body>
+</html>

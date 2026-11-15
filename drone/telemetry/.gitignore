@@ -1,0 +1,2 @@
+# Raw app logs: may hold personal data even after redaction, never commit them
+captures/

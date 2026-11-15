@@ -1,0 +1,10 @@
+#!/usr/bin/env bash
+# Land the hovering drone on the robot's helipad (drone/land_on_pad.py). Needs drone/fly running
+# and the pad model (python -m drone.identify.pad train).
+# Usage: drone/land [--alt 2] [--pad-height 0.4] [--takeoff-height 0] [--tilt -50] [--ahead 4]
+#        (started on the ground: it sets the camera, then waits for the drone's button)
+#        drone/land --watch     # no flight: is the pad seen on the live video?
+# Both save some of the frames in recordings/pad-<time>/ (--no-photos or --sim: none).
+set -euo pipefail
+cd "$(dirname "$0")/.."
+exec uv run --offline --with opencv-contrib-python-headless python -m drone.land_on_pad "$@"

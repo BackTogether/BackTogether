@@ -1,0 +1,11 @@
+#!/usr/bin/env bash
+# Wait for the robot to stand still at the child (or the parent to hang up, low battery, or the
+# mission flying home), then land on the robot's pad (drone/dock_robot.py). Needs drone/fly
+# running and the pad model.
+# Usage: drone/dock --arrived [http://<robot>:8001] [--battery 35] [--robot X Y]
+#        drone/dock --care http://<robot>:8090     # also/or: once the parent hung up (8090:
+#                                                  # demo.launch's care port)
+#        drone/dock --now     # land on the robot right away
+set -euo pipefail
+cd "$(dirname "$0")/.."
+exec uv run --offline --with opencv-contrib-python-headless python -m drone.dock_robot "$@"

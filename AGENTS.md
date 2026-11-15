@@ -20,7 +20,8 @@ Add folders and code only when a task needs them, following this planned layout:
 
 ```
 interfaces/   shared message schemas + local event bus              (SHARED)
-robot/        robot interface, mock and adapter for the chosen robot
+drone/        HoverAir X1 drone: control, adapters, notes (drone/README.md)
+bobac/        Bobac_d wheeled ROS robot with screen + webcam (bobac/README.md)
 modules/      one folder per feature module
 integration/  orchestrator: module events -> robot actions           (SHARED)
 demo/         entry point for the live demo                          (SHARED)

@@ -161,6 +161,8 @@ Note: rulesets on private repos need GitHub Pro/Team; on public repos they are f
 No application code yet. Planned layout (folders are created when needed): see
 [AGENTS.md](AGENTS.md#project).
 ```
+drone/        HoverAir X1 drone
+bobac/        Bobac_d wheeled robot with screen + webcam
 docs/         REVIEWER.md
 scripts/      check_commit_msg.py, board.py, check_web.py
 web/          the GitHub Pages site (see web/README.md)
