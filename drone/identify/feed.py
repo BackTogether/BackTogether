@@ -23,8 +23,9 @@ import json
 import logging
 import time
 import urllib.request
+from collections.abc import Sequence
 from pathlib import Path
-from typing import Any
+from typing import Any, Protocol
 
 import cv2
 import numpy as np
@@ -33,7 +34,6 @@ from . import annotate
 from .__main__ import load_people
 from .body_model import BodyModel
 from .body_track import BODY, BodyTracker, FrameResult, make_tracker
-from .collect import Collector
 from .faces import FaceEmbedder
 from .people import PEOPLE_DIR, People, is_photo
 from .persons import PersonDetector
@@ -51,6 +51,10 @@ RECORDED_FPS = 30.0  # the X1's stream: frame times of a recording
 log = logging.getLogger("identify")
 
 Box = tuple[int, int, int, int]
+
+
+class FrameSink(Protocol):
+    def add(self, image: np.ndarray, result: FrameResult, frame_time: float) -> None: ...
 
 
 class DroneServer:
@@ -167,7 +171,9 @@ def load_body_model() -> BodyModel | None:
         return None
 
 
-def run_live(target: str, url: str, people: People, collector: Collector | None = None) -> None:
+def run_live(target: str, url: str, people: People, sinks: Sequence[FrameSink] = ()) -> None:
+    """Track the target on the server's frames; each result also goes to every sink (frames saved
+    for the body model, the video with the boxes)."""
     server = DroneServer(url)
     tracker = make_tracker_for(target, people)
     last = None
@@ -178,8 +184,8 @@ def run_live(target: str, url: str, people: People, collector: Collector | None 
             continue
         frame_time, image = frame
         result = tracker.update(image, frame_time)
-        if collector is not None:
-            collector.add(image, result, frame_time)
+        for sink in sinks:
+            sink.add(image, result, frame_time)
         server.post("/vision", vision_body(result, frame_time, image.shape, target))
         report = mission_body(result, frame_time, image.shape, target)
         answer = server.post("/mission/target", report) if report else None

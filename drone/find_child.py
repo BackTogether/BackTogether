@@ -14,7 +14,8 @@ the robot's pad (or LAND in the web page).
     drone/find jorge --sweep         # terminal 2, then the drone's button (--side left: first
                                      #   lane turn to the left; --length/--width bound the hall)
     drone/find jorge                 # the square of waypoints instead of the sweep
-    drone/find jorge --watch         # no flight: recognise and track on the live video only
+    drone/find jorge --watch         # no flight command: recognise and track while you fly by
+                                     #   hand from the page; video with the boxes in recordings/
     drone/find jorge --collect       # also save frames for the body model (identify/collect.py)
 
 The child is a folder of face photos (copied into drone/identify/people/<folder name>/, which
@@ -47,6 +48,7 @@ from typing import Any
 
 from drone.identify.__main__ import load_people
 from drone.identify.body_track import LOCK_FACE_FRAMES, SEARCHING
+from drone.identify.boxes_video import BoxesVideo
 from drone.identify.collect import Collector
 from drone.identify.feed import (
     DroneServer,
@@ -282,7 +284,9 @@ def main() -> None:
         help="--robot: degrees the camera pointed left of the robot's front at takeoff",
     )
     parser.add_argument(
-        "--watch", action="store_true", help="no flight: recognise and track on the video only"
+        "--watch",
+        action="store_true",
+        help="fly by hand: recognise, track and record the boxes (no flight command)",
     )
     parser.add_argument(
         "--collect", action="store_true", help="save frames for the body model (collect.py)"
@@ -303,12 +307,7 @@ def main() -> None:
         except DroneApiError as error:
             log.warning("manual control: %s (press MANUAL CONTROL in the page)", error)
     if args.watch:
-        log.info("watching for %s on %s: boxes on the page, no flight", name, args.url)
-        try:
-            run_live(name, args.url, people, collector)
-        except KeyboardInterrupt:
-            print("stopped watching")
-        report_collected(collector)
+        watch(client, name, people, args, collector)
         return
     if not telemetry["in_flight"]:
         tilt_on_ground(client, args.tilt)
@@ -351,6 +350,39 @@ def main() -> None:
         print(f"child at {child.get('drone')} m from the takeoff point (drone frame)")
     if args.robot and child:
         follow_robot(mission, args, started_at)
+
+
+def watch(
+    client: DroneClient,
+    name: str,
+    people: People,
+    args: argparse.Namespace,
+    collector: Collector | None,
+) -> None:
+    """Recognise and track on the live video while the drone is flown by hand (the page), no
+    flight command. Two recordings: the camera as it is (drone/fly's MP4 of the stream,
+    recordings/video_*.mp4) and the tracker's view with the boxes (boxes-<child>-<time>.mp4)."""
+    video = BoxesVideo(RECORDINGS, name)
+    sinks = [video] if collector is None else [video, collector]
+    try:
+        raw = client.record(True).get("path")
+    except DroneApiError as error:  # e.g. already recording from the page: keep that one
+        raw = None
+        log.warning("camera recording: %s", error)
+    log.info("watching for %s on %s: boxes on the page and in %s", name, args.url, video.path)
+    try:
+        run_live(name, args.url, people, sinks)
+    except KeyboardInterrupt:
+        print("stopped watching")
+    if raw:
+        try:
+            raw = client.record(False).get("path") or raw
+        except DroneApiError as error:
+            log.warning("camera recording: %s", error)
+        print(f"camera video: {raw}")
+    path = video.close()
+    print(f"video with the boxes: {path}" if path else "no video frame arrived: nothing recorded")
+    report_collected(collector)
 
 
 def report_collected(collector: Collector | None) -> None:

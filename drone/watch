@@ -1,0 +1,14 @@
+#!/usr/bin/env bash
+# Fly by hand from the page (drone/fly) while the child is recognised and tracked: boxes on the
+# page; two videos, the camera as it is (recordings/video_*.mp4) and with the boxes
+# (recordings/boxes-<child>-<time>.mp4); frames for the body model in recordings/collect-<time>/.
+# Sends no flight command. Ctrl+C stops and saves.
+# Usage: drone/watch [child, default jorge] [more drone/find options]
+set -euo pipefail
+cd "$(dirname "$0")/.."
+CHILD=jorge
+if [[ $# -gt 0 && $1 != -* ]]; then
+  CHILD=$1
+  shift
+fi
+exec drone/find "$CHILD" --watch --collect "$@"
