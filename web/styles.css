@@ -1,18 +1,19 @@
-/* Find My Child - dark "control room" look: one simple column, built for a phone. */
+/* BackTogether - night sky with a golden eclipse: one simple column, built for a phone. */
 
 :root {
-  --bg: #070b18;
-  --bg-soft: #0c1326;
-  --panel: rgba(18, 27, 48, 0.72);
-  --panel-line: rgba(126, 160, 224, 0.18);
-  --text: #eef3ff;
-  --muted: #9babcd;
-  --accent: #38e1c6;
-  --accent-warm: #ffb547;
-  --danger: #ff7a7a;
+  --bg: #12152b;
+  --bg-soft: #1b1f3b;
+  --panel: rgba(30, 35, 72, 0.72);
+  --panel-line: rgba(176, 184, 232, 0.16);
+  --text: #f5f5f8;
+  --muted: #a9aec8;
+  --accent: #f2b33d;
+  --accent-warm: #ffd98a;
+  --danger: #ff8a7a;
+  --font-display: "Sora", "Inter", "Segoe UI", system-ui, sans-serif;
   --radius: 18px;
   --radius-sm: 12px;
-  --shadow: 0 24px 60px rgba(2, 6, 18, 0.55);
+  --shadow: 0 24px 60px rgba(5, 6, 20, 0.55);
   --maxw: 1480px;
   /* Height of the sticky topbar: keeps scroll-into-view out from under it. */
   --topbar-h: 60px;
@@ -26,6 +27,7 @@
 }
 
 html {
+  background: var(--bg);
   scroll-behavior: smooth;
   /* Stop iOS/Android from inflating text when the phone is turned sideways. */
   -webkit-text-size-adjust: 100%;
@@ -34,11 +36,14 @@ html {
 
 body {
   margin: 0;
+  /* The night background fills the whole screen, however short the page is. */
+  min-height: 100vh;
+  min-height: 100dvh;
   /* A phone keyboard or rotation must never create a sideways scrollbar. */
   overflow-x: hidden;
   background:
-    radial-gradient(1200px 700px at 78% -10%, rgba(56, 225, 198, 0.1), transparent 60%),
-    radial-gradient(900px 600px at 10% 10%, rgba(94, 126, 255, 0.12), transparent 55%),
+    radial-gradient(1100px 700px at 80% -10%, rgba(242, 179, 61, 0.1), transparent 60%),
+    radial-gradient(900px 600px at 8% 12%, rgba(91, 99, 200, 0.16), transparent 55%),
     var(--bg);
   color: var(--text);
   font-family: "Inter", "Segoe UI", system-ui, -apple-system, sans-serif;
@@ -52,6 +57,7 @@ body {
 h1,
 h2,
 h3 {
+  font-family: var(--font-display);
   line-height: 1.15;
   letter-spacing: -0.02em;
   margin: 0 0 0.5em;
@@ -95,22 +101,6 @@ code {
   font-size: 0.85rem;
 }
 
-.gradient {
-  background: linear-gradient(100deg, var(--accent), #8ab6ff 55%, var(--accent-warm));
-  -webkit-background-clip: text;
-  background-clip: text;
-  color: transparent;
-}
-
-.eyebrow {
-  text-transform: uppercase;
-  letter-spacing: 0.16em;
-  font-size: 0.72rem;
-  font-weight: 600;
-  color: var(--accent);
-  margin-bottom: 0.9em;
-}
-
 .visually-hidden {
   position: absolute !important;
   width: 1px;
@@ -131,7 +121,7 @@ code {
   z-index: 20;
   padding: 0.6rem 1rem;
   background: var(--accent);
-  color: #05261f;
+  color: var(--bg-soft);
   border-radius: 0 0 var(--radius-sm) var(--radius-sm);
   font-weight: 600;
   transition: transform 0.2s;
@@ -158,12 +148,13 @@ code {
   min-height: var(--topbar-h);
   padding: 0.7rem clamp(1rem, 3vw, 2.5rem);
   padding-top: max(0.7rem, env(safe-area-inset-top));
-  background: rgba(7, 11, 24, 0.82);
+  background: rgba(18, 21, 43, 0.85);
   backdrop-filter: blur(14px);
   border-bottom: 1px solid var(--panel-line);
 }
 
 .brand {
+  font-family: var(--font-display);
   display: flex;
   align-items: center;
   gap: 0.6rem;
@@ -172,10 +163,9 @@ code {
 }
 
 .brand-mark {
-  width: 28px;
-  height: 28px;
+  width: 30px;
+  height: 30px;
   flex: none;
-  color: var(--accent);
 }
 
 .topbar-event {
@@ -229,21 +219,16 @@ code {
 }
 
 .column {
+  /* Only the form is left: keep it at a comfortable reading width, centred. */
+  width: 100%;
+  max-width: 640px;
+  margin: 0 auto;
   min-width: 0;
   padding: clamp(1.6rem, 5vw, 4.5rem) 0 2.5rem;
   padding-bottom: calc(2.5rem + env(safe-area-inset-bottom));
   display: flex;
   flex-direction: column;
   gap: clamp(1.6rem, 4vw, 3.5rem);
-}
-
-/* -------------------------------------------------------------------- hero */
-
-.hero .lead {
-  font-size: clamp(1rem, 1.4vw, 1.18rem);
-  color: #c8d4ee;
-  max-width: 46ch;
-  margin-bottom: 0;
 }
 
 /* ----------------------------------------------------------------- buttons */
@@ -281,14 +266,14 @@ code {
 }
 
 .button.primary {
-  --button-bg: linear-gradient(100deg, var(--accent), #6fd6ff);
+  --button-bg: linear-gradient(100deg, var(--accent), #ffcf6e);
   border-color: transparent;
-  color: #042a24;
-  box-shadow: 0 14px 34px rgba(56, 225, 198, 0.28);
+  color: var(--bg-soft);
+  box-shadow: 0 14px 34px rgba(242, 179, 61, 0.26);
 }
 
 .button.ghost {
-  background: rgba(146, 176, 230, 0.08);
+  background: rgba(200, 205, 240, 0.08);
 }
 
 .button.big {
@@ -339,41 +324,6 @@ code {
   margin-bottom: 1.4rem;
 }
 
-.steps-cards {
-  list-style: none;
-  margin: 0;
-  padding: 0;
-  display: grid;
-  gap: 0.8rem;
-  grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
-}
-
-.steps-cards li {
-  background: var(--panel);
-  border: 1px solid var(--panel-line);
-  border-radius: var(--radius-sm);
-  padding: 1.1rem;
-}
-
-.steps-cards p {
-  margin: 0;
-  color: var(--muted);
-  font-size: 0.9rem;
-}
-
-.step-number {
-  display: inline-grid;
-  place-items: center;
-  width: 28px;
-  height: 28px;
-  margin-bottom: 0.7rem;
-  border-radius: 50%;
-  background: rgba(56, 225, 198, 0.14);
-  color: var(--accent);
-  font-weight: 700;
-  font-size: 0.85rem;
-}
-
 /* -------------------------------------------------------------------- form */
 
 .field {
@@ -389,7 +339,7 @@ code {
   padding: 0.75rem 0.9rem;
   border-radius: var(--radius-sm);
   border: 1px solid var(--panel-line);
-  background: rgba(8, 13, 28, 0.75);
+  background: rgba(12, 14, 32, 0.75);
   color: var(--text);
   font: inherit;
   /* 16px exactly: anything smaller makes iOS Safari zoom in when the field is tapped. */
@@ -415,8 +365,8 @@ code {
   text-align: center;
   padding: 1rem;
   border-radius: var(--radius-sm);
-  border: 1.5px dashed rgba(126, 160, 224, 0.45);
-  background: rgba(8, 13, 28, 0.6);
+  border: 1.5px dashed rgba(190, 196, 236, 0.4);
+  background: rgba(12, 14, 32, 0.6);
   cursor: pointer;
   overflow: hidden;
   transition:
@@ -427,7 +377,7 @@ code {
 .dropzone:hover,
 .dropzone[data-drag="over"] {
   border-color: var(--accent);
-  background: rgba(56, 225, 198, 0.08);
+  background: rgba(242, 179, 61, 0.08);
 }
 
 .dropzone-icon {
@@ -491,17 +441,6 @@ code {
   text-align: center;
 }
 
-/* ------------------------------------------------------------------ footer */
-
-.footer {
-  border-top: 1px solid var(--panel-line);
-  padding-top: 1.3rem;
-}
-
-.footer p {
-  margin: 0;
-}
-
 /* --------------------------------------------------------------- responsive */
 
 /* Tablet and phone. */
@@ -514,22 +453,9 @@ code {
     padding-top: 1.2rem;
     gap: 1.6rem;
   }
-
-  /* The form is what the parent came for: the hero must not push it off the screen. */
-  .hero h1 {
-    font-size: clamp(1.6rem, 6.4vw, 2.3rem);
-  }
-
-  .hero .eyebrow {
-    margin-bottom: 0.6em;
-  }
 }
 
 @media (max-width: 620px) {
-
-  .hero .lead {
-    font-size: 0.95rem;
-  }
 
   .card-head {
     margin-bottom: 1.1rem;
@@ -558,8 +484,8 @@ code {
   }
 
   .dropzone:hover {
-    border-color: rgba(126, 160, 224, 0.45);
-    background: rgba(8, 13, 28, 0.6);
+    border-color: rgba(190, 196, 236, 0.4);
+    background: rgba(12, 14, 32, 0.6);
   }
 }
 

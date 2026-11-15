@@ -22,7 +22,6 @@ const el = {
   mission: $("#mission"),
   liveStatus: $("#live-status"),
   eventName: $("#event-name"),
-  year: $("#year"),
 };
 
 /** The photos the parent picked, already downscaled: [{ dataUrl, mediaType, name, width, height }]. */
@@ -244,7 +243,6 @@ function wirePhotoInput() {
 
 function init() {
   el.eventName.textContent = CONFIG.eventName || "this event";
-  el.year.textContent = String(new Date().getFullYear());
   wirePhotoInput();
   clearPhoto();
 

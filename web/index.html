@@ -3,15 +3,24 @@
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
-    <title>Find My Child · drone search for events</title>
+    <title>BackTogether · lost-child search for events</title>
     <meta
       name="description"
-      content="Type your child's name, add a photo, and a Hover Air X1 drone launches from our Bobac3 ground robot to search the event for them."
+      content="Lost your child at the event? Add their name and a photo. Our drone searches from above and our robot stays with them until you are back together."
     />
     <meta name="color-scheme" content="dark" />
-    <meta name="theme-color" content="#070b18" />
+    <meta name="theme-color" content="#12152b" />
+    <!-- Installable app (PWA): the same page on the web and on the home screen. -->
+    <link rel="manifest" href="manifest.webmanifest" />
+    <meta name="apple-mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-title" content="BackTogether" />
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+    <link rel="apple-touch-icon" href="icons/apple-touch-icon.png" />
     <meta name="mobile-web-app-capable" content="yes" />
     <link rel="icon" href="favicon.svg" type="image/svg+xml" />
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link href="https://fonts.googleapis.com/css2?family=Sora:wght@600;700&amp;display=swap" rel="stylesheet" />
     <link rel="stylesheet" href="styles.css" />
     <script src="config.js"></script>
   </head>
@@ -20,12 +29,14 @@
 
     <header class="topbar">
       <div class="brand">
-        <svg class="brand-mark" viewBox="0 0 32 32" aria-hidden="true">
-          <circle cx="16" cy="16" r="14" fill="none" stroke="currentColor" stroke-opacity=".35" />
-          <path d="M8 12h4m8 0h4M8 20h4m8 0h4" stroke="currentColor" stroke-width="2" stroke-linecap="round" />
-          <rect x="12" y="13" width="8" height="6" rx="2" fill="currentColor" />
+        <svg class="brand-mark" viewBox="0 0 200 200" aria-hidden="true">
+          <circle cx="100" cy="100" r="62" fill="none" stroke="#f2b33d" stroke-width="12" />
+          <circle cx="100" cy="100" r="52" fill="#1b1f3b" />
+          <circle cx="144" cy="56" r="26" fill="#f2b33d" opacity=".3" />
+          <circle cx="144" cy="56" r="15" fill="#f2b33d" />
+          <circle cx="144" cy="56" r="6" fill="#fff" />
         </svg>
-        <span>Find&nbsp;My&nbsp;Child</span>
+        <span>BackTogether</span>
       </div>
       <p class="topbar-event"><span class="dot" aria-hidden="true"></span> <span id="event-name">this event</span></p>
     </header>
@@ -33,19 +44,10 @@
     <main class="layout">
       <!-- scrolling column -->
       <div class="column">
-        <section class="hero">
-          <p class="eyebrow">Drone + ground robot search team</p>
-          <h1>Lost your child?<br /><span class="gradient">The drone is already on the pad.</span></h1>
-          <p class="lead">
-            A name and a photo is all we need. A Hover Air X1 unfolds on our Bobac3 ground robot,
-            takes off and scans the event from above while you stay where you are.
-          </p>
-        </section>
-
         <section class="card form-card" id="request">
           <header class="card-head">
             <h2>Start a search</h2>
-            <p>Two things: who we are looking for, and what they look like.</p>
+            <p>Two things: their name, and a photo where we can see their face.</p>
           </header>
 
           <form id="request-form" novalidate>
@@ -98,7 +100,7 @@
             <p class="error" id="form-error" role="alert" hidden></p>
 
             <button class="button primary big" type="submit" id="submit">
-              <span class="button-label">Launch the search</span>
+              <span class="button-label">Start the search</span>
               <span class="button-sending">Sending to the robot…</span>
             </button>
             <p class="muted small disclaimer">
@@ -108,44 +110,10 @@
         </section>
 
         <section class="card mission" id="mission" hidden aria-labelledby="mission-title">
-          <h2 id="mission-title">The drone is on its way</h2>
-          <p class="muted">You will soon get a notification with the video call.</p>
+          <h2 id="mission-title">We're on it. The drone is lifting off.</h2>
+          <p class="muted">Stay where you are. You will soon get a notification with the video call.</p>
         </section>
 
-        <section class="how" id="how">
-          <h2>How it works</h2>
-          <ol class="steps-cards">
-            <li>
-              <span class="step-number">1</span>
-              <h3>Send the photo</h3>
-              <p>Downscaled in your browser and sent straight to the search team's robot.</p>
-            </li>
-            <li>
-              <span class="step-number">2</span>
-              <h3>The drone launches</h3>
-              <p>
-                The Bobac3 base wakes the folded drone, the arms unfold and it lifts off the deck on
-                its own.
-              </p>
-            </li>
-            <li>
-              <span class="step-number">3</span>
-              <h3>The zone is scanned</h3>
-              <p>
-                The drone flies a search grid, matching faces from the air, and event staff bring
-                your child to you.
-              </p>
-            </li>
-          </ol>
-        </section>
-
-        <footer class="footer">
-          <p class="muted small">
-            Built at the Leukerbad Robotics &amp; AI Hackathon 2026 · Hover Air X1 drone launching
-            from a Bobac3 ROS mobile base. Prototype, not an emergency service. &copy;
-            <span id="year">2026</span>
-          </p>
-        </footer>
       </div>
 
     </main>
@@ -153,5 +121,6 @@
     <p class="visually-hidden" id="live-status" role="status" aria-live="polite"></p>
 
     <script type="module" src="app.js"></script>
+    <script src="pwa.js" defer></script>
   </body>
 </html>
