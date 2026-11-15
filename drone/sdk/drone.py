@@ -28,7 +28,7 @@ from typing import Any, Protocol
 
 from drone.hoverctl.decoder import MjpegDecoder
 from drone.hoverctl.pbwire import VIDEO_QUALITY_SD
-from drone.hoverctl.protocol import NEUTRAL, Axes
+from drone.hoverctl.protocol import AXIS_LIMIT, NEUTRAL, Axes
 from drone.hoverctl.sticks import DEFAULT_MAX_MAGNITUDE, StickSender
 from drone.hoverctl.video import VideoReceiver
 
@@ -340,11 +340,11 @@ class Drone:
     def set_tilt(self, deg: float) -> Tilt:
         """Move the camera to a tilt (deg, +15 top .. 0 level .. -90 down) with the calibrated
         model (tilt.py), open loop. If the estimate is not anchored, first hold camera-up for a
-        full sweep at the current speed cap (+2 s) to reach the top stop; then hold up or down
-        for hold_time(change). Blocks (up to ~10 s + ~10 s at cap 100); STOP raises Interrupted.
-        Raises ValueError if the speed cap is inside the gimbal dead zone."""
+        full sweep (+2 s) to reach the top stop; then hold up or down for hold_time(change).
+        The gimbal always gets full input, whatever the speed cap (sticks.py). Blocks (up to
+        ~12 s + ~10 s); STOP raises Interrupted."""
         target = min(max(deg, GIMBAL_BOTTOM_DEG), GIMBAL_TOP_DEG)
-        cap = self.speed_cap
+        cap = AXIS_LIMIT
         full_sweep = hold_time(GIMBAL_TOP_DEG - GIMBAL_BOTTOM_DEG, cap)
         epoch = self._epoch
         try:

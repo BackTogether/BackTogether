@@ -6,7 +6,7 @@ import sys
 import threading
 import time
 from collections.abc import Callable
-from dataclasses import asdict, astuple
+from dataclasses import asdict, astuple, replace
 from pathlib import Path
 from typing import Any
 
@@ -55,8 +55,10 @@ def ramp(current: Axes, target: Axes) -> Axes:
 class StickSender:
     """Sends `RockerControlCommand` packets every tick from a background thread.
 
-    Inputs are -1..1 per axis with our signs (`Axes`), scaled to `max_magnitude`; the encoder
-    converts them to the packet's signs. If no input arrives for INPUT_TIMEOUT_S the target
+    Inputs are -1..1 per axis with our signs (`Axes`), scaled to `max_magnitude`, except the
+    gimbal, always scaled to AXIS_LIMIT (the speed cap is for flying: a capped gimbal is slow,
+    32 s stop to stop at cap 40 against 10 s at 100); the encoder converts them to the
+    packet's signs. If no input arrives for INPUT_TIMEOUT_S the target
     becomes neutral. `stop()` sends EXIT_NEUTRAL_S of neutral.
     `gate` is the stick interlock: while it returns False (or raises) the sticks are neutral and
     `locked` is set; `gate_state` names the result. Without a session gate nothing is sent at
@@ -151,7 +153,9 @@ class StickSender:
         with self._lock:
             if time.monotonic() - self._input_time > INPUT_TIMEOUT_S:
                 return NEUTRAL
-            return self._input.scaled(self.max_magnitude, self.max_magnitude)
+            flight = self._input.scaled(self.max_magnitude, self.max_magnitude)
+            gimbal = self._input.scaled(AXIS_LIMIT, AXIS_LIMIT).gimbal
+            return replace(flight, gimbal=gimbal)
 
     def _run(self) -> None:
         self._every_tick(lambda: not self._stop.is_set(), self._tick)
