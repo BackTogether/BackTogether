@@ -166,6 +166,9 @@ flies the drone now"`, which ends that patrol); `loops` (0 = until found), `dwel
   (medians of `samples` centred frames; `centre_error_px` = bbox centre to image centre;
   `time` = the last frame's time): `drone` in the takeoff frame (`alt` above the takeoff point),
   `launch`, and `map` (`z` above the floor = `alt` + `launch_height_m`, `yaw` radians ROS).
+- `child_estimate`: the same frames for the approach's estimate of the child as soon as the
+  drone is over them, before the camera goes down and the centring gives `child` (~10 s later);
+  same `id` as the report it becomes (drone/find sends it to the robot at once). `null` before.
 - `map_from_drone`: the ROS frame `drone_takeoff` (the takeoff frame with y flipped, as in
   ros_node's `/drone/odom`) in `map`. `pose_map`: the drone in `map` now.
 - `safety`: why the safety rules hold the drone (returning home, riding out a loss), or null.

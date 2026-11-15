@@ -306,6 +306,9 @@ class Mission:
         self._alignment: Alignment | None = None
         self._launch_pose: LaunchPose | None = None
         self._child: dict[str, Any] | None = None
+        # The approach's estimate once over the child, before the fix (centring takes ~10 s
+        # more): same id as the report it becomes, so the robot can leave at once
+        self._estimate: dict[str, Any] | None = None
         self._children = 0
         self._patrol_deadline: float | None = None
 
@@ -392,7 +395,7 @@ class Mission:
         """GET /mission, and "mission" in /status and /events."""
         with self._lock:
             config, alignment, launch = self._config, self._alignment, self._launch_pose
-            latest, child = self._latest, self._child
+            latest, child, estimate = self._latest, self._child, self._estimate
             status = {
                 "state": self._state,
                 "step": self._step,
@@ -414,6 +417,7 @@ class Mission:
                 "map_from_drone": _map_transform(alignment, launch, config),
                 "pose_map": _pose_in_map(pose, alignment, launch, config),
                 "child": _child_report(child, alignment, launch, config),
+                "child_estimate": _child_report(estimate, alignment, launch, config),
                 "patrol": self.patrol.progress() if self.patrol else None,
                 "safety": self.navigator.blocking_reason(),
                 "accepts_moves": self.accepts_moves(),
@@ -677,7 +681,12 @@ class Mission:
             lost_timeout_s=config.lost_timeout_s,
         )
         approach = TrackApproach(
-            self.navigator, self.history.at, self._fresh_detection, settings, self._step_note
+            self.navigator,
+            self.history.at,
+            self._fresh_detection,
+            settings,
+            self._step_note,
+            self._over_child,
         )
         return approach.run(deadline, trigger)
 
@@ -726,6 +735,14 @@ class Mission:
             self._pulse(fwd, right, min(APPROACH_FRACTION, config.approach_speed))
             self.navigator.hover(SETTLE_S)
             settled = time.time()
+
+    def _over_child(self, child: tuple[float, float]) -> None:
+        with self._lock:
+            self._estimate = {
+                "id": self._children + 1,  # the report it becomes
+                "time": time.time(),
+                "drone": {"x": round(child[0], 3), "y": round(child[1], 3)},
+            }
 
     def _report(self, fix: ChildFix) -> None:
         photo = None

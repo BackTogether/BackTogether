@@ -153,6 +153,14 @@ def load_child(name: str) -> People:
     return people
 
 
+def earliest_report(mission: dict[str, Any]) -> dict[str, Any]:
+    """The mission with its child report, or, before it, the approach's estimate in its place
+    (same id: deliver() sends one of the two, whichever comes first)."""
+    if mission.get("child") is None and mission.get("child_estimate") is not None:
+        return {**mission, "child": mission["child_estimate"]}
+    return mission
+
+
 def done_with_child(mission: dict[str, Any], args: argparse.Namespace) -> bool:
     """Over the child (no orbit), or flying home after the orbit around them: time to STOP.
     Not a return for a patrol timeout, an abort, a failure or a safety rule (those fly home
@@ -251,7 +259,11 @@ def search(
                 state = mission["state"]
                 if args.robot:
                     deliver(
-                        mission, [args.robot], started_at, args.heading_offset, args.launch_ahead
+                        earliest_report(mission),
+                        [args.robot],
+                        started_at,
+                        args.heading_offset,
+                        args.launch_ahead,
                     )
                 if done_with_child(mission, args):
                     client.stop()  # hover there

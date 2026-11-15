@@ -178,13 +178,17 @@ class TrackApproach:
         next_sighting: Callable[[float], Sighting | None],
         settings: TrackSettings,
         note: Callable[[str], None],
+        over: Callable[[tuple[float, float]], None] | None = None,
     ) -> None:
+        """`over`: called with the child's estimate (drone frame) each time the drone gets over
+        the child, before the camera goes down and the slower centring: an early position."""
         self.navigator = navigator
         self.drone = navigator.drone
         self.pose_at = pose_at
         self.next_sighting = next_sighting  # the newest unused one from a frame after `after`
         self.settings = settings
         self.note = note
+        self.over = over
         self._fix: Fix | None = None
         self._last_seen = 0.0
         self._after = 0.0  # only sightings from frames after this
@@ -201,6 +205,8 @@ class TrackApproach:
         try:
             while True:
                 self._close_in(epoch, deadline)
+                if self.over is not None and self._fix is not None:
+                    self.over(self._fix.child)
                 result = self._overhead(epoch, deadline)
                 if result is not None:
                     return result
