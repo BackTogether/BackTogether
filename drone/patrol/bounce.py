@@ -88,7 +88,7 @@ class DepthPerception:
     def _run(self) -> None:
         from drone.patrol.front_distance import LatestFrame, format_reading, measure_front
 
-        frames = LatestFrame(self._drone.frames())
+        frames = LatestFrame(self._drone.frames)
         seen = 0
         while True:
             seen, image = frames.wait_new(seen)

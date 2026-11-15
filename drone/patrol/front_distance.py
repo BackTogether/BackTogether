@@ -20,7 +20,7 @@ import io
 import os
 import threading
 import time
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -52,6 +52,7 @@ MIN_OBSTACLE_FRACTION = 0.005  # of corridor pixels; fewer = noise, front is cle
 # Phone screen recordings: the camera preview is this vertical band of the app screen.
 PREVIEW_TOP, PREVIEW_BOTTOM = 0.14, 0.395
 NOT_FLYING_WAIT_S = 1.0
+RECONNECT_S = 0.5  # LatestFrame: pause before opening a broken video stream again
 
 
 @dataclass(frozen=True)
@@ -171,18 +172,28 @@ def format_reading(reading: FrontReading) -> str:
 
 
 class LatestFrame:
-    """Keeps only the newest JPEG of a live stream, so a slow model never lags behind."""
+    """Keeps only the newest JPEG of a live stream, so a slow model never lags behind.
+    `connect` opens the stream (e.g. DroneClient.frames); it is opened again when it ends or
+    breaks: on 15 Nov 23:47 a read timed out before takeoff, the thread died and the sweep held
+    for the whole flight waiting for a fresh frame."""
 
-    def __init__(self, frames: Iterator[bytes]) -> None:
+    def __init__(self, connect: Callable[[], Iterator[bytes]]) -> None:
         self._jpeg: bytes | None = None
         self._count = 0
         self._lock = threading.Lock()
-        threading.Thread(target=self._run, args=(frames,), daemon=True).start()
+        threading.Thread(target=self._run, args=(connect,), daemon=True).start()
 
-    def _run(self, frames: Iterator[bytes]) -> None:
-        for jpeg in frames:
-            with self._lock:
-                self._jpeg, self._count = jpeg, self._count + 1
+    def _run(self, connect: Callable[[], Iterator[bytes]]) -> None:
+        while True:
+            try:
+                for jpeg in connect():
+                    with self._lock:
+                        self._jpeg, self._count = jpeg, self._count + 1
+                why = "the stream ended"
+            except Exception as error:  # timeout, wifi, server restart: keep the sweep fed
+                why = f"{type(error).__name__}: {error}"
+            print(f"video stream: {why}, reconnecting", flush=True)
+            time.sleep(RECONNECT_S)
 
     def wait_new(self, seen: int) -> tuple[int, Image.Image]:
         while True:
@@ -220,7 +231,7 @@ def run_live(args: argparse.Namespace, model: DepthModel) -> None:
     from drone.patrol.sdkdrone import RemoteDrone
 
     drone = RemoteDrone(args.sdk)
-    latest = LatestFrame(drone.frames())
+    latest = LatestFrame(drone.frames)
     seen, started = 0, time.monotonic()
     while True:
         seen, image = latest.wait_new(seen)

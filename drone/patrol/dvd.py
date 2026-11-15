@@ -181,7 +181,7 @@ def _model_source(drone: PatrolDrone, args: argparse.Namespace) -> Callable[[], 
 
     model = DepthModel(args.input_width, args.model)
     print(f"depth model {args.model} on {model.device}", flush=True)
-    frames = LatestFrame(drone.frames())
+    frames = LatestFrame(drone.frames)
     seen = [0]
 
     def depth() -> np.ndarray:
