@@ -40,7 +40,7 @@ the parent hangs up → idle. The screen shows one robot face, the care flow's p
 
 ```bash
 export DISPLAY=:0 GEMINI_API_KEY='<key>' NTFY_TOPIC='<topic>'   # keys only in the shell
-roslaunch bringup demo.launch            # person:=jorge zone:=park (replaces the boot /rei_base)
+roslaunch bringup demo.launch            # person:=jorge (replaces the boot /rei_base)
 # no photos of the child: roslaunch bringup demo.launch start_care_on:=arrived
 ```
 Then the "drone", from the robot or a laptop on its network: the child 2.5 m ahead of the

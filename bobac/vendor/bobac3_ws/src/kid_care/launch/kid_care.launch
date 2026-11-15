@@ -26,12 +26,10 @@
   <arg name="env_file" default="$(find kid_care)/.env"/>
   <!-- the state that starts the episode; empty: start as soon as the care server answers -->
   <arg name="start_state" default="care"/>
-  <!-- where the child is, told to the parents -->
-  <arg name="zone" default="park"/>
   <!-- the care server's HTTP port -->
   <arg name="port" default="8090"/>
   <!-- false: start nothing by itself, POST /care/start when you want it:
-       curl -X POST localhost:8090/care/start -d '{"zone": "park"}' -->
+       curl -X POST localhost:8090/care/start -d '{}' -->
   <arg name="auto_start" default="true"/>
   <!-- seconds between the trigger and the episode: the screen and the camera must be free
        before the call window opens -->
@@ -58,7 +56,6 @@
         output="screen">
     <param name="start_state" value="$(arg start_state)"/>
     <param name="care_url" value="http://localhost:$(arg port)"/>
-    <param name="zone" value="$(arg zone)"/>
     <param name="delay" value="$(arg start_delay)"/>
     <param name="hide_splash" value="$(arg hide_splash)"/>
     <param name="free_camera" value="$(arg free_camera)"/>
