@@ -36,6 +36,7 @@ in the page: the drone hovers where it is.
 """
 
 import argparse
+import json
 import logging
 import os
 import shutil
@@ -178,7 +179,9 @@ class FlightRecording:
     """The watch's recordings, from each takeoff to its landing (nothing while on the ground):
     the camera as it is (drone/fly's MP4 of the stream), the tracker's view with the boxes
     (recordings/boxes-<child>-<time>.mp4) and, with --collect, frames for the body model. A
-    frame sink of feed.run_live: it checks the drone's flight state every FLIGHT_POLL_S."""
+    frame sink of feed.run_live: it checks the drone's flight state every FLIGHT_POLL_S, and
+    logs that telemetry the whole time, on the ground too (recordings/telemetry-<time>.jsonl:
+    pose, altitude, flight state; the odometry's altitude jumps around takeoffs)."""
 
     def __init__(self, client: DroneClient, name: str, collect: bool) -> None:
         self._client, self._name, self._collect = client, name, collect
@@ -186,11 +189,13 @@ class FlightRecording:
         self._video: BoxesVideo | None = None
         self._collector: Collector | None = None
         self._camera = False  # drone/fly is recording the camera for us
+        self._telemetry_path = RECORDINGS / f"telemetry-{time.strftime('%Y%m%d-%H%M%S')}.jsonl"
 
     def add(self, image: Any, result: Any, frame_time: float) -> None:
         if time.monotonic() >= self._next_poll:
             self._next_poll = time.monotonic() + FLIGHT_POLL_S
-            flying = self._in_flight()
+            telemetry = self._telemetry()
+            flying = None if telemetry is None else bool(telemetry["in_flight"])
             if flying and self._video is None:
                 self._start()
             elif flying is False and self._video is not None:
@@ -215,12 +220,17 @@ class FlightRecording:
         report_collected(self._collector)
         self._video, self._collector, self._camera = None, None, False
 
-    def _in_flight(self) -> bool | None:
-        """None when drone/fly does not answer: keep recording (or not) as before."""
+    def _telemetry(self) -> dict[str, Any] | None:
+        """drone/fly's telemetry, logged; None when it does not answer (keep recording, or
+        not, as before)."""
         try:
-            return bool(self._client.status()["telemetry"]["in_flight"])
+            telemetry = self._client.status()["telemetry"]
         except DroneApiError:
             return None
+        RECORDINGS.mkdir(exist_ok=True)
+        with self._telemetry_path.open("a") as log_file:
+            log_file.write(json.dumps({"logged_at": time.time(), **telemetry}) + "\n")
+        return telemetry
 
     def _start(self) -> None:
         self._video = BoxesVideo(RECORDINGS, self._name)
