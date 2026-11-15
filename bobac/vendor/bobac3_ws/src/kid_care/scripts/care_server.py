@@ -211,7 +211,7 @@ class CallWindow:
 
 def requested_name(person: str, faces: Path = FACE_DIRECTORY):
     """The name the parent typed on the web page for `person`, None without one. The web's folders
-    are in capitals (JORGE) and face_check's person is not: compared without case."""
+    are in lower case and a hand-made one may not be: compared without case."""
     if not person:
         return None
     for folder in sorted(faces.glob("*")):
@@ -222,7 +222,7 @@ def requested_name(person: str, faces: Path = FACE_DIRECTORY):
         except (OSError, ValueError, AttributeError):
             continue  # a folder of photos added by hand, without a request
         if isinstance(name, str) and name.strip():
-            return name.strip()
+            return name.strip().title()  # typed "JoRgE" or "jorge": greeted as "Jorge"
     return None
 
 

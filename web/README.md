@@ -36,15 +36,15 @@ python3 scripts/check_web.py              # every referenced file exists
 page (it sends `Access-Control-Allow-Origin: *`) and keeps a large body, like a request with
 photos, as an attachment for a few hours. Nothing on the robot or the drone laptop has to be
 reachable from the parent's phone. The receiver, on the robot or the drone laptop (standard
-library, Python 3.8+), saves each request in a folder named after the child in capitals:
+library, Python 3.8+), saves each request in a folder named after the child, in lower case:
 
 ```bash
-python3 scripts/web_inbox.py                              # ~/search_requests/JORGE/photo-1.jpg ...
+python3 scripts/web_inbox.py                              # ~/search_requests/jorge/photo-1.jpg ...
 drone/inbox                                               # drone laptop: drone/identify/people/ (Windows: drone\inbox)
 ```
 On the robot it runs as a service from boot, into `~/.reinovo/face_data/` where face_rec reads
 faces (`bobac/vendor/bobac3_ws/src/bringup/systemd/web-inbox.service`, install steps inside).
-Then search with the name it printed: `drone/find JORGE` on the drone laptop, and the robot's
+Then search with the name it printed: `drone/find jorge` on the drone laptop, and the robot's
 demo launched (or relaunched: face_rec loads faces when it starts) with `person:=jorge`.
 
 It reads the topic from this same `apiUrl` line. Only requests sent while it runs are saved; a new
