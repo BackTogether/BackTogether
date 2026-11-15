@@ -1,8 +1,9 @@
 #!/usr/bin/env bash
 # Live patrol tests against the running app (drone/fly = drone.sdk serve), offline-safe.
-# Usage: drone/patrol/live feed <name> | mission | mission-sweep | status | abort | spin [sticks] | tilt <deg> | distance | dry | bounce | dvd-dry | dvd | clear-dry | clear | sweep-dry | sweep  [extra args]
+# Usage: drone/patrol/live feed <name> | mission | mission-sweep | status | abort | spin [sticks] | tilt <deg> | alt <m> | distance | dry | bounce | dvd-dry | dvd | clear-dry | clear | sweep-dry | sweep  [extra args]
 #   spin      yaw calibration: one exact turn per stick value (default 100 80 60), then LANDS
 #   tilt      set the camera tilt through the SDK (needs Manual control)
+#   alt       climb or descend smoothly to <m> above takeoff where the drone is (in flight)
 #   distance  perception only: prints the front distance, sends nothing
 #   dry       bounce patrol decisions (FORWARD/HOVER/TURN), sends nothing
 #   bounce    REAL autonomous bounce. Stop: Ctrl+C here, or STOP / Space in the page.
@@ -16,7 +17,7 @@
 #             30 x 20 m hall; a small test: sweep --length 5 --width 5 (2 lanes)
 set -euo pipefail
 cd "$(dirname "$0")/../.."
-SDK=http://127.0.0.1:8077
+SDK="${SDK:-http://127.0.0.1:8077}"  # SDK=<url> to point it at the simulator
 # metres above the floor where the drone took off. The 2026-11-14 flight took off from the floor
 # (camera at the odometry's 1.72 m), so 1.0 put the camera 1 m too high: ~+1 m on every distance.
 # bounce's STOP_AT/CLEAR_AT stopgap below was tuned with it, so bounce keeps it; dvd uses 0.
@@ -36,6 +37,7 @@ case "$mode" in
   status)   curl -s "$SDK/mission" | python3 -c "import json,sys; m=json.load(sys.stdin); c=m.get('child') or {}; print(m['state'], '|', m['step'], '|', m.get('message'), '| child:', c.get('drone'), c.get('map'))" ;;
   spin)     exec uv run --offline --no-project --python 3.11 --with numpy --with pillow python -m drone.calibration.spin "$@" ;;
   tilt)     curl -s -X POST -H 'Content-Type: application/json' -d "{\"deg\": ${1:?degrees}}" "$SDK/tilt"; echo ;;
+  alt)      python3 -c 'import sys; from drone.sdk.client import DroneClient as C; c = C(sys.argv[1]); p = c.status()["telemetry"]["pose"]; print(c.goto(p["x"], p["y"], float(sys.argv[2])))' "$SDK" "${1:?metres above takeoff}" ;;
   distance) exec uv run "${DEPS[@]}" python -m drone.patrol.front_distance --sdk "$SDK" --takeoff-height "$TAKEOFF_HEIGHT" "$@" ;;
   dry)      exec uv run "${DEPS[@]}" python -m drone.patrol.bounce --sdk "$SDK" --dry-run --takeoff-height "$TAKEOFF_HEIGHT" --geofence 4 --tilt -30 --stop-at "$STOP_AT" --clear-at "$CLEAR_AT" "$@" ;;
   bounce)   exec uv run "${DEPS[@]}" python -m drone.patrol.bounce --sdk "$SDK" --takeoff-height "$TAKEOFF_HEIGHT" --speed 0.3 --geofence 4 --tilt -30 --stop-at "$STOP_AT" --clear-at "$CLEAR_AT" "$@" ;;
@@ -45,5 +47,5 @@ case "$mode" in
   clear)    exec uv run "${DEPS[@]}" python -m drone.patrol.clear --sdk "$SDK" --takeoff-height "${DVD_TAKEOFF_HEIGHT:-0}" --tilt -30 "$@" ;;
   sweep-dry) exec uv run "${DEPS[@]}" python -m drone.patrol.sweep --sdk "$SDK" --dry-run --takeoff-height "${DVD_TAKEOFF_HEIGHT:-0}" --tilt -30 "$@" ;;
   sweep)    exec uv run "${DEPS[@]}" python -m drone.patrol.sweep --sdk "$SDK" --takeoff-height "${DVD_TAKEOFF_HEIGHT:-0}" --tilt -30 "$@" ;;
-  *) sed -n '2,16p' "$0"; exit 1 ;;
+  *) sed -n '2,17p' "$0"; exit 1 ;;
 esac
