@@ -6,22 +6,24 @@ kid_care.launch`) through kid_care_node.py, which loads the keys from the packag
 .env first. The HTTP API:
 
     GET  /status        contract fields + "care" (the details of the episode)
-    POST /care/start    {"zone": str, "found_time": epoch seconds (optional)} -> the robot
-                        reached the lost child in that zone
+    POST /care/start    {"found_time": epoch seconds (optional)} -> the robot reached the
+                        lost child
     POST /ui/answer     {"answer": "ok" | "help" | "yes" | "no"}, for the child's answers
     POST /stop
 
 Also runs on its own, on the robot (system Python 3.8) or on a laptop:
 
     python3 care_server.py --port 8090
-    curl -X POST localhost:8090/care/start -d '{"zone": "park"}'
+    curl -X POST localhost:8090/care/start -d '{}'
     curl localhost:8090/status
 
 Messages to the parents go through ntfy if NTFY_TOPIC is set (no account needed, see
 ntfy_channel.py), else Telegram with TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_IDS (caregiver.py). Spoken
 answers need Vosk and its model (see listen.py). The video call uses CALL_BASE_URL (a Jitsi
 server, default in care.py). The child profile is found next to this file, or where
-KID_CARE_PROFILE points (the launch file sets it, so an installed package works too).
+KID_CARE_PROFILE points (the launch file sets it, so an installed package works too). Its name
+gives way to the one the parent typed on the web page for the person being searched
+(KID_CARE_PERSON): scripts/web_inbox.py's request.json in that person's folder of KID_CARE_FACES.
 """
 
 import argparse
@@ -48,6 +50,10 @@ import speech
 DEFAULT_PORT = 8000
 HERE = Path(__file__).resolve().parent
 PROFILE_PATH = Path(os.environ.get("KID_CARE_PROFILE") or HERE.parent / "config" / "child.json")
+# The person face_check searches for, and face_rec's folders (the web's requests land there)
+PERSON = os.environ.get("KID_CARE_PERSON", "")
+FACE_DIRECTORY = Path(os.environ.get("KID_CARE_FACES") or Path.home() / ".reinovo" / "face_data")
+WEB_REQUEST_FILE = "request.json"
 BUZZER_TIMEOUT_S = 5
 CALL_PROFILE_DIR = Path.home() / "leuk" / "call-firefox"
 CALL_LOG_PATH = Path.home() / "leuk" / "call-firefox.log"
@@ -203,6 +209,23 @@ class CallWindow:
         self._members = None
 
 
+def requested_name(person: str, faces: Path = FACE_DIRECTORY):
+    """The name the parent typed on the web page for `person`, None without one. The web's folders
+    are in lower case and a hand-made one may not be: compared without case."""
+    if not person:
+        return None
+    for folder in sorted(faces.glob("*")):
+        if folder.name.lower() != person.lower():
+            continue
+        try:
+            name = json.loads((folder / WEB_REQUEST_FILE).read_text(encoding="utf-8")).get("name")
+        except (OSError, ValueError, AttributeError):
+            continue  # a folder of photos added by hand, without a request
+        if isinstance(name, str) and name.strip():
+            return name.strip().title()  # typed "JoRgE" or "jorge": greeted as "Jorge"
+    return None
+
+
 class CareServer(ThreadingHTTPServer):
     daemon_threads = True
 
@@ -218,15 +241,19 @@ class CareServer(ThreadingHTTPServer):
         self.session_thread = None
         self.session_lock = threading.Lock()
 
-    def start_session(self, zone: str, found_time: float) -> bool:
+    def start_session(self, found_time: float) -> bool:
         with self.session_lock:
             if self.session_thread and self.session_thread.is_alive():
                 return False
             if self.telegram:
                 self.telegram.skip_backlog()
+            profile = self.profile
+            name = requested_name(PERSON)
+            if name:  # read now, not at start-up: the request may arrive after the launch
+                log.info("the child is %s (the web page's request for %s)", name, PERSON)
+                profile = {**self.profile, "name": name}
             self.session = care.CareSession(
-                self.profile,
-                zone,
+                profile,
                 found_time,
                 speech,
                 self.telegram,
@@ -268,11 +295,10 @@ class Handler(BaseHTTPRequestHandler):
         self._send_json(204, None)
 
     def _start(self, body: dict) -> None:
-        zone = body.get("zone")
         found_time = body.get("found_time", time.time())
-        if not isinstance(zone, str) or not zone or not isinstance(found_time, (int, float)):
-            self._send_json(400, {"error": "zone (str) required, found_time must be a number"})
-        elif self.server.start_session(zone, float(found_time)):
+        if not isinstance(found_time, (int, float)):
+            self._send_json(400, {"error": "found_time must be a number"})
+        elif self.server.start_session(float(found_time)):
             self._send_json(202, {"accepted": True})
         else:
             self._send_json(409, {"error": "busy"})
@@ -290,7 +316,7 @@ class Handler(BaseHTTPRequestHandler):
         status = {
             # contract fields; the ones the real bridge fills from the robot stay null here
             "state": care_status["state"],
-            "place": care_status["care"]["zone"] if care_status["care"] else None,
+            "place": None,  # contract field: there are no named places in this demo
             "person_found": session is not None,
             "answer": care_status["answer"],
             "battery_v": None,

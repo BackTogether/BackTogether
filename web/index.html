@@ -2,13 +2,15 @@
 <html lang="en">
   <head>
     <meta charset="utf-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
     <title>Find My Child · drone search for events</title>
     <meta
       name="description"
-      content="Upload a photo of your child and a Hover Air X1 drone launches from our Bobac3 ground robot to search the event for them."
+      content="Type your child's name, add a photo, and a Hover Air X1 drone launches from our Bobac3 ground robot to search the event for them."
     />
     <meta name="color-scheme" content="dark" />
+    <meta name="theme-color" content="#070b18" />
+    <meta name="mobile-web-app-capable" content="yes" />
     <link rel="icon" href="favicon.svg" type="image/svg+xml" />
     <link rel="stylesheet" href="styles.css" />
     <script src="config.js"></script>
@@ -25,10 +27,6 @@
         </svg>
         <span>Find&nbsp;My&nbsp;Child</span>
       </div>
-      <nav class="topbar-nav">
-        <a href="#how">How it works</a>
-        <a href="#request">Request a search</a>
-      </nav>
       <p class="topbar-event"><span class="dot" aria-hidden="true"></span> <span id="event-name">this event</span></p>
     </header>
 
@@ -39,156 +37,63 @@
           <p class="eyebrow">Drone + ground robot search team</p>
           <h1>Lost your child?<br /><span class="gradient">The drone is already on the pad.</span></h1>
           <p class="lead">
-            Add a photo and where you last saw them. A Hover Air X1 unfolds on our Bobac3 ground
-            robot, takes off and scans the event from above while you stay where you are.
+            A name and a photo is all we need. A Hover Air X1 unfolds on our Bobac3 ground robot,
+            takes off and scans the event from above while you stay where you are.
           </p>
-          <div class="hero-actions">
-            <a class="button primary" href="#request">Request a search</a>
-            <a class="button ghost" href="#how">See how it works</a>
-          </div>
-          <ul class="trust">
-            <li><strong>&lt;30 s</strong><span>from request to lift-off</span></li>
-            <li><strong>17 × 12 m</strong><span>scanned per sweep</span></li>
-            <li><strong>No app</strong><span>works from your phone browser</span></li>
-          </ul>
-        </section>
-
-        <section class="how" id="how">
-          <h2>Three steps</h2>
-          <ol class="steps-cards">
-            <li>
-              <span class="step-number">1</span>
-              <h3>Send the photo</h3>
-              <p>
-                A normal phone photo where the face is visible. It is downscaled in your browser and
-                sent straight to the search team's robot.
-              </p>
-            </li>
-            <li>
-              <span class="step-number">2</span>
-              <h3>The drone launches</h3>
-              <p>
-                The Bobac3 base wakes the folded drone, the arms unfold, the rotors spin up and it
-                lifts off the deck on its own.
-              </p>
-            </li>
-            <li>
-              <span class="step-number">3</span>
-              <h3>The zone is scanned</h3>
-              <p>
-                The drone flies a search grid over the area you named, matching faces from the air.
-                Event staff get the hit and bring your child to you.
-              </p>
-            </li>
-          </ol>
         </section>
 
         <section class="card form-card" id="request">
           <header class="card-head">
-            <h2>Request a search</h2>
-            <p>Everything marked * is needed to launch. It takes about a minute to fill in.</p>
+            <h2>Start a search</h2>
+            <p>Two things: who we are looking for, and what they look like.</p>
           </header>
 
           <form id="request-form" novalidate>
-            <div class="grid">
-              <label class="field">
-                <span>Your name *</span>
-                <input name="parent_name" type="text" required autocomplete="name" placeholder="Anna Weber" />
-              </label>
-              <label class="field">
-                <span>Your phone *</span>
-                <input
-                  name="parent_phone"
-                  type="tel"
-                  required
-                  autocomplete="tel"
-                  inputmode="tel"
-                  placeholder="+41 79 123 45 67"
-                />
-              </label>
-              <label class="field">
-                <span>Child's name *</span>
-                <input name="child_name" type="text" required placeholder="Mia" />
-              </label>
-              <label class="field">
-                <span>Age</span>
-                <input name="child_age" type="number" min="0" max="18" inputmode="numeric" placeholder="6" />
-              </label>
-              <label class="field span-2">
-                <span>What are they wearing? *</span>
-                <input
-                  name="child_description"
-                  type="text"
-                  required
-                  placeholder="Red rain jacket, blue trousers, blond ponytail"
-                />
-              </label>
-              <label class="field">
-                <span>Last seen where *</span>
-                <select name="zone" id="zone" required>
-                  <option value="">Pick a zone…</option>
-                </select>
-              </label>
-              <label class="field">
-                <span>How long ago (minutes)</span>
-                <input name="minutes_ago" type="number" min="0" max="240" inputmode="numeric" placeholder="10" />
-              </label>
-              <label class="field span-2">
-                <span>Anything else that helps</span>
-                <textarea
-                  name="last_seen_note"
-                  rows="2"
-                  placeholder="Walked towards the food stands with a red balloon"
-                ></textarea>
-              </label>
-            </div>
+            <label class="field">
+              <span>Child's name</span>
+              <input
+                name="child_name"
+                id="child-name"
+                type="text"
+                required
+                autocomplete="off"
+                enterkeyhint="done"
+                placeholder="Mia"
+              />
+            </label>
 
             <div class="photo-block">
-              <h3>Photo of your child *</h3>
-              <div class="photo-row">
-                <div
-                  class="dropzone"
-                  id="dropzone"
-                  data-state="empty"
-                  role="button"
-                  tabindex="0"
-                  aria-controls="photo"
-                  aria-label="Choose a photo of your child"
-                >
-                  <img class="photo-preview" id="photo-preview" alt="" />
-                  <div class="dropzone-empty">
-                    <svg viewBox="0 0 24 24" aria-hidden="true" class="dropzone-icon">
-                      <path
-                        d="M12 16V4m0 0L8 8m4-4 4 4M4 16v2a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-2"
-                        fill="none"
-                        stroke="currentColor"
-                        stroke-width="1.6"
-                        stroke-linecap="round"
-                      />
-                    </svg>
-                    <p><strong>Tap to add a photo</strong></p>
-                    <p class="muted">or drop one here · JPG or PNG</p>
-                  </div>
-                </div>
-                <div class="photo-meta">
-                  <p class="muted" id="photo-name"></p>
-                  <button class="button tiny ghost" type="button" id="photo-clear">Remove photo</button>
-                  <p class="muted small">
-                    Use a photo where the face is clearly visible, taken today if you can: the drone
-                    matches clothes as well as the face.
-                  </p>
+              <h3>Photos of your child</h3>
+              <div
+                class="dropzone"
+                id="dropzone"
+                data-state="empty"
+                role="button"
+                tabindex="0"
+                aria-controls="photo"
+                aria-label="Choose photos of your child"
+              >
+                <img class="photo-preview" id="photo-preview" alt="" />
+                <div class="dropzone-empty">
+                  <svg viewBox="0 0 24 24" aria-hidden="true" class="dropzone-icon">
+                    <path
+                      d="M12 16V4m0 0L8 8m4-4 4 4M4 16v2a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-2"
+                      fill="none"
+                      stroke="currentColor"
+                      stroke-width="1.6"
+                      stroke-linecap="round"
+                    />
+                  </svg>
+                  <p><strong>Tap to take or choose photos</strong></p>
+                  <p class="muted">a face the drone can recognise</p>
                 </div>
               </div>
-              <input class="visually-hidden" type="file" id="photo" name="photo" accept="image/*" />
+              <div class="photo-meta">
+                <p class="muted small" id="photo-name"></p>
+                <button class="button tiny ghost" type="button" id="photo-clear">Remove photos</button>
+              </div>
+              <input class="visually-hidden" type="file" id="photo" name="photo" accept="image/*" multiple />
             </div>
-
-            <label class="consent">
-              <input type="checkbox" name="consent" required />
-              <span>
-                I am this child's parent or guardian and I agree that the photo and description are
-                sent to the search team to find them. *
-              </span>
-            </label>
 
             <p class="error" id="form-error" role="alert" hidden></p>
 
@@ -196,75 +101,53 @@
               <span class="button-label">Launch the search</span>
               <span class="button-sending">Sending to the robot…</span>
             </button>
-            <p class="muted small">
-              In a real emergency also tell the nearest event steward or call 117. This service helps
-              the search, it does not replace it.
+            <p class="muted small disclaimer">
+              Prototype. In a real emergency tell the nearest event steward or call 117.
             </p>
           </form>
         </section>
 
         <section class="card mission" id="mission" hidden aria-labelledby="mission-title">
-          <header class="card-head mission-head">
-            <div>
-              <p class="eyebrow">Search in progress</p>
-              <h2 id="mission-title">Looking for <span id="mission-child">your child</span></h2>
-              <p class="muted">
-                Last seen: <span id="mission-zone">—</span> · Request <code id="mission-id">—</code>
+          <h2 id="mission-title">The drone is on its way</h2>
+          <p class="muted">You will soon get a notification with the video call.</p>
+        </section>
+
+        <section class="how" id="how">
+          <h2>How it works</h2>
+          <ol class="steps-cards">
+            <li>
+              <span class="step-number">1</span>
+              <h3>Send the photo</h3>
+              <p>Downscaled in your browser and sent straight to the search team's robot.</p>
+            </li>
+            <li>
+              <span class="step-number">2</span>
+              <h3>The drone launches</h3>
+              <p>
+                The Bobac3 base wakes the folded drone, the arms unfold and it lifts off the deck on
+                its own.
               </p>
-            </div>
-            <img class="mission-photo" id="mission-photo" alt="The photo sent with this search" />
-          </header>
-
-          <p class="mode-badge" id="mission-mode" data-mode="demo">Demo mode</p>
-
-          <ol class="steps" id="mission-steps"></ol>
-
-          <div class="telemetry">
-            <div class="stat"><span>Altitude</span><strong id="stat-altitude">0.0 m</strong></div>
-            <div class="stat"><span>Speed</span><strong id="stat-speed">0.0 m/s</strong></div>
-            <div class="stat"><span>Battery</span><strong id="stat-battery">100 %</strong></div>
-            <div class="stat"><span>Elapsed</span><strong id="mission-elapsed">00:00</strong></div>
-          </div>
-
-          <div class="coverage">
-            <div class="coverage-head">
-              <span>Zone scanned</span><strong id="stat-coverage">0 %</strong>
-            </div>
-            <div class="bar" id="coverage-bar"><span></span></div>
-          </div>
-
-          <button class="button ghost" type="button" id="cancel-search">
-            We found them — bring the drone back
-          </button>
+            </li>
+            <li>
+              <span class="step-number">3</span>
+              <h3>The zone is scanned</h3>
+              <p>
+                The drone flies a search grid, matching faces from the air, and event staff bring
+                your child to you.
+              </p>
+            </li>
+          </ol>
         </section>
 
         <footer class="footer">
-          <p>
-            Built at the Leukerbad Robotics &amp; AI Hackathon 2026. Hover Air X1 drone launching
-            from a Bobac3 ROS mobile base.
-          </p>
           <p class="muted small">
-            Prototype, not an emergency service. &copy; <span id="year">2026</span> team Leukerbad.
+            Built at the Leukerbad Robotics &amp; AI Hackathon 2026 · Hover Air X1 drone launching
+            from a Bobac3 ROS mobile base. Prototype, not an emergency service. &copy;
+            <span id="year">2026</span>
           </p>
         </footer>
       </div>
 
-      <!-- sticky 3D column -->
-      <div class="stage-column">
-        <div class="stage">
-          <canvas id="stage-canvas" aria-label="3D view of the Bobac3 base with the Hover Air X1 drone"></canvas>
-          <div class="stage-chrome">
-            <p class="stage-tag">Live robot view · drag to look around</p>
-            <ul class="stage-legend">
-              <li><span class="key" aria-hidden="true"></span> Hover Air X1 · folding drone</li>
-              <li><span class="key alt" aria-hidden="true"></span> Bobac3 · ROS mobile base</li>
-            </ul>
-          </div>
-          <p class="stage-fallback">
-            This browser cannot show the 3D view, but the search request works normally.
-          </p>
-        </div>
-      </div>
     </main>
 
     <p class="visually-hidden" id="live-status" role="status" aria-live="polite"></p>

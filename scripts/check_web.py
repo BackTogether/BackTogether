@@ -53,11 +53,6 @@ def main() -> int:
     for script in sorted(WEB.glob("*.js")):
         check_file(script, JS_IMPORT, problems)
 
-    # The vendored three.js is what makes the site work without a CDN: never deploy without it.
-    vendored = WEB / "vendor" / "three.module.min.js"
-    if not vendored.is_file():
-        problems.append("web/vendor/three.module.min.js is missing (the 3D view needs it)")
-
     if problems:
         print("The site is not deployable:", file=sys.stderr)
         for problem in problems:

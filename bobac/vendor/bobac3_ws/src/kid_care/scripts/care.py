@@ -65,7 +65,6 @@ class CareSession:
     def __init__(
         self,
         child,
-        zone,
         found_time,
         speech,
         telegram,
@@ -87,7 +86,6 @@ class CareSession:
         self._child = child
         self._name = child["name"].split()[0]
         self._parent = child["parents"][0]["called"]
-        self._zone = zone
         self._found_time = found_time
         self._speech = speech
         self._telegram = telegram
@@ -121,7 +119,7 @@ class CareSession:
     def run(self) -> None:
         """The whole episode: call the parents, wait until one joins and then hangs up (we take
         that as "the parent has arrived"), then back to idle. Blocks until then or stop()."""
-        self._note(f"robot is with {self._name} in the {self._zone}")
+        self._note(f"robot is with {self._name}")
         # the voice agent greets the child itself; the robot's own voice is only the fallback
         if self._agent:
             self._start_agent()
@@ -172,7 +170,6 @@ class CareSession:
                 "answer": self._how_are_you,
                 "updated_at": self._updated_at,
                 "care": {
-                    "zone": self._zone,
                     "found_time": self._found_time,
                     "question": self._question,
                     "options": list(self._options),
@@ -226,7 +223,7 @@ class CareSession:
             self._note("no parent channel configured: nobody was told")
             return
         text = (
-            f"✅ We found {self._name} in the {self._zone} at {_clock(self._found_time)}. "
+            f"✅ We found {self._name} at {_clock(self._found_time)}. "
             "The robot is with them."
         )
         if ASK_QUESTIONS:

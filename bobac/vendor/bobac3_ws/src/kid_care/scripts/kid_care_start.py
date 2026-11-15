@@ -11,7 +11,6 @@ Params (set in kid_care.launch):
   ~start_state   the state that starts the episode (default care). Empty: start as soon as the
                  care server answers, for running this package without a state machine
   ~care_url      the care server (default http://localhost:8090)
-  ~zone          where the child is, said to the parents (default park)
   ~delay         seconds between the trigger and the episode, so the screen and the camera are
                  free before the call window opens
   ~server_wait   seconds to wait for the care server before giving up
@@ -36,7 +35,6 @@ from std_msgs.msg import Bool
 
 DEFAULT_START_STATE = "care"
 DEFAULT_CARE_URL = "http://localhost:8090"
-DEFAULT_ZONE = "park"
 DEFAULT_DELAY_S = 2.0
 DEFAULT_SERVER_WAIT_S = 60.0
 DEFAULT_CAMERA_TOPIC = "/head_camera/image_raw"
@@ -51,7 +49,6 @@ class KidCareStart:
     def __init__(self):
         self.start_state = str(rospy.get_param("~start_state", DEFAULT_START_STATE)).strip()
         self.care_url = str(rospy.get_param("~care_url", DEFAULT_CARE_URL)).rstrip("/")
-        self.zone = str(rospy.get_param("~zone", DEFAULT_ZONE))
         self.delay = float(rospy.get_param("~delay", DEFAULT_DELAY_S))
         self.server_wait = float(rospy.get_param("~server_wait", DEFAULT_SERVER_WAIT_S))
         self.hide_splash = bool(rospy.get_param("~hide_splash", True))
@@ -109,7 +106,7 @@ class KidCareStart:
         return False
 
     def start_care(self):
-        body = json.dumps({"zone": self.zone, "found_time": time.time()}).encode("utf-8")
+        body = json.dumps({"found_time": time.time()}).encode("utf-8")
         request = urllib.request.Request(
             self.care_url + START_PATH, data=body, headers={"Content-Type": "application/json"}
         )
@@ -124,7 +121,7 @@ class KidCareStart:
     def run(self):
         if not self.wait_for_trigger():
             return
-        rospy.loginfo("kid_care_start: with the child in the %s, starting the care flow", self.zone)
+        rospy.loginfo("kid_care_start: with the child, starting the care flow")
         self.clear_the_screen()
         self.stop_camera_nodes()
         if not self.wait_for_server():

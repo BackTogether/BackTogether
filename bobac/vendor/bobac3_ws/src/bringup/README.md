@@ -16,6 +16,7 @@ One launch file that starts every block of the demo. Add one include / node per 
 | `scripts/splash.py` | covers the whole screen (terminals, rviz) with the face gifs of `assets/`, played full screen and centred, one after another in random order |
 | `assets/robot_*.gif` | the robot face animations `splash` plays, one after another in random order |
 | `src/bringup/state.py` | `StateClient`: how a node reads the state and asks for the next one. A module, not a script: `catkin_install_python` gives every installed script a devel space wrapper that exports nothing, so scripts cannot import each other |
+| `systemd/ngrok.service`, `systemd/web-inbox.service` | user services kept up from boot: the drone laptop's ngrok link to `child_goal_server`, and `scripts/web_inbox.py` saving the parents' web photos in `~/.reinovo/face_data/<name>/` for face_rec (install steps in each file) |
 | `package.xml`, `CMakeLists.txt`, `setup.py` | catkin package definition; `setup.py` plus `catkin_python_setup()` is what makes `src/bringup/` importable from `scripts/` |
 
 ## Run
@@ -40,7 +41,7 @@ the parent hangs up → idle. The screen shows one robot face, the care flow's p
 
 ```bash
 export DISPLAY=:0 GEMINI_API_KEY='<key>' NTFY_TOPIC='<topic>'   # keys only in the shell
-roslaunch bringup demo.launch            # person:=jorge zone:=park (replaces the boot /rei_base)
+roslaunch bringup demo.launch            # person:=jorge (replaces the boot /rei_base)
 # no photos of the child: roslaunch bringup demo.launch start_care_on:=arrived
 ```
 Then the "drone", from the robot or a laptop on its network: the child 2.5 m ahead of the

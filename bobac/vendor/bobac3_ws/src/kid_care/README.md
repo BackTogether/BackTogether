@@ -62,7 +62,6 @@ fixed phrases instead of the agent.
 | Argument | Default | What |
 |---|---|---|
 | `start_state` | `care` | the state that starts the episode; `""` starts it as soon as the server answers (no state machine) |
-| `zone` | `park` | where the child is, as the parents are told |
 | `port` | `8090` | the care server's HTTP port |
 | `auto_start` | `true` | `false`: no trigger node, you POST `/care/start` yourself |
 | `start_delay` | `2.0` | seconds between the trigger and the episode |
@@ -72,7 +71,6 @@ fixed phrases instead of the agent.
 | `child_profile` | `$(find kid_care)/config/child.json` | name, age, parents, emergency number |
 
 ```bash
-roslaunch bringup state_demo.launch zone:="playground"   # passed through to this package
 roslaunch bringup state_demo.launch care:=false          # stop at care, no agent and no call
 roslaunch kid_care kid_care.launch start_state:=""       # this package alone, start now
 rostopic pub -1 /system_state/set std_msgs/String "data: care"   # trigger it by hand
@@ -82,7 +80,7 @@ By hand, without any state:
 
 ```bash
 roslaunch kid_care kid_care.launch auto_start:=false
-curl -X POST localhost:8090/care/start -d '{"zone": "park"}'
+curl -X POST localhost:8090/care/start -d '{}'
 curl localhost:8090/status
 curl -X POST localhost:8090/stop
 ```
