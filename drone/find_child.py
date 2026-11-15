@@ -55,6 +55,7 @@ from drone.identify.feed import (
     vision_body,
 )
 from drone.identify.people import PEOPLE_DIR, People, is_photo
+from drone.report_child import ROBOT_URL, deliver, finish, follow, mission_id
 from drone.sdk.client import DroneApiError, DroneClient, tilt_on_ground
 from drone.sdk.mission import END_STATES, IDLE, REPORTING, RETURNING
 
@@ -158,10 +159,16 @@ def done_with_child(mission: dict[str, Any], args: argparse.Namespace) -> bool:
 
 
 def search(
-    client: DroneClient, server: DroneServer, name: str, people: People, args: argparse.Namespace
+    client: DroneClient,
+    server: DroneServer,
+    name: str,
+    people: People,
+    args: argparse.Namespace,
+    started_at: float,
 ) -> dict[str, Any]:
     """Feed the mission until it is done with the child (then STOP: the drone hovers there) or
-    ends. Returns the mission's last status."""
+    ends. Returns the mission's last status. With --robot the child goes to the robot as soon as
+    the mission reports them (in background threads: the flight loop never waits for it)."""
     tracker = make_tracker_for(name, people)
     # at once: it loads its depth model during the takeoff and waits for the mission's patrol
     sweep = start_sweep(args) if args.sweep else None
@@ -175,6 +182,8 @@ def search(
                 next_status = time.monotonic() + STATUS_EVERY_S
                 mission = client.mission()
                 state = mission["state"]
+                if args.robot:
+                    deliver(mission, [args.robot], started_at, args.heading_offset)
                 if done_with_child(mission, args):
                     client.stop()  # hover there
                     return mission
@@ -255,6 +264,19 @@ def main() -> None:
     parser.add_argument("--radius", type=float, default=1.5, help="orbit radius, m")
     parser.add_argument("--takeoff-height", type=float, default=0.0, help="m above the floor")
     parser.add_argument(
+        "--robot",
+        nargs="?",
+        const=ROBOT_URL,
+        metavar="TARGET",
+        help=f"send the child to the robot and follow it there (alone: {ROBOT_URL})",
+    )
+    parser.add_argument(
+        "--heading-offset",
+        type=float,
+        default=0.0,
+        help="--robot: degrees the camera pointed left of the robot's front at takeoff",
+    )
+    parser.add_argument(
         "--watch", action="store_true", help="no flight: recognise and track on the video only"
     )
     args = parser.parse_args()
@@ -285,6 +307,7 @@ def main() -> None:
         if args.sweep
         else {"waypoints": parse_waypoints(args.waypoints), "strategy": "waypoints"}
     )
+    started_at = time.time()  # a child reported before this is an earlier mission's
     client.mission_start(
         **patrol_config,
         patrol_alt_m=args.alt,
@@ -298,7 +321,7 @@ def main() -> None:
     patrol = "the sweep" if args.sweep else "the waypoints"
     log.info("looking for %s at %.1f m with %s: press the drone's button", name, args.alt, patrol)
     try:
-        mission = search(client, DroneServer(args.url), name, people, args)
+        mission = search(client, DroneServer(args.url), name, people, args, started_at)
     except KeyboardInterrupt:
         client.stop()
         print("stopped: the drone hovers where it is")
@@ -314,6 +337,23 @@ def main() -> None:
         print(f"mission ended without the child: {state}: {message}")
     if child:
         print(f"child at {child.get('drone')} m from the takeoff point (drone frame)")
+    if args.robot and child:
+        follow_robot(mission, args, started_at)
+
+
+def follow_robot(mission: dict[str, Any], args: argparse.Namespace, started_at: float) -> None:
+    """Wait for the robot's acknowledgement of the report, then show it driving to the child
+    until it arrives (Ctrl+C stops watching; the drone keeps hovering)."""
+    # the delivery the search started (deliver() starts each report once), None if not sent
+    sent = deliver(mission, [args.robot], started_at, args.heading_offset)
+    try:
+        if sent is None or not finish():
+            print("the robot did NOT get the child (see above): by hand, drone/robot <x> <y>")
+            return
+        arrived = follow(args.robot, mission_id(mission))
+    except KeyboardInterrupt:
+        return
+    print("the robot is at the child" if arrived else "the robot did NOT reach the child")
 
 
 if __name__ == "__main__":
