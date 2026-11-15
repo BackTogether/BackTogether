@@ -9,7 +9,7 @@ Training photos: drone/identify/body/ (not in git), the target alone or the bigg
 each, any angle. Each person box (YOLOX, persons.py) is described by the colours of its torso and
 of its legs (HSV histograms, Hellinger-normalised) and an RBF SVM, overfitted to this one person,
 scores it. The photos are taken at eye level and the drone looks down diagonally, so the target
-crops are augmented like a view from above (squashed, narrower at the feet), small (30-160 px),
+crops are augmented like a view from above (squashed, narrower at the feet), small (16-160 px),
 with imprecise boxes, light and white balance changes and blur. Negatives: everybody else in the
 photos and in the negative video/folder (a drone video of the hall is ideal).
 
@@ -46,9 +46,9 @@ AUGMENTED_PER_PHOTO = 40
 NEGATIVE_JITTERS = 3  # crops per other person (the box as detected, then jittered)
 BOX_JITTER = 0.06  # std of the box position/size noise, fraction of the box
 NEGATIVE_JITTER = 0.08
-SQUASH = (0.5, 1.0)  # height kept when seen from above
-NARROW = (0.6, 1.0)  # width kept at the feet
-DRONE_HEIGHT_PX = (30, 160)
+SQUASH = (0.3, 1.0)  # height kept when seen from above (0.3: nearly straight down, from high)
+NARROW = (0.5, 1.0)  # width kept at the feet
+DRONE_HEIGHT_PX = (16, 160)  # flying higher: a child can be 16 px tall in the frame
 HELD_OUT_EVERY = 4  # every 4th photo is held out to report how well it generalises
 SVM_C = 10.0
 SVM_GAMMA = 1.0
