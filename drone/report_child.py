@@ -47,7 +47,9 @@ NTFY_PREFIX = "ntfy:"
 NTFY_SERVER = "https://ntfy.sh"
 ACK_SUFFIX = "-ack"  # the relay answers on "<topic>-ack"
 ROBOT_FRAME = "robot"  # ahead / left of the robot where it stood at takeoff
-ROBOT_REFUSALS = (400, 409)  # child_goal_server's "never": a wrong report, or the robot moved
+# A "never" from a child_goal_server that repeats the mission_id in it. The robot's server
+# today repeats none: its 400 (a malformed report, which we do not send) is retried like the rest
+ROBOT_REFUSALS = (400, 409)
 HTTP_TIMEOUT_S = 6.0  # the venue Wi-Fi answers the robot's pings in 0.3-4.6 s
 HTTP_RETRY_FIRST_S = 0.5
 HTTP_RETRY_MAX_S = 2.0
@@ -71,7 +73,8 @@ class LinkError(Exception):
 
 
 class RefusedError(LinkError):
-    """The robot said no to this report (its own 400 or 409): repeating it cannot help."""
+    """The robot said no to this report (a 400 or 409 repeating its mission_id): repeating it
+    cannot help."""
 
 
 class HttpTarget:
@@ -87,8 +90,8 @@ class HttpTarget:
         data = json.dumps(body).encode()
         answer = _http("POST", self.name + CHILD_FOUND_PATH, data, HTTP_TIMEOUT_S)
         reply = _answer(*answer, key=body["mission_id"])
-        if reply.get("mission_id") != body["mission_id"]:
-            raise LinkError("an answer without our mission_id: is that the child_goal_server?")
+        if not _acknowledges(reply, body["mission_id"]):
+            raise LinkError("not an answer to our report: is that the child_goal_server?")
         return reply
 
     def ping(self) -> dict[str, Any]:
@@ -136,10 +139,8 @@ class NtfyTarget:
                         if not 200 <= status < 300:
                             if refusal is None or reply.get("mission_id") == key:
                                 refusal = (status, json.dumps(reply))
-                        elif "mission_id" not in body or reply.get("mission_id") == key:
+                        elif "mission_id" not in body or _acknowledges(reply, key):
                             return reply
-                        # else not the robot's: its acknowledgement repeats the mission_id
-                        # (anyone who knows the topic can publish an "answer")
                     if time.monotonic() > deadline:
                         break
         except TimeoutError:
@@ -394,7 +395,8 @@ def _http(method: str, url: str, body: bytes | None, timeout: float) -> tuple[in
 def _answer(status: int, text: str, key: str | None = None) -> dict[str, Any]:
     """The JSON object of a 2xx answer. The robot's own refusal of report `key` (a 400 or 409
     that repeats its mission_id) is a RefusedError. Anything else is a LinkError, worth another
-    try: 503 "no pose yet", no status, or a 4xx from whatever else answers at that address."""
+    try: 503 "no pose yet", no status, or a 4xx that names no mission_id (the robot's server
+    today, or whatever else answers at that address)."""
     reply = _object(text)
     if 200 <= status < 300:
         return reply
@@ -402,6 +404,14 @@ def _answer(status: int, text: str, key: str | None = None) -> dict[str, Any]:
     if status in ROBOT_REFUSALS and key is not None and reply.get("mission_id") == key:
         raise RefusedError(reason)
     raise LinkError(reason)
+
+
+def _acknowledges(reply: dict[str, Any], key: str) -> bool:
+    """True when a 2xx answer is the child_goal_server's to report `key`: it repeats the
+    mission_id, or names none and says accepted or duplicate (the robot's server today)."""
+    if "mission_id" in reply:
+        return reply["mission_id"] == key
+    return bool(reply.get("accepted") or reply.get("duplicate"))
 
 
 def _object(text: str | bytes) -> dict[str, Any]:
