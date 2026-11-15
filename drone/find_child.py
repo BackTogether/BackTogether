@@ -14,6 +14,7 @@ the robot's pad (or LAND in the web page).
     drone/find jorge --sweep         # terminal 2, then the drone's button (--side left: first
                                      #   lane turn to the left; --length/--width bound the hall)
     drone/find jorge                 # the square of waypoints instead of the sweep
+    drone/find --from-web            # wait for the parent's name and photos from the web page
     drone/find jorge --watch         # no flight command: recognise and track while you fly by
                                      #   hand from the page; records each flight, takeoff to landing
     drone/find jorge --collect       # also save frames for the body model (identify/collect.py)
@@ -63,6 +64,7 @@ from drone.identify.people import PEOPLE_DIR, People, is_photo
 from drone.report_child import ROBOT_URL, child_report, deliver, finish, follow, mission_id
 from drone.sdk.client import DroneApiError, DroneClient, tilt_on_ground
 from drone.sdk.mission import END_STATES, IDLE, REPORTING, RETURNING
+from drone.web_request import wait_for_child
 
 DEFAULT_URL = "http://127.0.0.1:8077"
 # Frame "launch": x ahead of the camera at takeoff, y to its left, metres
@@ -331,7 +333,14 @@ def _vision_line(result: Any) -> str:
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="patrol, find the child, hover over them")
-    parser.add_argument("child", help="folder of face photos, or a name in drone/identify/people")
+    parser.add_argument(
+        "child", nargs="?", help="folder of face photos, or a name in drone/identify/people"
+    )
+    parser.add_argument(
+        "--from-web",
+        action="store_true",
+        help="no child given: wait for the parent's request from the web page (web_request.py)",
+    )
     parser.add_argument("--url", default=DEFAULT_URL, help="drone/fly (or the simulator)")
     parser.add_argument("--alt", type=float, default=3.0, help="patrol altitude above takeoff, m")
     parser.add_argument("--tilt", type=float, default=-40.0, help="camera tilt while patrolling")
@@ -384,7 +393,9 @@ def main() -> None:
     )
     args = parser.parse_args()
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(message)s", datefmt="%H:%M:%S")
-    name = add_child(args.child)
+    if (args.child is None) == (not args.from_web):
+        parser.error("give the child, or --from-web to wait for the web page's request")
+    name = wait_for_child() if args.from_web else add_child(args.child)
     people = load_child(name)
     client = DroneClient(args.url)
     try:
