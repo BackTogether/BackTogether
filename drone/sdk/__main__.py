@@ -84,6 +84,7 @@ def _limits(args: argparse.Namespace) -> SafetyLimits:
         y_min=-fence,
         y_max=fence,
         max_alt_m=args.max_alt,
+        max_speed=args.max,  # the autopilot may use the whole cap given to drone/fly
         require_video=not args.no_video_required,
     )
 
