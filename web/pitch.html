@@ -1,0 +1,144 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Find My Child · pitch</title>
+    <link rel="icon" href="favicon.svg" type="image/svg+xml" />
+    <style>
+      /* One slide, left on the screen while we pitch. Colours of the carnival's poster.
+         Sizes in vw / vh so it fills any projector; press F for full screen. */
+      :root {
+        --navy: #242842;
+        --coral: #f06466;
+        --sky: #6dcdfd;
+        --white: #ffffff;
+        --muted: #b9bedb;
+      }
+
+      * {
+        box-sizing: border-box;
+      }
+
+      html,
+      body {
+        height: 100%;
+        margin: 0;
+      }
+
+      body {
+        display: grid;
+        grid-template-columns: minmax(0, 1fr) min(40vw, 86vh);
+        align-items: center;
+        gap: 4vw;
+        padding: 6vh 5vw;
+        overflow: hidden;
+        background: var(--navy);
+        color: var(--white);
+        font-family: "Inter", "Segoe UI", system-ui, -apple-system, sans-serif;
+        -webkit-font-smoothing: antialiased;
+      }
+
+      .event {
+        margin: 0 0 5vh;
+        color: var(--coral);
+        font-size: 1.5vw;
+        font-weight: 700;
+        letter-spacing: 0.16em;
+        text-transform: uppercase;
+      }
+
+      h1 {
+        margin: 0;
+        font-size: 8.4vw;
+        font-weight: 800;
+        line-height: 0.95;
+        letter-spacing: -0.03em;
+      }
+
+      h1 span {
+        color: var(--sky);
+      }
+
+      .line {
+        max-width: 22em;
+        margin: 4vh 0 7vh;
+        font-size: 2.1vw;
+        line-height: 1.35;
+      }
+
+      .steps {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 0.8vw;
+        margin: 0;
+        padding: 0;
+        list-style: none;
+        font-size: 0.95vw;
+        font-weight: 600;
+      }
+
+      .steps li {
+        padding: 1.2vh 1.1vw;
+        border: 0.15vw solid var(--sky);
+        border-radius: 999px;
+        white-space: nowrap;
+      }
+
+      .steps li:last-child {
+        border-color: var(--coral);
+      }
+
+      .track {
+        margin: 7vh 0 0;
+        color: var(--muted);
+        font-size: 1.25vw;
+        letter-spacing: 0.04em;
+      }
+
+      img {
+        display: block;
+        width: 100%;
+        height: auto;
+      }
+
+      /* A phone or a narrow window: the poster goes under the text. */
+      @media (max-aspect-ratio: 1/1) {
+        body {
+          grid-template-columns: 1fr;
+          overflow: auto;
+        }
+        .event { font-size: 3.4vw; }
+        h1 { font-size: 15vw; }
+        .line { font-size: 4.6vw; }
+        .steps { gap: 2.5vw; font-size: 3.6vw; }
+        .steps li { border-width: 0.4vw; padding: 1vh 3vw; }
+        .track { font-size: 3.2vw; }
+      }
+    </style>
+  </head>
+  <body>
+    <main>
+      <p class="event">Hackathon · Resilient &amp; Safe City</p>
+      <h1>Find My <span>Child</span></h1>
+      <p class="line">
+        A drone finds the lost child. A robot stays with them until their family arrives.
+      </p>
+      <ol class="steps">
+        <li>1 · Parent sends a photo</li>
+        <li>2 · Drone searches</li>
+        <li>3 · Robot cares &amp; calls</li>
+      </ol>
+      <p class="track">HoverAir X1 drone + Bobac ground robot</p>
+    </main>
+    <img src="pitch-poster.jpg" alt="Poster of the Leukerbad Robotics Carnival ’26" />
+    <script>
+      // F toggles full screen, so the slide can stay up behind the pitch.
+      document.addEventListener("keydown", (event) => {
+        if (event.key.toLowerCase() !== "f") return;
+        if (document.fullscreenElement) document.exitFullscreen();
+        else document.documentElement.requestFullscreen();
+      });
+    </script>
+  </body>
+</html>

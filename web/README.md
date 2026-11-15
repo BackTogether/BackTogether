@@ -16,6 +16,7 @@ push to `main` that touches `web/`.
 | `config.js` | **the only file you edit to point the site at the robot** (endpoint, token, event name) |
 | `app.js` | form, photo downscaling, the POST, and the confirmation |
 | `favicon.svg` | tab icon |
+| `pitch.html`, `pitch-poster.jpg` | the one slide left on the screen while we pitch (`F` = full screen), with the Leukerbad Robotics Carnival '26 poster (the organisers' image, from the event page) |
 
 ## Run it locally
 Any static file server works (ES modules do not load from `file://`):
