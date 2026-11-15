@@ -8,7 +8,8 @@ answer, or the same report over two links at once, moves it only once.
 Targets (--to, any number; the first acknowledgement ends them all). Without --to: ROBOT_URL,
 the robot's child_goal_server through ngrok, which needs only internet on the Mac (an iPhone
 on USB while the Wi-Fi is on the drone). The robot runs `ngrok http 8001` on our ngrok
-account, whose free domain never changes.
+account, whose free domain never changes, as a service that starts at boot and restarts
+(bobac/vendor/bobac3_ws/src/bringup/systemd/ngrok.service). Never run ngrok on the Mac.
     http(s)://<robot>:8001  the robot's child_goal_server, when the Mac has a route to the robot
     ntfy:<topic>            through the internet (https://ntfy.sh), when the Mac only has
                             internet: the robot runs child_relay.py on the same topic
@@ -51,6 +52,13 @@ DRONE_URL = "http://127.0.0.1:8077"
 ROBOT_URL = "https://<ROBOT_NGROK_DOMAIN>"
 # ngrok's free plan answers requests without this header with a browser warning page
 NGROK_SKIP_WARNING = ("ngrok-skip-browser-warning", "1")
+# ngrok's own failures (header ngrok-error-code), said as what to fix on the robot
+NGROK_ERRORS = {
+    "ERR_NGROK_3200": "the robot's ngrok is offline: robot off or without internet "
+    "(on the robot: systemctl --user status ngrok)",
+    "ERR_NGROK_8012": "the robot's ngrok is up but child_goal_server is not "
+    "(on the robot: roslaunch bringup state_demo.launch)",
+}
 CHILD_FOUND_PATH = "/child_found"
 STATUS_PATH = "/status"
 MISSION_PATH = "/mission"
@@ -435,6 +443,9 @@ def _http(method: str, url: str, body: bytes | None, timeout: float) -> tuple[in
         with _opener.open(request, timeout=timeout) as response:
             return response.status, response.read().decode("utf-8", "replace")
     except urllib.error.HTTPError as error:
+        ngrok_error = error.headers.get("ngrok-error-code")
+        if ngrok_error:
+            raise LinkError(NGROK_ERRORS.get(ngrok_error, f"ngrok: {ngrok_error}")) from error
         return error.code, error.read().decode("utf-8", "replace")
     except (OSError, http.client.HTTPException) as error:  # URLError and timeouts are OSErrors
         raise LinkError(_reason(error)) from error
