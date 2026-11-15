@@ -1,6 +1,7 @@
 <launch>
-  <!-- home: waiting for a goal sent by hand -> arrived -> searching -> care.
-       The goal is manual: rviz (open_rviz:=true splash:=false) or /move_base_simple/goal.
+  <!-- home: waiting for a goal -> arrived -> searching -> care.
+       The goal comes from the drone (child_goal_server, HTTP :child_port/child_found), or by
+       hand: rviz (open_rviz:=true splash:=false) or /move_base_simple/goal.
        In care the kid_care package takes over: the voice agent talks with the child and the
        video call with the parents opens on the robot's screen. -->
 
@@ -12,6 +13,10 @@
   <arg name="care" default="true"/>
   <!-- where the child is, told to the parents -->
   <arg name="zone" default="park"/>
+  <!-- child_goal_server: the drone's port (drone/report_child.py) and how far short of the
+       child the robot stops, facing them -->
+  <arg name="child_port" default="8001"/>
+  <arg name="standoff" default="0.8"/>
 
   <node if="$(arg splash)" name="splash" pkg="bringup" type="splash.py" output="screen">
     <param name="images" value="$(find bringup)/assets"/>
@@ -29,6 +34,14 @@
   </include>
 
   <node name="arrival_watch" pkg="bringup" type="arrival_watch.py" output="screen"/>
+
+  <!-- the drone's child position -> move_base goal, standoff short of the child: arrival_watch
+       then sees it reached like a goal sent by hand -->
+  <node name="child_goal_server" pkg="bringup" type="child_goal_server.py" output="screen"
+        respawn="true" respawn_delay="2">
+    <param name="port" value="$(arg child_port)"/>
+    <param name="standoff" value="$(arg standoff)"/>
+  </node>
 
   <include file="$(find face_rec)/launch/face_rec_topic.launch">
     <arg name="face_rec_directory" value="$(arg face_directory)"/>

@@ -13,6 +13,7 @@ catkin_install_python(PROGRAMS
   scripts/splash.py
   scripts/system_state.py
   scripts/arrival_watch.py
+  scripts/child_goal_server.py
   DESTINATION ${CATKIN_PACKAGE_BIN_DESTINATION}
 )
 
