@@ -30,6 +30,8 @@ TICK_S = 0.1
 COMMAND_HOLD_S = 0.4  # each tick renews the command; a stuck loop goes neutral by itself
 POSITION_TOLERANCE_M = 0.4
 ALT_TOLERANCE_M = 0.2
+CLIMB_TOLERANCE_M = 0.1
+MIN_VERTICAL = 0.2  # slowest climb/descent input of climb_to
 HEADING_TOLERANCE_DEG = 5.0
 APPROACH_RADIUS_M = 1.5  # inside it: stop-and-correct
 CRUISE_GAIN = 0.4  # stick fraction per metre of error
@@ -40,9 +42,9 @@ MIN_PULSE_S = 0.3
 MAX_PULSE_S = 1.5
 ALT_GAIN = 0.8
 MAX_VERTICAL = 0.5
-YAW_GAIN = 1 / 45  # stick fraction per degree of heading error
-MAX_TURN = 0.8
-MIN_TURN = 0.15
+YAW_GAIN = 1 / 25  # stick fraction per degree of heading error
+MAX_TURN = 1.0
+MIN_TURN = 0.25
 SETTLE_S = 0.5  # after going neutral, before a sample is trusted
 ODOMETRY_WAIT_S = 2.5
 GOTO_TIMEOUT_S = 90.0
@@ -92,11 +94,32 @@ class Navigator:
         return self._fly_to(epoch, (x, y), alt, tolerance_m, timeout_s, max_fraction)
 
     def climb_to(self, alt: float, timeout_s: float = GOTO_TIMEOUT_S) -> Pose:
-        """Change altitude; also holds the horizontal position."""
+        """Change altitude in one continuous climb or descent (no stop-and-correct steps),
+        until within CLIMB_TOLERANCE_M or past the target; the X1 holds its horizontal
+        position by itself."""
         epoch = self._begin()
         pose = self.drone.pose()
         self.limits.check_target(pose.x, pose.y, alt)
-        return self._fly_to(epoch, (pose.x, pose.y), alt, POSITION_TOLERANCE_M, timeout_s)
+        self.target = (pose.x, pose.y, alt)
+        try:
+            return self._climb(epoch, alt, time.monotonic() + timeout_s)
+        finally:
+            self.target = None
+            self.drone.neutral()
+
+    def _climb(self, epoch: int, alt: float, deadline: float) -> Pose:
+        """Vertical only, continuously, until within CLIMB_TOLERANCE_M or past `alt`."""
+        start_error = alt - self.drone.pose().alt
+        while True:
+            self._check_time(deadline, "climb")
+            self.guard(epoch)
+            pose = self.drone.pose()
+            error = alt - pose.alt
+            if abs(error) <= CLIMB_TOLERANCE_M or error * start_error < 0:
+                return pose
+            up = max(MIN_VERTICAL, min(MAX_VERTICAL, ALT_GAIN * abs(error)))
+            self.send(epoch, up=math.copysign(up, error))
+            self.drone.sleep(TICK_S, epoch)
 
     def turn_to(
         self,
@@ -224,6 +247,8 @@ class Navigator:
                 distance = math.hypot(xy[0] - pose.x, xy[1] - pose.y)
                 if distance <= tolerance_m and abs(alt - pose.alt) <= ALT_TOLERANCE_M:
                     return pose
+                if distance <= tolerance_m:  # only the altitude is off: one smooth climb
+                    return self._climb(epoch, alt, deadline)
                 self._pulse(epoch, pose, xy, alt, max_fraction)
         finally:
             self.target = None
