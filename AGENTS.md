@@ -124,6 +124,9 @@ Codex users: read the matching file above as the role prompt for each session or
 
 ## PR workflow
 1. **One branch per task**: `<issue-number>-<short-desc>` (e.g. `12-event-logger`).
+   **Open the PR as soon as the code works**, don't wait to finish everything. Before starting
+   new work in another branch, the previous branch's working code must already have a PR
+   open. Until the freeze, open a PR at least every 2–3 h.
 2. Before opening the PR: `git pull --rebase origin main`, then run ruff and check your change works.
 3. Open the PR with a **title that follows COMMITS.md** (it becomes the squash commit) and
    write `Closes #12` in the body (PR template). Move the issue to `review`
