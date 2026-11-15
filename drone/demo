@@ -1,0 +1,16 @@
+#!/usr/bin/env bash
+# The whole demo, drone side (drone/find_child.py): take off from the robot's pad, patrol at
+# 3 m, find the child, fly over them with the camera straight down, hover there, send the child
+# to the robot through ngrok and follow it until it arrives. Needs drone/fly running and, on the
+# robot, roslaunch bringup state_demo.launch (it drives there and starts the care flow).
+# Usage: drone/demo [child, default jorge] [more drone/find options, e.g. --sweep]
+#        then press the drone's button
+set -euo pipefail
+cd "$(dirname "$0")/.."
+CHILD=jorge
+if [[ $# -gt 0 && $1 != -* ]]; then
+  CHILD=$1
+  shift
+fi
+PAD_HEIGHT_M=0.4  # takeoff from the pad on the robot's top (land_on_pad.PAD_HEIGHT_M)
+exec drone/find "$CHILD" --alt 3 --orbit 0 --takeoff-height "$PAD_HEIGHT_M" --robot "$@"
