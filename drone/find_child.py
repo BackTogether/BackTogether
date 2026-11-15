@@ -78,6 +78,9 @@ CHILD_REPORTED = "child reported"  # the mission's step flying home after the or
 REPO = Path(__file__).resolve().parent.parent
 LIVE_HELPER = REPO / "drone" / "patrol" / ("live.cmd" if sys.platform == "win32" else "live")
 RECORDINGS = REPO / "recordings"
+# Exit codes, so drone/demo stops instead of going on to land on the robot
+INTERRUPTED = 130  # Ctrl+C (the shell's own code for it)
+NOT_FOUND = 1  # the mission ended without the child
 FLIGHT_POLL_S = 0.5  # --watch: how often it checks whether the drone took off or landed
 
 log = logging.getLogger("find_child")
@@ -401,7 +404,7 @@ def main() -> None:
         client.stop()
         print("stopped: the drone hovers where it is")
         recording.stop()
-        return
+        raise SystemExit(INTERRUPTED) from None
     child = mission.get("child")
     state, message = mission["state"], mission.get("message")
     if done_with_child(mission, args):
@@ -414,9 +417,16 @@ def main() -> None:
     if child:
         print(f"child at {child.get('drone')} m from the takeoff point (drone frame)")
         print_for_robot(mission, name, args)
-    if args.robot and child:
-        follow_robot(mission, args, started_at)
-    recording.stop()
+    try:
+        if args.robot and child:
+            follow_robot(mission, args, started_at)
+    except KeyboardInterrupt:
+        print("stopped following the robot: the drone hovers where it is")
+        raise SystemExit(INTERRUPTED) from None
+    finally:
+        recording.stop()
+    if not child:
+        raise SystemExit(NOT_FOUND)
 
 
 def print_for_robot(mission: dict[str, Any], name: str, args: argparse.Namespace) -> None:
@@ -450,16 +460,13 @@ def report_collected(collector: Collector | None) -> None:
 
 def follow_robot(mission: dict[str, Any], args: argparse.Namespace, started_at: float) -> None:
     """Wait for the robot's acknowledgement of the report, then show it driving to the child
-    until it arrives (Ctrl+C stops watching; the drone keeps hovering)."""
+    until it arrives (the drone keeps hovering)."""
     # the delivery the search started (deliver() starts each report once), None if not sent
     sent = deliver(mission, [args.robot], started_at, args.heading_offset, args.launch_ahead)
-    try:
-        if sent is None or not finish():
-            print("the robot did NOT get the child (see above): by hand, drone/robot <x> <y>")
-            return
-        arrived = follow(args.robot, mission_id(mission))
-    except KeyboardInterrupt:
+    if sent is None or not finish():
+        print("the robot did NOT get the child (see above): by hand, drone/robot <x> <y>")
         return
+    arrived = follow(args.robot, mission_id(mission))
     print("the robot is at the child" if arrived else "the robot did NOT reach the child")
 
 
