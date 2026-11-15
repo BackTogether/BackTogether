@@ -23,14 +23,18 @@ Needs the pad model (drone/identify/pad.py: photos in drone/identify/base/, then
    whose size disagrees with it by more than REJECT_HEIGHT_M is ignored. It lands (POST /land)
    when LAND_FRAMES detections in a row agree on a height below LAND_HEIGHT_M (or the pad left
    the view just after they agreed on one below LOW_LOST_M), and the odometry agrees with them.
-   The odometry height is taken two ways, alt + takeoff height - pad height (an altitude above
-   the takeoff floor) or alt itself (a downward sensor that reads the robot's top): either may
-   agree. Both are printed in the status lines.
+   The odometry height is read one of two ways (--alt-source): "floor" = alt + takeoff
+   height - pad height (alt measured from the takeoff floor), "pad" = alt itself (a downward
+   sensor over the robot reads the height above the pad), or "either" (the default for a first
+   test: wider, so less safe against a false square). Status and --watch lines print both
+   readings and which one the pad's size matches: hover beside the robot, slide over it, and
+   if alt drops by about the pad height it is a downward sensor ("pad").
 The pad lost for long, a timeout, Ctrl+C or a STOP from the page (any STOP after this script
 took control: it never resumes on its own) end it with the drone hovering. When the server's
 safety rules take the drone (flying home, riding out a loss) or the page did, it just ends,
-without a STOP of its own. Every frame looked at is posted to the page's video overlay
-(POST /vision): the pad's box as the locked target.
+without a STOP of its own (before its own STOP it sends a neutral /move: refused = not ours).
+Every frame looked at is posted to the page's video overlay (POST /vision): the pad's box as
+the locked target.
 """
 
 import argparse
@@ -59,6 +63,9 @@ SEARCH_ALT_M = 2.0  # above the takeoff point
 ALT_TOLERANCE_M = 0.15
 PAD_HEIGHT_M = 0.4  # the pad above the floor (Bobac's top disc): measure it
 CONFLICT = 409  # the server refused: a STOP, a safety rule or another action owns the drone
+BUSY = "busy"  # the server's refusal while an action runs (not a STOP or a safety rule)
+OWN_ACTIONS = ("goto", "tilt")  # server states while our own climb or camera move runs
+ALT_SOURCES = ("either", "floor", "pad")  # which odometry reading is the height above the pad
 # Camera
 SEARCH_TILT_DEG = -50.0  # 1.6 m above the pad it sees it from ~0.5 to ~3 m away
 DOWN_DEG = -90.0
@@ -90,8 +97,8 @@ LOW_LOST_M = 0.7  # pad lost this low (it no longer fits in the view), centred: 
 LOW_LOST_S = 1.5  # ...if it agreed on that height this recently
 LAND_FRAMES = 3  # overhead detections in a row that must agree before landing
 HEIGHT_SPREAD_M = 0.15  # their size-based heights within this of each other
-ODOMETRY_AGREE_M = 0.3  # and within this of an odometry height (unknown sensor: see above)
-REJECT_HEIGHT_M = 0.5  # overhead detection this far from both odometry heights: ignored
+ODOMETRY_AGREE_M = 0.3  # and within this of the odometry height (--alt-source: see above)
+REJECT_HEIGHT_M = 0.5  # overhead detection this far from the odometry height: ignored
 MIN_HEIGHT_M = 0.3
 # Time
 LOST_TIMEOUT_S = 10.0  # pad not seen this long: give up, hover
@@ -122,6 +129,7 @@ class LandSettings:
     takeoff_height_m: float = 0.0  # the takeoff point above the floor
     search_tilt_deg: float = SEARCH_TILT_DEG
     search_alt_m: float = SEARCH_ALT_M  # above the takeoff point; higher already: stays there
+    alt_source: str = ALT_SOURCES[0]  # see the module docstring
 
 
 @dataclass(frozen=True)
@@ -139,13 +147,15 @@ class Sighting:
     v: float  # pad centre row, image fraction (y down)
     tilt_deg: float  # camera tilt of that frame
     height_m: float  # camera above the pad: from its size overhead, else the odometry
-    odometry_m: float  # alt + takeoff height - pad height
-    alt_m: float  # alt as reported (a downward sensor would read the height above the pad)
+    floor_m: float  # odometry reading "floor": alt + takeoff height - pad height
+    pad_m: float  # odometry reading "pad": alt itself
     seen_at: float  # the frame's time
 
-    def odometry_gap(self) -> float:
-        """Metres between the height and the closer of the two odometry heights."""
-        return min(abs(self.height_m - self.odometry_m), abs(self.height_m - self.alt_m))
+    def odometry_gap(self, source: str) -> float:
+        """Metres between the height and the odometry reading(s) of `source`."""
+        readings = {"floor": (self.floor_m,), "pad": (self.pad_m,)}
+        chosen = readings.get(source, (self.floor_m, self.pad_m))
+        return min(abs(self.height_m - reading) for reading in chosen)
 
 
 def land_on_pad(client: DroneClient, detect: Detect, settings: LandSettings | None = None) -> str:
@@ -154,8 +164,49 @@ def land_on_pad(client: DroneClient, detect: Detect, settings: LandSettings | No
     return Lander(client, detect, settings or LandSettings()).run()
 
 
-def odometry_height(pose: dict[str, Any], settings: LandSettings) -> float:
+def floor_height(pose: dict[str, Any], settings: LandSettings) -> float:
+    """The odometry reading "floor": alt measured from the takeoff floor."""
     return pose["alt"] + settings.takeoff_height_m - settings.pad_height_m
+
+
+def heights_text(height: float, floor_m: float, pad_m: float, overhead: bool) -> str:
+    """The camera's height above the pad and the two odometry readings; overhead (height from
+    the pad's size) also which reading it matches."""
+    text = f"{height:.2f} m above the pad (odometry: floor {floor_m:.2f}, pad {pad_m:.2f}"
+    if not overhead:
+        return text + ")"
+    matches = [name for name, m in (("floor", floor_m), ("pad", pad_m))
+               if abs(height - m) <= ODOMETRY_AGREE_M]  # fmt: skip
+    return text + f"; size matches {' and '.join(matches) or 'neither'})"
+
+
+def release(client: DroneClient) -> bool:
+    """STOP so the drone hovers, unless it is not ours any more: a neutral /move first, and
+    no STOP if it is refused (a STOP, or a safety rule flying it home). True if STOP was sent."""
+    try:
+        client.move(seconds=MOVE_HOLD_S)
+    except DroneApiError as error:
+        ours = error.message == BUSY and _own_action_runs(client)
+        if error.status == CONFLICT and not ours:
+            return False
+    stop(client)
+    return True
+
+
+def _own_action_runs(client: DroneClient) -> bool:
+    """The server also refuses /move while our own climb or camera move runs: still ours."""
+    try:
+        return client.status()["state"] in OWN_ACTIONS
+    except DroneApiError:
+        return False
+
+
+def stop(client: DroneClient) -> None:
+    """STOP: the drone hovers. A network error must not hide what ended the landing."""
+    try:
+        client.stop()
+    except DroneApiError as error:
+        log.warning("STOP not sent (%s): the last /move expires in %.1f s", error, MOVE_HOLD_S)
 
 
 def pad_offset(
@@ -169,7 +220,7 @@ def pad_offset(
         focal_px = camera.CAMERA_FOCAL_PX * w / camera.CAMERA_WIDTH_PX
         height = PAD_SIDE_M * focal_px / math.sqrt(max(cv2.contourArea(pad.corners), 1.0))
     else:
-        height = odometry_height(pose, settings)
+        height = floor_height(pose, settings)
     height = max(height, MIN_HEIGHT_M)
     fwd, right = ground_offset(pad.centre[0] / w, pad.centre[1] / h, tilt, height) or (0.0, 0.0)
     return fwd, right, height
@@ -235,23 +286,16 @@ class Lander:
         except DroneApiError as error:
             return self._end(str(error), error.status != CONFLICT)
         except Exception:
-            self._stop()
+            release(self.client)
             raise
         return LANDED
 
     def _end(self, reason: str, owned: bool) -> str:
-        if owned:
-            self._stop()
+        if owned and release(self.client):
             log.info("hovering: %s", reason)
         else:
             log.info("ended, the drone is not ours any more: %s", reason)
         return reason
-
-    def _stop(self) -> None:
-        try:
-            self.client.stop()
-        except DroneApiError as error:
-            log.warning("STOP not sent (%s): the last /move expires in %.1f s", error, MOVE_HOLD_S)
 
     # --- stages -------------------------------------------------------------------------------
 
@@ -369,9 +413,9 @@ class Lander:
         dx, dy = body_to_frame(fwd, right, pose["heading_deg"])
         point = (pose["x"] + dx, pose["y"] + dy)
         v = pad.centre[1] / frame.image.shape[0]
-        odometry = odometry_height(pose, self.settings)
-        sighting = Sighting(point, v, pose["tilt_deg"], height, odometry, pose["alt"], frame.time)
-        if sighting.odometry_gap() > REJECT_HEIGHT_M:
+        floor_m = floor_height(pose, self.settings)
+        sighting = Sighting(point, v, pose["tilt_deg"], height, floor_m, pose["alt"], frame.time)
+        if sighting.odometry_gap(self.settings.alt_source) > REJECT_HEIGHT_M:
             self._note("rejected", f"detection ignored: {_heights(sighting)} disagree")
             return None
         return sighting
@@ -397,18 +441,22 @@ class Lander:
 
     def _count_overhead(self, sighting: Sighting | None) -> None:
         """Track overhead detections in a row; when the last LAND_FRAMES agree with each other
-        and the odometry, remember the height they agree on."""
+        and the odometry, remember the height they agree on. A kept detection that disagrees
+        with it forgets it; a missing one does not (the pad may have left the view, low)."""
         if sighting is None:
             self._streak = []
             return
         self._streak = [*self._streak, sighting][-LAND_FRAMES:]
         heights = [s.height_m for s in self._streak]
+        source = self.settings.alt_source
         if (
             len(heights) == LAND_FRAMES
             and max(heights) - min(heights) <= HEIGHT_SPREAD_M
-            and all(s.odometry_gap() <= ODOMETRY_AGREE_M for s in self._streak)
+            and all(s.odometry_gap(source) <= ODOMETRY_AGREE_M for s in self._streak)
         ):
             self._agreed = statistics.median(heights), sighting.seen_at
+        elif self._agreed and abs(sighting.height_m - self._agreed[0]) > HEIGHT_SPREAD_M:
+            self._agreed = None
 
     # --- the drone ----------------------------------------------------------------------------
 
@@ -474,10 +522,8 @@ class Lander:
 
 
 def _heights(sighting: Sighting) -> str:
-    return (
-        f"{sighting.height_m:.2f} m above the pad (odometry {sighting.odometry_m:.2f}, "
-        f"alt {sighting.alt_m:.2f})"
-    )
+    overhead = sighting.tilt_deg <= OVERHEAD_TILT_DEG
+    return heights_text(sighting.height_m, sighting.floor_m, sighting.pad_m, overhead)
 
 
 def _steer(fwd: float, right: float, distance: float, overhead: bool) -> tuple[float, float, float]:
@@ -528,11 +574,9 @@ def _watch_line(pad: Pad | None, frame: Frame, settings: LandSettings) -> str:
     if tilt is None:
         return f"{pixels}, {camera_text}"
     fwd, right, height = pad_offset(pad, frame.image.shape, pose, settings)
-    odometry = odometry_height(pose, settings)
-    return (
-        f"{pixels}: {fwd:.2f} m ahead, {-right:.2f} m left, camera {height:.2f} m above it "
-        f"(odometry {odometry:.2f}, alt {pose['alt']:.2f}), {camera_text}"
-    )
+    overhead = tilt <= OVERHEAD_TILT_DEG
+    heights = heights_text(height, floor_height(pose, settings), pose["alt"], overhead)
+    return f"{pixels}: {fwd:.2f} m ahead, {-right:.2f} m left, camera {heights}, {camera_text}"
 
 
 def main() -> None:
@@ -549,6 +593,12 @@ def main() -> None:
     )
     parser.add_argument(
         "--alt", type=float, default=SEARCH_ALT_M, help="search altitude above takeoff, m"
+    )
+    parser.add_argument(
+        "--alt-source",
+        choices=ALT_SOURCES,
+        default=ALT_SOURCES[0],
+        help="odometry height above the pad: floor = alt + takeoff - pad height, pad = alt",
     )
     parser.add_argument("--watch", action="store_true", help="no flight: detect on the video")
     args = parser.parse_args()
@@ -567,7 +617,9 @@ def main() -> None:
         detect = PadDetector().detect
     except FileNotFoundError as error:
         raise SystemExit(str(error)) from error
-    settings = LandSettings(args.pad_height, args.takeoff_height, args.tilt, args.alt)
+    settings = LandSettings(
+        args.pad_height, args.takeoff_height, args.tilt, args.alt, args.alt_source
+    )
     if args.watch:
         if not telemetry["in_flight"] and not telemetry["manual_session"]:
             try:  # Manual Control starts the video (no takeoff)
@@ -582,7 +634,7 @@ def main() -> None:
     try:
         result = land_on_pad(client, detect, settings)
     except KeyboardInterrupt:
-        client.stop()
+        stop(client)  # Ctrl+C is the human's STOP: always sent
         print("stopped: the drone hovers where it is")
         return
     print(result)
