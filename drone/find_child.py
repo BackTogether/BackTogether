@@ -6,8 +6,9 @@ square of waypoints ahead of the takeoff point). A glimpse of the child's face (
 if the face does not come back. Enough face frames lock on the child; from there the body is
 tracked, the drone turns to it, flies to it and puts the camera straight down over it (the
 position fix; the child may be a little off centre), then orbits the child facing them (--orbit
-turns at --orbit-alt, --radius; the circle follows them if they step aside) and hovers there.
-No return, no robot: land it from the web page (LAND) afterwards.
+turns at --radius, at the patrol altitude unless --orbit-alt; the circle follows them if they
+step aside) and hovers there while the robot drives to the child. drone/dock then lands it on
+the robot's pad (or LAND in the web page).
 
     drone/fly 100 sd --fence 15 --max-alt 4   # terminal 1: drone + page, http://127.0.0.1:8077
     drone/find jorge --sweep         # terminal 2, then the drone's button (--side left: first
@@ -266,7 +267,9 @@ def main() -> None:
     parser.add_argument(
         "--orbit", type=float, default=1.0, help="turns around the child, facing them (0 = none)"
     )
-    parser.add_argument("--orbit-alt", type=float, default=1.5, help="orbit altitude, m")
+    parser.add_argument(
+        "--orbit-alt", type=float, help="orbit altitude, m (default: stay at the patrol altitude)"
+    )
     parser.add_argument("--radius", type=float, default=1.5, help="orbit radius, m")
     parser.add_argument("--takeoff-height", type=float, default=0.0, help="m above the floor")
     parser.add_argument(
@@ -322,7 +325,7 @@ def main() -> None:
     state, message = mission["state"], mission.get("message")
     if done_with_child(mission, args):
         where = f"orbited {name} {args.orbit:g} times" if args.orbit > 0 else f"over {name}"
-        print(f"{where}: hovering (land it from the page)")
+        print(f"{where}: hovering (drone/dock lands it on the robot, or LAND in the page)")
     elif child:
         print(f"mission ended after reporting {name}: {state}: {message}")
     else:
