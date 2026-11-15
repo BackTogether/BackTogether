@@ -1,5 +1,5 @@
 # The parents' web page -> the robot's faces: scripts/web_inbox.py saves the child's photos in
-# ~/.reinovo/face_data/<NAME>/, where face_rec reads them, kept listening from boot (only
+# ~/.reinovo/face_data/<name>/, where face_rec reads them, kept listening from boot (only
 # requests sent while it runs are saved). face_rec loads the faces when it starts: launch the
 # demo after the photos arrive, with person:=<name> (case does not matter).
 # Install once:

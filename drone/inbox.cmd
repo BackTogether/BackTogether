@@ -1,7 +1,7 @@
 @echo off
 rem Windows twin of drone/inbox (keep the two in step): save the web page photos where
-rem drone\find reads faces, drone\identify\people\<NAME>\. Start it before the parent sends the
-rem request, then: drone\find <NAME>.
+rem drone\find reads faces, drone\identify\people\<name>\. Start it before the parent sends the
+rem request, then: drone\find <name>.
 rem Usage: drone\inbox
 setlocal
 cd /d "%~dp0.."

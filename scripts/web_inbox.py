@@ -1,12 +1,14 @@
 """Receive the parents' search requests from the web page and save the child's photos.
 
 The page (web/) POSTs each request to an ntfy topic (`apiUrl` in web/config.js). This listens to
-that topic and saves every request in a folder named after the child, in capitals:
+that topic and saves every request in a folder named after the child, in lower case, so
+"JoRgE", "JORGE" and "jorge" all land in the same folder:
 
-    <out>/JORGE/photo-1.jpg, photo-2.jpg ...   the photos the parent sent
-    <out>/JORGE/request.json                   name, request id and time (no photo bytes)
+    <out>/jorge/photo-1.jpg, photo-2.jpg ...   the photos the parent sent
+    <out>/jorge/request.json                   name, request id and time (no photo bytes)
 
-A later request for the same name replaces that folder's photos. Only requests sent while this
+A later request for the same name replaces the photos it saved there (photo-*.jpg); photos added
+by hand to that folder stay. Only requests sent while this
 runs are saved. Standard library only, Python 3.8+: the same file runs on the robot and on the
 drone laptop.
 
@@ -49,9 +51,9 @@ def topic_url_from_config(config=WEB_CONFIG):
 
 
 def folder_name(child_name, fallback):
-    """'Jorge Martín' -> 'JORGE_MARTIN': capitals, letters, digits and underscores only."""
+    """'Jorge Martín' -> 'jorge_martin': lower case, letters, digits and underscores only."""
     ascii_name = unicodedata.normalize("NFKD", child_name).encode("ascii", "ignore").decode()
-    return re.sub(r"[^A-Z0-9]+", "_", ascii_name.upper()).strip("_") or fallback.upper()
+    return re.sub(r"[^a-z0-9]+", "_", ascii_name.lower()).strip("_") or fallback.lower()
 
 
 def read_request(event):
