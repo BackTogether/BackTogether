@@ -8,6 +8,7 @@ catkin_package()
 catkin_install_python(PROGRAMS
   scripts/face_check.py
   scripts/splash.py
+  scripts/child_goal_server.py
   DESTINATION ${CATKIN_PACKAGE_BIN_DESTINATION}
 )
 
