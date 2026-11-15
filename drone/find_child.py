@@ -163,6 +163,64 @@ def done_with_child(mission: dict[str, Any], args: argparse.Namespace) -> bool:
     )
 
 
+class FlightRecording:
+    """The watch's recordings, from each takeoff to its landing (nothing while on the ground):
+    the camera as it is (drone/fly's MP4 of the stream), the tracker's view with the boxes
+    (recordings/boxes-<child>-<time>.mp4) and, with --collect, frames for the body model. A
+    frame sink of feed.run_live: it checks the drone's flight state every FLIGHT_POLL_S."""
+
+    def __init__(self, client: DroneClient, name: str, collect: bool) -> None:
+        self._client, self._name, self._collect = client, name, collect
+        self._next_poll = 0.0
+        self._video: BoxesVideo | None = None
+        self._collector: Collector | None = None
+        self._camera = False  # drone/fly is recording the camera for us
+
+    def add(self, image: Any, result: Any, frame_time: float) -> None:
+        if time.monotonic() >= self._next_poll:
+            self._next_poll = time.monotonic() + FLIGHT_POLL_S
+            flying = self._in_flight()
+            if flying and self._video is None:
+                self._start()
+            elif flying is False and self._video is not None:
+                log.info("landed")
+                self.stop()
+        if self._video is not None:
+            self._video.add(image, result, frame_time)
+        if self._collector is not None:
+            self._collector.add(image, result, frame_time)
+
+    def stop(self) -> None:
+        """End the recordings of this flight, if any, and print where they are."""
+        if self._video is None:
+            return
+        if self._camera:
+            try:
+                print(f"camera video: {self._client.record(False).get('path')}")
+            except DroneApiError as error:
+                log.warning("camera recording: %s", error)
+        path = self._video.close()
+        print(f"video with the boxes: {path}" if path else "video with the boxes: no frame")
+        report_collected(self._collector)
+        self._video, self._collector, self._camera = None, None, False
+
+    def _in_flight(self) -> bool | None:
+        """None when drone/fly does not answer: keep recording (or not) as before."""
+        try:
+            return bool(self._client.status()["telemetry"]["in_flight"])
+        except DroneApiError:
+            return None
+
+    def _start(self) -> None:
+        self._video = BoxesVideo(RECORDINGS, self._name)
+        self._collector = Collector(RECORDINGS) if self._collect else None
+        try:
+            self._camera = bool(self._client.record(True).get("ok"))
+        except DroneApiError as error:  # e.g. already recording from the page: keep that one
+            log.warning("camera recording: %s", error)
+        log.info("takeoff: recording (boxes in %s)", self._video.path)
+
+
 def search(
     client: DroneClient,
     server: DroneServer,
@@ -170,7 +228,7 @@ def search(
     people: People,
     args: argparse.Namespace,
     started_at: float,
-    collector: Collector | None,
+    recording: FlightRecording,
 ) -> dict[str, Any]:
     """Feed the mission until it is done with the child (then STOP: the drone hovers there) or
     ends. Returns the mission's last status. With --robot the child goes to the robot as soon as
@@ -206,8 +264,7 @@ def search(
                 continue
             frame_time, image = frame
             result = tracker.update(image, frame_time)
-            if collector is not None:
-                collector.add(image, result, frame_time)
+            recording.add(image, result, frame_time)
             server.post("/vision", vision_body(result, frame_time, image.shape, name))
             report = mission_body(result, frame_time, image.shape, name)
             if report:
@@ -309,7 +366,7 @@ def main() -> None:
     if args.watch:
         watch(client, name, people, args)
         return
-    collector = Collector(RECORDINGS) if args.collect else None
+    recording = FlightRecording(client, name, args.collect)
     if not telemetry["in_flight"]:
         tilt_on_ground(client, args.tilt)
     patrol_config = (
@@ -331,13 +388,12 @@ def main() -> None:
     patrol = "the sweep" if args.sweep else "the waypoints"
     log.info("looking for %s at %.1f m with %s: press the drone's button", name, args.alt, patrol)
     try:
-        mission = search(client, DroneServer(args.url), name, people, args, started_at, collector)
+        mission = search(client, DroneServer(args.url), name, people, args, started_at, recording)
     except KeyboardInterrupt:
         client.stop()
         print("stopped: the drone hovers where it is")
-        report_collected(collector)
+        recording.stop()
         return
-    report_collected(collector)
     child = mission.get("child")
     state, message = mission["state"], mission.get("message")
     if done_with_child(mission, args):
@@ -351,64 +407,7 @@ def main() -> None:
         print(f"child at {child.get('drone')} m from the takeoff point (drone frame)")
     if args.robot and child:
         follow_robot(mission, args, started_at)
-
-
-class FlightRecording:
-    """The watch's recordings, from each takeoff to its landing (nothing while on the ground):
-    the camera as it is (drone/fly's MP4 of the stream), the tracker's view with the boxes
-    (recordings/boxes-<child>-<time>.mp4) and, with --collect, frames for the body model. A
-    frame sink of feed.run_live: it checks the drone's flight state every FLIGHT_POLL_S."""
-
-    def __init__(self, client: DroneClient, name: str, collect: bool) -> None:
-        self._client, self._name, self._collect = client, name, collect
-        self._next_poll = 0.0
-        self._video: BoxesVideo | None = None
-        self._collector: Collector | None = None
-        self._camera = False  # drone/fly is recording the camera for us
-
-    def add(self, image: Any, result: Any, frame_time: float) -> None:
-        if time.monotonic() >= self._next_poll:
-            self._next_poll = time.monotonic() + FLIGHT_POLL_S
-            flying = self._in_flight()
-            if flying and self._video is None:
-                self._start()
-            elif flying is False and self._video is not None:
-                log.info("landed")
-                self.stop()
-        if self._video is not None:
-            self._video.add(image, result, frame_time)
-        if self._collector is not None:
-            self._collector.add(image, result, frame_time)
-
-    def stop(self) -> None:
-        """End the recordings of this flight, if any, and print where they are."""
-        if self._video is None:
-            return
-        if self._camera:
-            try:
-                print(f"camera video: {self._client.record(False).get('path')}")
-            except DroneApiError as error:
-                log.warning("camera recording: %s", error)
-        path = self._video.close()
-        print(f"video with the boxes: {path}" if path else "video with the boxes: no frame")
-        report_collected(self._collector)
-        self._video, self._collector, self._camera = None, None, False
-
-    def _in_flight(self) -> bool | None:
-        """None when drone/fly does not answer: keep recording (or not) as before."""
-        try:
-            return bool(self._client.status()["telemetry"]["in_flight"])
-        except DroneApiError:
-            return None
-
-    def _start(self) -> None:
-        self._video = BoxesVideo(RECORDINGS, self._name)
-        self._collector = Collector(RECORDINGS) if self._collect else None
-        try:
-            self._camera = bool(self._client.record(True).get("ok"))
-        except DroneApiError as error:  # e.g. already recording from the page: keep that one
-            log.warning("camera recording: %s", error)
-        log.info("takeoff: recording (boxes in %s)", self._video.path)
+    recording.stop()
 
 
 def watch(client: DroneClient, name: str, people: People, args: argparse.Namespace) -> None:
