@@ -14,10 +14,11 @@ What it models, on purpose close to what we measured on the X1:
   takeoff and is rotated from the drone's heading by `frame_yaw_offset_deg`. On the ground it
   reads an old frame, like the real drone.
 - `SimCamera`: an ffmpeg test pattern encoded to H.264 and fed to the real decoder.
-- A square room around the start point (`room_half_m`; by default larger than the default
-  geofence, so only patrols that look for walls meet them). The drone stops at a wall (and
-  `wall_hits` counts it); truth()["front_m"] is the true distance to the wall ahead, for
-  testing camera-based patrols without a depth model (drone.patrol.bounce --fake-depth).
+- A square room around the start point (`room_half_m`, a rectangle with `room_half_y_m`; by
+  default larger than the default geofence, so only patrols that look for walls meet them).
+  The drone stops at a wall (and `wall_hits` counts it); truth()["front_m"] is the true
+  distance to the wall ahead, for testing camera-based patrols without a depth model
+  (drone.patrol.bounce --fake-depth).
 - Faults for testing: set_battery(), cut("link" | "telemetry" | "video", seconds), push().
 - `SimDetector`: a fake lost child standing in the room and a fake detector that reports the
   child's bbox (like drone/identify would) whenever the child is in the simulated camera's view
@@ -95,9 +96,13 @@ class SimLink:
         frame_yaw_offset_deg: float = DEFAULT_FRAME_YAW_OFFSET_DEG,
         seed: int | None = None,
         room_half_m: float = DEFAULT_ROOM_HALF_M,
+        room_half_y_m: float | None = None,
     ) -> None:
+        """The room is +-room_half_m in x (the start heading) and +-room_half_y_m in y
+        (default: square)."""
         self.frame_yaw_offset_deg = frame_yaw_offset_deg
-        self.room = (-room_half_m, room_half_m, -room_half_m, room_half_m)  # world x, y
+        half_y = room_half_m if room_half_y_m is None else room_half_y_m
+        self.room = (-room_half_m, room_half_m, -half_y, half_y)  # world x, y
         self.sticks: StickSender | None = None  # set by connect_sim
         self.photos = 0  # drone-side photos taken (take_photo)
         self.recording = False  # drone-side recording (record_video)
@@ -622,9 +627,10 @@ def connect_sim(
     frame_yaw_offset_deg: float = DEFAULT_FRAME_YAW_OFFSET_DEG,
     seed: int | None = None,
     room_half_m: float = DEFAULT_ROOM_HALF_M,
+    room_half_y_m: float | None = None,
 ) -> Drone:
     """A started Drone on the simulator; the SimLink is `drone.link`."""
-    link = SimLink(frame_yaw_offset_deg, seed, room_half_m)
+    link = SimLink(frame_yaw_offset_deg, seed, room_half_m, room_half_y_m)
     sticks = SimSticks(link, max_speed)
     link.sticks = sticks
     drone = Drone(link, sticks, SimCamera(link), estimator)

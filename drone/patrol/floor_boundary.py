@@ -45,6 +45,7 @@ INLIER_PER_M = 0.04  # contact points get noisier with distance
 MIN_LINE_POINTS = 12
 MIN_LINE_FRACTION = 0.25  # of the contact points
 CORNER_MIN_ANGLE_DEG = 30.0  # two lines this far apart = a corner
+SPAN_GAP_M = 0.5  # contact points further apart sideways are separate objects on the line
 
 
 class Column(Enum):
@@ -69,6 +70,7 @@ class Wall:
     incidence_deg: float
     distance_m: float  # along the heading, where the line crosses it
     points: int
+    span_m: float = 0.0  # widest gap-free run of its contact points: a wall is wide, a person not
 
 
 @dataclass(frozen=True)
@@ -240,8 +242,19 @@ def _ransac_line(points: np.ndarray) -> tuple[Wall | None, np.ndarray]:
     if best.sum() < max(MIN_LINE_POINTS, MIN_LINE_FRACTION * count):
         return None, best
     slope, intercept = np.polyfit(points[best, 0], points[best, 1], 1)
-    wall = Wall(math.degrees(math.atan(slope)), float(intercept), int(best.sum()))
+    span = _widest_run(points[best, 0])
+    wall = Wall(math.degrees(math.atan(slope)), float(intercept), int(best.sum()), span)
     return wall, best
+
+
+def _widest_run(right: np.ndarray) -> float:
+    """Lateral extent of the widest group of points without a SPAN_GAP_M gap (a line through
+    a pillar also crosses the far wall at a few points: those do not make it wide)."""
+    ordered = np.sort(right)
+    breaks = np.flatnonzero(np.diff(ordered) > SPAN_GAP_M)
+    starts = np.concatenate([[0], breaks + 1])
+    ends = np.concatenate([breaks, [len(ordered) - 1]])
+    return float(np.max(ordered[ends] - ordered[starts]))
 
 
 def reflection_turn_deg(walls: tuple[Wall, ...]) -> float:

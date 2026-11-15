@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Live patrol tests against the running app (drone/fly = drone.sdk serve), offline-safe.
-# Usage: drone/patrol/live spin [sticks] | tilt <deg> | distance | dry | bounce | dvd-dry | dvd     [extra args for the module]
+# Usage: drone/patrol/live spin [sticks] | tilt <deg> | distance | dry | bounce | dvd-dry | dvd | clear-dry | clear | sweep-dry | sweep  [extra args]
 #   spin      yaw calibration: one exact turn per stick value (default 100 80 60), then LANDS
 #   tilt      set the camera tilt through the SDK (needs Manual control)
 #   distance  perception only: prints the front distance, sends nothing
@@ -9,6 +9,11 @@
 #   dvd-dry   DVD patrol (reflection turns, floor-boundary distance) decisions, sends nothing
 #   dvd       REAL DVD patrol. Start drone/fly with --fence 15 in a big hall (default 8 m fence
 #             makes the SDK fly home and land). DVD_TAKEOFF_HEIGHT: 0 = took off from the floor.
+#   clear-dry clear patrol (turn always the same way until clear, dvd's perception), sends nothing
+#   clear     REAL clear patrol; same --fence and DVD_TAKEOFF_HEIGHT as dvd.
+#   sweep-dry lawnmower sweep (lanes, turns, coverage) decisions, sends nothing
+#   sweep     REAL lawnmower sweep: start facing along the hall. drone/fly --fence 20 for a
+#             30 x 20 m hall; a small test: sweep --length 5 --width 5 (2 lanes)
 set -euo pipefail
 cd "$(dirname "$0")/../.."
 SDK=http://127.0.0.1:8077
@@ -29,5 +34,9 @@ case "$mode" in
   bounce)   exec uv run "${DEPS[@]}" python -m drone.patrol.bounce --sdk "$SDK" --takeoff-height "$TAKEOFF_HEIGHT" --speed 0.3 --geofence 4 --tilt -30 --stop-at "$STOP_AT" --clear-at "$CLEAR_AT" "$@" ;;
   dvd-dry)  exec uv run "${DEPS[@]}" python -m drone.patrol.dvd --sdk "$SDK" --dry-run --takeoff-height "${DVD_TAKEOFF_HEIGHT:-0}" --tilt -30 "$@" ;;
   dvd)      exec uv run "${DEPS[@]}" python -m drone.patrol.dvd --sdk "$SDK" --takeoff-height "${DVD_TAKEOFF_HEIGHT:-0}" --tilt -30 "$@" ;;
-  *) sed -n '2,11p' "$0"; exit 1 ;;
+  clear-dry) exec uv run "${DEPS[@]}" python -m drone.patrol.clear --sdk "$SDK" --dry-run --takeoff-height "${DVD_TAKEOFF_HEIGHT:-0}" --tilt -30 "$@" ;;
+  clear)    exec uv run "${DEPS[@]}" python -m drone.patrol.clear --sdk "$SDK" --takeoff-height "${DVD_TAKEOFF_HEIGHT:-0}" --tilt -30 "$@" ;;
+  sweep-dry) exec uv run "${DEPS[@]}" python -m drone.patrol.sweep --sdk "$SDK" --dry-run --takeoff-height "${DVD_TAKEOFF_HEIGHT:-0}" --tilt -30 "$@" ;;
+  sweep)    exec uv run "${DEPS[@]}" python -m drone.patrol.sweep --sdk "$SDK" --takeoff-height "${DVD_TAKEOFF_HEIGHT:-0}" --tilt -30 "$@" ;;
+  *) sed -n '2,16p' "$0"; exit 1 ;;
 esac

@@ -1,11 +1,11 @@
 """A depth camera for the simulator's room, to test the wall perception end to end.
 
 Renders the depth map the drone's camera would see from the simulator's true pose: the floor,
-the square room's four walls (drone.sdk.sim: +-room_half_m around the start point) and optional
-round pillars standing on the floor (people, table legs; the simulator itself does not stop at
-them, `pillar_hits` counts close passes). Like the real model, the depth gets a random scale
-per frame (our recordings: 1.3-2x off and unstable) and some per-pixel noise, so only what the
-real pipeline relies on (the depth ordering) is right.
+the room's four walls (drone.sdk.sim: +-room_half_m around the start point, a rectangle with
+half_y_m) and optional round pillars standing on the floor (people, table legs; the simulator
+itself does not stop at them, `pillar_hits` counts close passes). Like the real model, the
+depth gets a random scale per frame (our recordings: 1.3-2x off and unstable) and some
+per-pixel noise, so only what the real pipeline relies on (the depth ordering) is right.
 
 The simulator must be started with its takeoff frame aligned with the room
 (`frame_yaw_offset_deg=0`, `python -m drone.sdk sim --frame-yaw-offset 0`): then its truth()
@@ -36,8 +36,13 @@ class Pillar:
 
 @dataclass(frozen=True)
 class Room:
-    half_m: float
+    half_m: float  # walls at +-half_m in x (and in y unless half_y_m is given)
     pillars: tuple[Pillar, ...] = ()
+    half_y_m: float | None = None  # a rectangular hall: walls at +-half_y_m in y
+
+    @property
+    def half_y(self) -> float:
+        return self.half_m if self.half_y_m is None else self.half_y_m
 
 
 def render_depth(
@@ -61,7 +66,7 @@ def render_depth(
     depth = np.where(down > 0, height_m / np.maximum(down, 1e-9), FAR_M)
     for wall, direction in ((room.half_m - x, dx), (-room.half_m - x, dx)):
         depth = _nearer(depth, wall, direction)
-    for wall, direction in ((room.half_m - y, dy), (-room.half_m - y, dy)):
+    for wall, direction in ((room.half_y - y, dy), (-room.half_y - y, dy)):
         depth = _nearer(depth, wall, direction)
     for pillar in room.pillars:
         depth = np.minimum(depth, _pillar_depth(pillar, x, y, dx, dy))
@@ -98,3 +103,9 @@ def demo_pillars(half_m: float) -> tuple[Pillar, ...]:
     """A few people-sized pillars spread over the room (deterministic)."""
     spots = ((0.45, 0.3), (-0.5, 0.55), (0.2, -0.6), (-0.35, -0.25))
     return tuple(Pillar(fx * half_m, fy * half_m, 0.25) for fx, fy in spots)
+
+
+def hall_pillars(half_x: float, half_y: float) -> tuple[Pillar, ...]:
+    """People and pillars in a hall, one of them on the start lane (y = 0) ahead of the start."""
+    spots = ((0.35, 0.0), (-0.55, 0.4), (0.7, -0.6), (-0.1, 0.75), (0.2, -0.3))
+    return tuple(Pillar(fx * half_x, fy * half_y, 0.25) for fx, fy in spots)

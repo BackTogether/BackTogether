@@ -47,6 +47,8 @@ class DroneState:
     pose_xy: tuple[float, float] | None = None  # the estimator's position, extrapolated
     heading_deg: float | None = None  # the estimator's heading (video yaw where trusted)
     yaw_deg: float | None = None  # measured heading (telemetry "attitude"), when the SDK has it
+    heading_sigma_deg: float | None = None  # the estimator's 1-sigma heading uncertainty
+    heading_source: str | None = None  # "flow" (video yaw) or "sticks" (yaw-stick model)
 
 
 def _state(telemetry: dict[str, Any]) -> DroneState:
@@ -66,6 +68,8 @@ def _state(telemetry: dict[str, Any]) -> DroneState:
         pose_xy=(pose["x"], pose["y"]) if "x" in pose else None,
         heading_deg=pose.get("heading_deg"),
         yaw_deg=attitude.get("yaw_deg"),
+        heading_sigma_deg=pose.get("heading_sigma_deg"),
+        heading_source=pose.get("heading_source"),
     )
 
 

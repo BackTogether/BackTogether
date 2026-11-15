@@ -20,6 +20,7 @@ recording, a simulator, an HTTP API and a ROS client.
 | `safety.py` | `SafetyLimits`: geofence, altitude, battery, loss timeouts, max speed |
 | `sim.py` | the simulator (`connect_sim`): same interface, nothing leaves the laptop |
 | `server.py`, `__main__.py` | the web page + HTTP API ([API.md](API.md)) |
+| `map_view.py`, `map_image.py`, `splat.py` | the page's map view: drone, robot, child on the robot's map and a splat ([below](#map-view)) |
 | `client.py`, `ros_node.py` | Python 3.8 stdlib client and an example rospy node, for the robot |
 | `recording.py`, `telemetry.py` | MP4/photo helpers; Telemetry, Pose, Tilt and streams |
 
@@ -214,6 +215,83 @@ could never drop below the floor distance of the image's bottom rows); and the m
 metric scale was 1.3-2x too far and jumped up to 5x on the plain white wall. The floor boundary
 measured the same approach within 0.1 m (median) at 72 fps (Small on the Mac's GPU, MPS).
 
+## Clear patrol (`drone/patrol/clear.py`): always turn the same way until clear
+The DVD patrol's perception, SDK plumbing, holds and panel, with a deterministic state machine:
+FORWARD until the front distance is under `--stop-at` (1.0 m), HOVER `--hover-s` (1 s), TURN in
+place always `--turn` (right) at `--turn-input` until every fresh reading for `--clear-for-s`
+(0.5 s) is beyond `--clear-at` (4 m) or a clear view; unreadable or low-confidence readings
+(< 80 % of the corridor readable) are not clear. A full 360° (SDK heading) without that: hover,
+turn on to the heading with the largest distance seen, and go if it is beyond stop-at + 0.5 m,
+else hover "boxed in" until STOP. The panel shows phase, front distance, degrees turned, decision.
+```bash
+uv run --offline --no-project --with numpy --with pillow \
+    python -m drone.patrol.clear --sim --duration 300 --pillars --plot /tmp/clear.png
+drone/patrol/live clear-dry    # decisions only;  drone/patrol/live clear   to fly
+```
+In the 20 m sim hall (300 s) it never touched a wall or pillar (34-35 % coverage, DVD 40 %), but
+each turn ends at the first clear heading, ~90° off the wall, so it loops the room ~1 m from the
+walls (perimeter only, the pillars in the middle are never met).
+
+## Lawnmower sweep (`drone/patrol/sweep.py`): parallel lanes over a big hall
+The predictable way to search a sports hall from the video: straight lanes along the hall, one
+lane spacing apart (right, right, then left, left at the walls). Start anywhere, facing along
+the hall. Same perception, SDK plumbing, holds and panel as dvd.py.
+- **Align**: 3 m straight ahead without yaw; the odometry displacement is the lane axis (the
+  odometry frame's axes are not the drone's), and the SDK heading learns it meanwhile.
+- **Lane**: holds the heading (SDK heading, video yaw when `flow`) and the lane's line (odometry,
+  roll <= 0.12), climbs to and holds `--alt` (2 m). It ends where the floor boundary sees
+  something closer than `--stop-at` (1.0), but at least 0.15 m before the floor leaves the
+  image (1.51 m at 2 m and -30°, so 1.66 m: nothing nearer can be measured), or at `--length`. A wall (a >= 2 m wide floor-contact line, or where an end wall
+  was seen before) ends the lane; anything else (person, pillar) is waited for `--wait` (3 s),
+  then the lane ends there, the spot is reported, and the next lane goes on the same way past
+  it. Obstacles count within `--corridor` (0.8 m) of the path.
+- **Turn**: hover 1 s, 90° toward the sweep side (relative, measured heading), probe that way: a
+  wall closer than spacing + 0.5 m ends the side (or one last lane 1.5 m off it when half a
+  lane fits); else cross one spacing (odometry), 90° again, next lane back.
+- **Other side**: back across to the start lane, flown again in full (the first time it only
+  covered what was ahead of the start), then lanes on the other side; `--width` stops early.
+- **Coverage** (`coverage.py`): 0.5 m floor cells the camera saw (footprint from height, tilt,
+  74° HFOV, heading, position; up to 4 m ahead, cut at the obstacle in front). The panel shows
+  m² seen, % of the hall as far as its walls are known, and a strip across the hall (`@` =
+  seen). At the end the 3 largest unseen patches (>= 2 m²) get a straight revisit leg
+  (`--no-revisit`), the rest is reported.
+- **Lane spacing**: the footprint's width at the bottom of the image x (1 - `--overlap` 0.2):
+  3.48 m at 2 m and -30° -> **2.78 m** (printed at start; `--lane` overrides).
+- **Safety**: the SDK's rules; STOP / LAND ends it for good; it hovers without fresh depth, tilt
+  or altitude; it slows to `--sticks-speed` (0.7x) after 10 s of heading on the stick model.
+
+```bash
+uv run --offline --no-project --with numpy --with pillow python -m drone.patrol.sweep \
+    --sim --sim-hall 30 20 --pillars --plot /tmp/sweep.png    # sim hall (+ --sim-frame-offset 5
+                                                             #   --sim-yaw-error 0.1: heading errors)
+# real drone: drone/fly 60 sd --fence 20 (hall), MANUAL + takeoff from the floor, facing along it
+drone/patrol/live sweep-dry                      # decisions only, sends nothing
+drone/patrol/live sweep --length 5 --width 5     # first test: 2 lanes of 5 m
+drone/patrol/live sweep                          # the hall; --width / --length bound the area
+```
+As the mission's patrol: over HTTP start the mission with `"strategy": "external",
+"patrol_tilt_deg": -30`, then `drone/patrol/live sweep --pitch 30` once it is patrolling (the
+mission owns the tilt). A detection hands the drone to the mission; if it loses the child and
+patrols again, the sweep resumes where it was (back to its lane line first). In Python:
+`MissionConfig(patrol=MissionSweep([...flags]), patrol_tilt_deg=-30)`.
+
+Simulator, 30 x 20 m hall, start in the middle facing along it (`--sim-hall 30 20`):
+
+| run | time | flown | coverage (2 / 5 / 8 / 11 min) | overlap | wall / pillar hits | lanes off-line rms (max) | lane direction error |
+|---|---|---|---|---|---|---|---|
+| plain | 661 s | 228 m | 40 / 57 / 82 / 100 % | 89 % | 0 / - | 0.03 m (0.19) | <= 2.6° |
+| 5° frame offset + 10 % yaw-rate error | 667 s | 226 m | 39 / 58 / 83 / 100 % | 87 % | 0 / - | 0.05 m (0.22) | <= 1.8° |
+| 5 pillars (people) | 690 s | 207 m | 35 / 54 / 92 / 98 % | 67 % | 0 / 2 (*) | 0.03 m (0.17) | <= 3.4° |
+
+(*) Both were passes ~0.5 m from a pillar at the edge of the obstacle corridor; fixed since by
+stopping as soon as a contact is 0.15 m from the image's near edge (offline: any pillar
+within 0.7 m of the path now stops the drone); the rerun was clean until stopped at lane 3.
+
+Overlap = cells seen by 2+ lanes: the 4 m-deep footprint (6.7 m wide at 4 m) is much wider than
+its near edge, which sets the spacing. To finish faster, `--lane 4` (6 lanes instead of 8) or
+`--alt 2.5` (spacing 3.5 m) still covers everything within 4 m ahead. A full 30 x 20 m sweep takes ~11 min at `--speed 0.6` (0.72 m/s in the sim):
+more than half a battery, so for the demo bound it (`--width`, `--length`) or fly faster.
+
 ## Operating systems
 - **macOS**: as above. `enter_manual()` joins the drone's Wi-Fi with `networksetup`.
 - **Linux**: Bluetooth through BlueZ + bleak (`uv run --with bleak`; your user may need the
@@ -332,6 +410,7 @@ folder, e.g. `~/drone/`):
 cd ~/drone && python3 ros_node.py _url:=http://<mac ip>:8077              # rosrun works too
 # params: _send_goal:=true _standoff:=0.8 _map_frame:=map _robot_frame:=base_footprint
 #         _goal_topic:=/move_base_simple/goal _auto_launch_pose:=true
+#         _map_pose_rate:=2 _send_map:=true _map_topic:=/map           (the page's map view)
 ```
 
 **Topics** (all in the node's docstring)
@@ -348,6 +427,8 @@ cd ~/drone && python3 ros_node.py _url:=http://<mac ip>:8077              # rosr
 | `/drone/mission/start` (in) | `std_msgs/String` | JSON body of `POST /mission/start` |
 | `/drone/mission/abort`, `/drone/stop` (in) | `std_msgs/Empty` | back home and land / STOP (hover) |
 | `/drone/launch_pose` (in) | `geometry_msgs/PoseStamped` | the robot's map pose at takeoff, only if tf `map → base_footprint` is not available |
+| `/map` (in, `~map_topic`) | `nav_msgs/OccupancyGrid`, latched | sent once to the Mac for the page's map view (`POST /map/grid`), again if the Mac restarted |
+| (tf) | | the robot's pose `map → base_footprint` is posted to the Mac at `~map_pose_rate` Hz (2) for the map view (`POST /map/robot_pose`) |
 
 **Frames.** The drone's odometry frame starts at the takeoff point and is not aligned with
 anything (no compass on the X1). Two things align it: (a) the robot's pose in `map` at launch:
@@ -404,6 +485,35 @@ camera facing the robot's forward (error ~atan(odometry noise / leg) ≈ 4°, i.
 The orbit's heading comes from the estimator (yaw stick × the calibrated 24.2 °/s, or the video
 yaw), so the camera may drift off the child over two turns. Odometry drift adds to the child's
 position error. The patrol restarts from the nearest waypoint after a lost approach.
+
+## Map view
+Press **M** (or MAP in the top bar) in the web page: the video shrinks to a corner and a map
+takes its place, with the sticks and STOP still below. Closed by default; it polls only while open.
+It shows, in the robot's `map` once the mission has aligned the drone (launch pose + aligning
+leg; before that in the drone's takeoff frame, labelled at the top of the panel):
+the drone (heading arrow, ±1 sd circle, altitude), its path, the patrol waypoints (or the
+mission's planned ones), the geofence and the takeoff point; the robot live (from `ros_node.py`,
+2 Hz) and its launch pose; the child (red) and the robot's goal once reported; and two
+backgrounds: the robot's occupancy grid and a top-down render of a Gaussian splat of the hall.
+Drag to pan, wheel or +/− to zoom, FIT to follow everything again, click for the `map`
+coordinates of a point (to type waypoints). Each layer has a toggle.
+
+```bash
+# the robot's map from a file (map_server .yaml + .pgm), and/or from ros_node.py (/map, latched)
+drone/fly 60 sd --bind 0.0.0.0 --map-yaml ~/maps/hall.yaml
+# a Gaussian splat of the hall (3DGS .ply: x y z, f_dc_0..2, opacity); needs numpy (drone/fly has it)
+drone/fly 60 sd --splat ~/scans/hall.ply --splat-up=-y        # COLMAP scenes are often -y up
+uv run --with numpy python -m drone.sdk sim --http-port 8090 --splat hall.ply --map-yaml hall.yaml
+```
+The splat is rendered once at start: Gaussians above `--splat-z-max` (default: halfway between
+the floor and the ceiling, 2nd/98th height percentiles) are dropped so the ceiling does not hide
+the floor; each pixel is the opacity-weighted colour of the Gaussians above it. To place it on
+the map: open ALIGN SPLAT in the panel, drag the splat or type scale (map metres per splat unit),
+rotation (degrees, counter-clockwise) and x, y (where the splat's origin lands), then SAVE: it
+goes to `<splat>.registration.json` and is loaded at the next start (`--splat-scale`,
+`--splat-rotation`, `--splat-offset X Y` override it). Without numpy or with an unreadable file
+the layer is off and the panel says why. Robot pose from anything else than ROS:
+`curl -XPOST <mac>:8077/map/robot_pose -d '{"x": 2, "y": 3, "yaw": 0.5}'` (API.md "Map view").
 
 ## Known limits
 - The SDK has only flown in the simulator: the real-drone path reuses hoverctl's tested link,

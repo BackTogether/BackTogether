@@ -135,7 +135,9 @@ DEFAULT_ORBIT_TILT_DEG = -30.0
 PatrolStrategy = Callable[[Navigator], object]
 """A patrol: flies until it ends (returns) or Drone.stop() interrupts it (raises Interrupted).
 The mission stops it with Drone.stop() when a detection comes. E.g. the SDK's Patrol(...).run
-(the default), or an in-process DVD patrol (drone/patrol/dvd.py)."""
+(the default), an in-process DVD patrol (drone/patrol/dvd.py), or the lawnmower sweep:
+drone.patrol.sweep.MissionSweep([...flags]) (it resumes where it was after an approach). Over
+HTTP, strategy "external" + `drone/patrol/live sweep` does the same from another process."""
 
 
 @dataclass(frozen=True)
@@ -166,7 +168,7 @@ class MissionConfig:
     lost_timeout_s: float = 10.0
 
     def as_dict(self) -> dict[str, Any]:
-        data = {key: value for key, value in asdict(self).items() if key != "patrol"}
+        data = asdict(replace(self, patrol=None))  # asdict deep-copies: a patrol may hold threads
         data["patrol"] = getattr(self.patrol, "__name__", "custom") if self.patrol else None
         return data
 

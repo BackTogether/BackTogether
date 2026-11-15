@@ -39,12 +39,14 @@ from collections.abc import Callable
 from dataclasses import dataclass, field
 from enum import Enum
 from pathlib import Path
+from typing import Protocol
 
 import numpy as np
 
 from drone.patrol import bounce, console
 from drone.patrol.camera_height import CameraHeight, HeightCalibration
 from drone.patrol.floor_boundary import (
+    CORRIDOR_HALF_WIDTH_M,
     GEOMETRY_HFOV_DEG,
     Status,
     Wall,
@@ -127,11 +129,18 @@ class Perception:
     """Depth maps in, Samples out, in a thread. The depth comes from the model on the newest
     camera frame, or (--sim-depth) is rendered from the simulator's true pose."""
 
-    def __init__(self, drone: PatrolDrone, args: argparse.Namespace) -> None:
+    def __init__(
+        self,
+        drone: PatrolDrone,
+        args: argparse.Namespace,
+        corridor_half_m: float = CORRIDOR_HALF_WIDTH_M,
+    ) -> None:
+        """`corridor_half_m`: obstacles this far either side of the path count as in front."""
         self.readings = Readings()
         self.height = CameraHeight(args.takeoff_height)
         self.calibration = HeightCalibration()
         self._drone, self._args = drone, args
+        self._corridor_half_m = corridor_half_m
         self._depth = (
             _sim_depth_source(drone, args) if args.sim_depth else _model_source(drone, args)
         )
@@ -153,7 +162,9 @@ class Perception:
                 self.readings.problem = why
                 continue
             scale = 1.0 if self._args.no_calibrate else self.calibration.scale
-            wall = measure_wall(depth, height * scale, pitch, self._args.hfov)
+            wall = measure_wall(
+                depth, height * scale, pitch, self._args.hfov, self._corridor_half_m
+            )
             self.readings.add(Sample(wall, time.monotonic(), scale))
 
     def _pitch(self, state: DroneState) -> float | None:
@@ -290,26 +301,17 @@ class DvdPatrol:
 
     def _forward(self, state: DroneState, now: float) -> dict[str, float]:
         window = self.perception.readings.since(now - WINDOW_S)
-        values = [front_value(s.wall) for s in window]
-        known = [v for v in values if v is not None]
-        front = min(known) if known else None
+        front, unsure = nearest_front(window)
         if front is not None and front < self.args.stop_at:
             latest = self.perception.readings.latest.wall.summary()
             self._enter(Phase.HOVER, HOVER_S, f"(front {front:.2f} m: {latest})")
             return {}
-        self._calibrate(state, window)
-        unsure = not known or (len(values) - len(known)) > UNKNOWN_SLOW_FRACTION * len(values)
+        calibrate(self.perception, state, window)
         slow = unsure or front < self.args.slow_at
         return {"pitch": self.args.slow_speed if slow else self.args.speed}
 
-    def _calibrate(self, state: DroneState, window: list[Sample]) -> None:
-        """Straight flight at a wall: distance vs odometry travel fixes the height scale."""
-        latest = window[-1] if window else None
-        if latest is None or latest.wall.status is not Status.WALL or state.pose_xy is None:
-            return
-        if latest.wall.front_m > CALIBRATION_MAX_M:
-            return  # far away a small tilt error bends the geometry: fit where stopping happens
-        self.perception.calibration.add(state.pose_xy, latest.wall.front_m / latest.scale)
+    def panel_line(self, latest: Sample) -> str:
+        return f"{self.phase.value:7s} {latest.wall.summary()}"
 
     def _start_turn(self, turn: TurnChoice, state: DroneState) -> None:
         self.turn = turn
@@ -319,14 +321,14 @@ class DvdPatrol:
         print(f"camera height scale x{calibration.scale:.2f} ({calibration.legs} legs)", flush=True)
         self.on_turn(turn)
         seconds = abs(turn.degrees) / self.yaw_rate
-        heading = _heading(state)
+        heading = current_heading(state)
         self.target_yaw = None if heading is None else wrap_deg(heading + turn.degrees)
         self.timed_end = time.monotonic() + seconds
         timeout = seconds * (1 if heading is None else TURN_TIMEOUT_FACTOR)
         self._enter(Phase.TURN, timeout, f"{turn.degrees:+.0f} deg ({turn.how}: {turn.note})")
 
     def _turning(self, state: DroneState, now: float) -> dict[str, float]:
-        heading = _heading(state)
+        heading = current_heading(state)
         if self.target_yaw is None or heading is None:
             done = now >= self.timed_end
         else:
@@ -354,7 +356,26 @@ class DvdPatrol:
         return {}
 
 
-def _heading(state: DroneState) -> float | None:
+def nearest_front(window: list[Sample]) -> tuple[float | None, bool]:
+    """The nearest readable front distance of `window` (one bad frame is noise, a near one is
+    not), and whether too much of the window was unreadable to fly at full speed."""
+    values = [front_value(s.wall) for s in window]
+    known = [v for v in values if v is not None]
+    unsure = not known or (len(values) - len(known)) > UNKNOWN_SLOW_FRACTION * len(values)
+    return (min(known) if known else None), unsure
+
+
+def calibrate(perception: Perception, state: DroneState, window: list[Sample]) -> None:
+    """Straight flight at a wall: distance vs odometry travel fixes the height scale."""
+    latest = window[-1] if window else None
+    if latest is None or latest.wall.status is not Status.WALL or state.pose_xy is None:
+        return
+    if latest.wall.front_m > CALIBRATION_MAX_M:
+        return  # far away a small tilt error bends the geometry: fit where stopping happens
+    perception.calibration.add(state.pose_xy, latest.wall.front_m / latest.scale)
+
+
+def current_heading(state: DroneState) -> float | None:
     """Measured yaw if the telemetry has it, else the estimator's heading."""
     return state.yaw_deg if state.yaw_deg is not None else state.heading_deg
 
@@ -403,24 +424,39 @@ def hold_reason(state: DroneState, perception: Perception, args: argparse.Namesp
     return None
 
 
+def setup_camera(args: argparse.Namespace, drone: PatrolDrone) -> None:
+    """Tilt the camera to --tilt (the real drone's geometry uses the SDK's tilt estimate)."""
+    if args.sim_depth or args.pitch is not None:
+        return
+    print(f"camera tilt -> {args.tilt:.0f} deg (anchors the estimate first if unknown)")
+    print(f"camera tilt is {drone.set_tilt(args.tilt)} deg (estimated)", flush=True)
+
+
 def run(args: argparse.Namespace, drone: PatrolDrone, log: SimLog | None) -> str:
-    if not args.sim_depth and args.pitch is None:
-        print(f"camera tilt -> {args.tilt:.0f} deg (anchors the estimate first if unknown)")
-        print(f"camera tilt is {drone.set_tilt(args.tilt)} deg (estimated)", flush=True)
+    setup_camera(args, drone)
     yaw_rate = drone.yaw_rate_dps(args.yaw_input)
     print(f"turn rate {yaw_rate:.1f} deg/s at yaw input {args.yaw_input} (SDK calibration)")
     perception = Perception(drone, args)
     rng = random.Random(args.seed)
     patrol = DvdPatrol(args, perception, yaw_rate, rng, log.turned if log else lambda _: None)
-    outcome = drone.run(lambda: _loop(args, drone, perception, patrol))
+    outcome = drone.run(lambda: loop(args, drone, perception, patrol))
     counts = ", ".join(f"{count} {how}" for how, count in patrol.counts.items())
     scale = perception.calibration
     return f"{outcome}; turns: {counts}; height scale x{scale.scale:.2f} ({scale.legs} legs)"
 
 
-def _loop(
-    args: argparse.Namespace, drone: PatrolDrone, perception: Perception, patrol: DvdPatrol
+class Patrol(Protocol):
+    def step(self, state: DroneState) -> dict[str, float]:
+        """The stick axes for this tick."""
+
+    def panel_line(self, latest: Sample) -> str:
+        """The once-a-second status line."""
+
+
+def loop(
+    args: argparse.Namespace, drone: PatrolDrone, perception: Perception, patrol: Patrol
 ) -> str:
+    """Sticks every TICK_S from `patrol`, or neutral while a hold_reason applies."""
     started = time.monotonic()
     last_hold, last_print = "", 0.0
     while not args.duration or time.monotonic() - started < args.duration:
@@ -448,7 +484,7 @@ def _loop(
             last_print = latest.at
             height = perception.height.metres
             camera = "?" if height is None else f"{height * latest.scale:.2f}"
-            print(f"{patrol.phase.value:7s} {latest.wall.summary()} h={camera} m", flush=True)
+            print(f"{patrol.panel_line(latest)} h={camera} m", flush=True)
         time.sleep(max(0.0, TICK_S - (time.monotonic() - tick)))
     return f"{args.duration:.0f} s done"
 
@@ -483,8 +519,8 @@ def connect(args: argparse.Namespace) -> tuple[PatrolDrone, Callable[[], None]]:
     return LocalDrone(sim, limits), close
 
 
-def report(args: argparse.Namespace, log: SimLog) -> None:
-    from drone.patrol.path_plot import coverage, draw, path_length
+def report(args: argparse.Namespace, log: SimLog, name: str, legend: str | None) -> None:
+    from drone.patrol.path_plot import DVD_LEGEND, coverage, draw, path_length
 
     covered = coverage(args.room, log.path)
     summary = (
@@ -496,13 +532,15 @@ def report(args: argparse.Namespace, log: SimLog) -> None:
     if args.log:
         args.log.write_text(json.dumps({"path": log.path, "turns": log.turns, "summary": summary}))
     if args.plot:
-        title = f"dvd patrol, {2 * args.sim_room:.0f} m room: {summary}"
-        draw(args.room, log.path, log.turns, args.plot, title)
+        title = f"{name} patrol, {2 * args.sim_room:.0f} m room: {summary}"
+        draw(args.room, log.path, log.turns, args.plot, title, legend or DVD_LEGEND)
         print(f"plot: {args.plot}", flush=True)
 
 
-def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
+def new_parser(description: str) -> tuple[argparse.ArgumentParser, argparse._ArgumentGroup]:
+    """The parser every floor-boundary patrol starts from, and its "flight" group for the
+    patrol's own options; finish with parse_patrol_args()."""
+    parser = argparse.ArgumentParser(description=description)
     where = parser.add_mutually_exclusive_group()
     where.add_argument("--sdk", default=bounce.DEFAULT_URL, help="SDK server (%(default)s)")
     where.add_argument("--sim", action="store_true", help="in-process simulator (+ --sim-depth)")
@@ -513,17 +551,15 @@ def parse_args() -> argparse.Namespace:
     flight.add_argument("--speed", type=float, default=0.6, help="forward input 0..1 of the cap")
     flight.add_argument("--slow-speed", type=float, default=0.3, help="near walls / unsure")
     flight.add_argument("--slow-at", type=float, default=3.0, help="slow down below this (m)")
-    flight.add_argument("--stop-at", type=float, default=1.5, help="stop and turn below (m)")
-    flight.add_argument("--clear-at", type=float, default=2.5, help="go on above this (m)")
-    flight.add_argument("--yaw-input", type=float, default=1.0, help="yaw input 0..1 in turns")
-    flight.add_argument("--min-turn", type=float, default=60.0, help="smallest turn, deg")
-    flight.add_argument(
-        "--min-exit", type=float, default=40.0, help="leave at least this far off the wall normal"
-    )
-    flight.add_argument("--jitter", type=float, default=5.0, help="random +- deg on each turn")
-    flight.add_argument("--turn-min", type=float, default=100.0, help="fallback random turn")
-    flight.add_argument("--turn-max", type=float, default=170.0, help="fallback random turn")
     flight.add_argument("--min-alt", type=float, default=0.5, help="m above takeoff: hover below")
+    return parser, flight
+
+
+def parse_patrol_args(
+    parser: argparse.ArgumentParser, argv: list[str] | None = None
+) -> argparse.Namespace:
+    """Add the camera, limits and simulator options shared by the patrols, and parse `argv`
+    (default: the command line)."""
     camera = parser.add_argument_group("camera and perception")
     camera.add_argument(
         "--takeoff-height",
@@ -550,14 +586,35 @@ def parse_args() -> argparse.Namespace:
     sim.add_argument("--log", type=Path, help="write the sim path and turns as JSON")
     sim.add_argument("--plot", type=Path, help="draw the sim path as a PNG")
     parser.add_argument("--seed", type=int, help="repeatable runs")
-    args = parser.parse_args()
+    args = parser.parse_args(argv)
     args.sim_depth = args.sim_depth or args.sim
     return args
 
 
-def main() -> None:
-    args = parse_args()
-    console.install("dvd_dry" if args.dry_run else "dvd")
+def parse_args() -> argparse.Namespace:
+    parser, flight = new_parser(__doc__.splitlines()[0])
+    flight.add_argument("--stop-at", type=float, default=1.5, help="stop and turn below (m)")
+    flight.add_argument("--clear-at", type=float, default=2.5, help="go on above this (m)")
+    flight.add_argument("--yaw-input", type=float, default=1.0, help="yaw input 0..1 in turns")
+    flight.add_argument("--min-turn", type=float, default=60.0, help="smallest turn, deg")
+    flight.add_argument(
+        "--min-exit", type=float, default=40.0, help="leave at least this far off the wall normal"
+    )
+    flight.add_argument("--jitter", type=float, default=5.0, help="random +- deg on each turn")
+    flight.add_argument("--turn-min", type=float, default=100.0, help="fallback random turn")
+    flight.add_argument("--turn-max", type=float, default=170.0, help="fallback random turn")
+    return parse_patrol_args(parser)
+
+
+RunPatrol = Callable[[argparse.Namespace, PatrolDrone, SimLog | None], str]
+
+
+def fly(
+    args: argparse.Namespace, name: str, run_patrol: RunPatrol, legend: str | None = None
+) -> None:
+    """Connect, run the patrol under Ctrl+C / STOP / safety landings, report a sim run
+    (`legend`: the plot's, for the patrol's TurnChoice.how values)."""
+    console.install(f"{name}_dry" if args.dry_run else name)
     log = None
     if args.sim_depth:
         from drone.patrol.sim_room import Room, demo_pillars
@@ -569,7 +626,7 @@ def main() -> None:
     if log:
         log.follow(drone, args.room)
     try:
-        print(f"patrol ended: {run(args, drone, log)}", flush=True)
+        print(f"patrol ended: {run_patrol(args, drone, log)}", flush=True)
     except (KeyboardInterrupt, Stopped, Interrupted) as reason:
         if not args.dry_run:
             with contextlib.suppress(OSError):
@@ -579,8 +636,12 @@ def main() -> None:
         print(f"safety landing: {reason}", flush=True)
     finally:
         if log:
-            report(args, log)
+            report(args, log, name, legend)
         close()
+
+
+def main() -> None:
+    fly(parse_args(), "dvd", run)
 
 
 if __name__ == "__main__":
