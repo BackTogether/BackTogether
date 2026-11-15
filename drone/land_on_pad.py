@@ -61,6 +61,7 @@ from drone.sdk import camera
 from drone.sdk.client import DroneApiError, DroneClient
 from drone.sdk.estimate import wrap_deg
 from drone.sdk.mission_geometry import body_to_frame, frame_to_body, ground_offset
+from drone.sim_vision import SimVision
 
 DEFAULT_URL = "http://127.0.0.1:8077"
 LANDED = "landed"
@@ -719,6 +720,32 @@ def _watch_line(seen: Seen, frame: Frame, settings: LandSettings) -> str:
     return f"{pixels}: {fwd:.2f} m ahead, {-right:.2f} m left, camera {heights}, {camera_text}"
 
 
+def add_sim_arguments(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument(
+        "--sim", action="store_true", help="simulator: fake pad and robot detectors (sim_vision.py)"
+    )
+    parser.add_argument(
+        "--sim-robot",
+        type=float,
+        nargs=2,
+        default=(0.0, 0.0),
+        metavar=("X", "Y"),
+        help="--sim: where the simulated robot stands, takeoff frame m (default the takeoff point)",
+    )
+
+
+def detectors(client: DroneClient, args: argparse.Namespace) -> tuple[Detect, DetectRobot | None]:
+    """The pad and robot detectors: the trained models, or with --sim the simulator's fakes."""
+    if args.sim:
+        vision = SimVision(client, tuple(args.sim_robot), args.pad_height, args.takeoff_height)
+        return vision.pad, vision.robot
+    try:
+        detect = PadDetector().detect
+    except FileNotFoundError as error:
+        raise SystemExit(str(error)) from error
+    return detect, load_robot_detector()
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description="land the hovering drone on the robot's pad")
     parser.add_argument("--url", default=DEFAULT_URL, help="drone/fly (or the simulator)")
@@ -748,6 +775,7 @@ def main() -> None:
         help="where the robot should be, takeoff frame metres: fly near it first",
     )
     parser.add_argument("--watch", action="store_true", help="no flight: detect on the video")
+    add_sim_arguments(parser)
     args = parser.parse_args()
     low, high = -TILT_DEG[1], -TILT_DEG[0]  # the detector's training range
     if not low <= args.tilt <= high:
@@ -760,11 +788,7 @@ def main() -> None:
         telemetry = client.status()["telemetry"]
     except DroneApiError as error:
         raise SystemExit(f"no drone at {args.url} ({error}): start drone/fly first") from error
-    try:
-        detect = PadDetector().detect
-    except FileNotFoundError as error:
-        raise SystemExit(str(error)) from error
-    detect_robot = load_robot_detector()
+    detect, detect_robot = detectors(client, args)
     robot_xy = tuple(args.robot) if args.robot else None
     settings = LandSettings(
         args.pad_height, args.takeoff_height, args.tilt, args.alt, args.alt_source, robot_xy

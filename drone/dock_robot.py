@@ -4,6 +4,7 @@
     drone/find jorge --sweep                     # terminal 2: find the child, hover over them
     drone/dock --care http://<robot>:8000        # terminal 3: waits, then lands on the robot
     drone/dock --now                             # land on the robot right away
+    drone/dock --now --sim --sim-robot 3 1       # simulator: fake robot standing at (3, 1)
 
 It waits for the first of:
 - the parent hung up: the robot's care server (bobac/robot/care_server.py, GET /status) went
@@ -29,13 +30,13 @@ import urllib.error
 import urllib.request
 from typing import Any
 
-from drone.identify.pad import PadDetector
 from drone.land_on_pad import (
     DEFAULT_URL,
     PAD_HEIGHT_M,
     LandSettings,
+    add_sim_arguments,
+    detectors,
     land_on_pad,
-    load_robot_detector,
     stop,
 )
 from drone.sdk.client import DroneApiError, DroneClient, standoff_goal
@@ -128,14 +129,11 @@ def main() -> None:
     )
     parser.add_argument("--pad-height", type=float, default=PAD_HEIGHT_M, help="m above floor")
     parser.add_argument("--takeoff-height", type=float, default=0.0, help="m above the floor")
+    add_sim_arguments(parser)
     args = parser.parse_args()
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(message)s", datefmt="%H:%M:%S")
     client = DroneClient(args.url)
-    try:
-        detect = PadDetector().detect
-    except FileNotFoundError as error:
-        raise SystemExit(str(error)) from error
-    detect_robot = load_robot_detector()
+    detect, detect_robot = detectors(client, args)
     try:
         reason = "now" if args.now else wait_for_trigger(client, args.care, args.battery)
     except (RuntimeError, DroneApiError) as error:
