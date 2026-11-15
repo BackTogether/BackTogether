@@ -1,9 +1,9 @@
 # web/ — "Find My Child" site
 
 The public page parents use during an event. It asks for two things only — the child's **name**
-and a **photo** — and POSTs a search request that starts the drone. While the request goes out, a
-3D view shows the Hover Air X1 lifting off from just above the Bobac3 base and flying a search
-grid. It is built for a phone held in one hand: one column, the 3D stage sticky at the top.
+and a **photo** — and POSTs a search request that starts the drone. Once it is sent, the page
+only says that the drone is on its way and that a notification with the video call follows. It is
+built for a phone held in one hand: one simple column.
 
 Deployed to GitHub Pages by [.github/workflows/pages.yml](../.github/workflows/pages.yml) on every
 push to `main` that touches `web/`.
@@ -11,12 +11,10 @@ push to `main` that touches `web/`.
 ## Files
 | File | What it does |
 |---|---|
-| `index.html` | the whole page: hero, request form (name + photo), search panel, "how it works" |
-| `styles.css` | dark control-room theme, sticky 3D column, mobile layout |
+| `index.html` | the whole page: hero, request form (name + photo), confirmation, "how it works" |
+| `styles.css` | dark control-room theme, mobile layout |
 | `config.js` | **the only file you edit to point the site at the robot** (endpoint, token, event name) |
-| `app.js` | form, photo downscaling, the POST, and the search view driven by the 3D stage |
-| `scene.js` | three.js stage: ground, crowd, pad, the Bobac3 with its screen, the X1, and the choreography |
-| `vendor/three.module.min.js` | three.js r160, vendored so the demo works without wifi |
+| `app.js` | form, photo downscaling, the POST, and the confirmation |
 | `favicon.svg` | tab icon |
 
 ## Run it locally
@@ -118,31 +116,6 @@ class Handler(BaseHTTPRequestHandler):
 
 HTTPServer(("0.0.0.0", 8080), Handler).serve_forever()
 ```
-
-## The 3D stage
-`scene.js` builds everything from primitives, so there is no model file to load. Phases:
-`idle` → `launch` (request received, spin up, hop and lift off) → `search` (lawnmower
-grid with the scan cone and trail) → `found` (the drone hovers over the child, the Bobac3 turns
-and drives there) → `recall` (the Bobac3 drives home with the drone following, then it settles over the deck) →
-`idle`. `recall` also works straight from `launch` or `search`. `app.js` drives the phases and
-reads `stage.telemetry()` for the altitude / speed / battery / coverage readouts.
-
-- **`found` is automatic in demo mode only**, at `DEMO_FOUND_COVERAGE` (20 %) in `app.js`. With a
-  real endpoint nothing reports a sighting yet: call `stage.setPhase("found")` when it does.
-- Every speed, rate and damping is in the `MOTION` block of `scene.js`; step durations are in
-  the step tables right under it.
-
-- Drag to orbit, scroll to zoom. The scripted framing eases back in a few seconds after you let go.
-- `prefers-reduced-motion` shortens every step and stops the auto-orbit.
-- Without WebGL the canvas is replaced by a short message and the form still works.
-- The Bobac3 follows the real robot: 377 mm across, three omni wheels, and the lidar, depth
-  camera, ultrasonic and head camera positions from `bobac3_description/xacro`. The vendor meshes
-  are not in the repo, so the shapes in between are approximations, and the screen position on
-  the tower is placed by eye (`BOBAC.screenY`, `screenZ`, `screenTilt`), with the head camera
-  clipped to its top edge. No arm: ours has none.
-- It drives and turns at the real navigation caps (0.4 m/s, 0.8 rad/s).
-- The X1 uses its published size (127 × 145 × 30 mm unfolded). While it waits it hovers a few
-  centimetres over the deck, rotors turning; it is drawn 1.7× bigger in the air (`MOTION.drone.airScale`), or it would be a dot at search altitude.
 
 ## Deployment
 - Push to `main` with changes under `web/` → the workflow checks the site, then deploys it.
