@@ -11,7 +11,8 @@ any STOP, /move answers 409 until a client sends it with "resume": true.
 
 The lost-child mission (mission.py, /mission/*) runs as one autopilot action; STOP ends it too.
 Every video frame (/frame.jpg, each /video.mjpg part) carries X-Frame-Time and X-Drone-Pose, so
-a detector can report a bbox for that exact frame (POST /mission/target).
+a detector can report a bbox for that exact frame (POST /mission/target), and everything it
+saw in it for the page's video overlay (POST /vision, vision.py).
 """
 
 import contextlib
@@ -34,7 +35,9 @@ from .drone import Drone
 from .map_image import decode_cells, grid_from_cells
 from .map_view import MapView
 from .mission import (
-    APPROACH_FLY_OVER,
+    ANCHOR_CENTRE,
+    ANCHOR_FEET,
+    ANCHORS,
     APPROACHES,
     FRAME_LAUNCH,
     FRAMES,
@@ -52,6 +55,7 @@ from .sim import FAULTS, SimDetector, SimLink
 from .splat import Registration
 from .telemetry import Pose, Tilt
 from .tilt import GIMBAL_BOTTOM_DEG, GIMBAL_DEADZONE_PCT, GIMBAL_TOP_DEG, gimbal_rate
+from .vision import VisionLog, parse_result
 
 MAX_JSON_BYTES = 64 * 1024  # a long patrol fits
 MAX_MOVE_S = 5.0
@@ -180,6 +184,7 @@ class ApiServer(WebServer):
         self.remote_locked = False  # set by STOP: /move needs "resume" to fly again
         self.stopped_at: float | None = None  # last explicit STOP (page, API, ROS), for the page
         self.mission = Mission(self.navigator)
+        self.vision = VisionLog()
         self.sim_detector = SimDetector(drone, self._sim_detection) if self.sim else None
         if self.sim_detector:
             self.sim_detector.start()
@@ -246,9 +251,28 @@ class ApiServer(WebServer):
         return headers
 
     def _sim_detection(
-        self, frame_time: float, bbox: tuple[float, ...], confidence: float, label: str
+        self,
+        frame_time: float,
+        body: tuple[float, ...],
+        face: tuple[float, ...] | None,
+        confidence: float,
+        label: str,
     ) -> None:
-        self.mission.report_target(Detection(frame_time, bbox, confidence, label))
+        """The fake detector: the body to the mission, body and face to the page's overlay."""
+        self.mission.report_target(Detection(frame_time, body, confidence, label, ANCHOR_FEET))
+        faces = [] if face is None else [{"bbox": list(face), "name": label, "target": True}]
+        target = {"bbox": list(body), "kind": "body", "confidence": confidence, "source": "sim"}
+        self.vision.add(
+            {
+                "frame_time": frame_time,
+                "state": "locked",
+                "name": label,
+                "faces": faces,
+                "persons": [{"bbox": list(body), "score": confidence}],
+                "target": target,
+                "ms": None,
+            }
+        )
 
     def estimate(self) -> dict[str, Any]:
         """Extra /api/state fields for the page's compass and map."""
@@ -309,6 +333,7 @@ class ApiHandler(WebHandler):
             "/frame.jpg": self._frame,
             "/video.mjpg": self._video,
             "/mission": self._mission,
+            "/vision": self._vision,
         }
         if self.server.sim:
             routes["/sim/truth"] = self._sim_truth
@@ -384,6 +409,24 @@ class ApiHandler(WebHandler):
 
     def _mission(self) -> None:
         self._reply(HTTPStatus.OK, self.server.mission.status())
+
+    def _vision(self) -> None:
+        """The detector's results newer than ?since= (frame time), and the mission's step."""
+        since = parse_qs(urlsplit(self.path).query).get("since", ["0"])[0]
+        try:
+            after = float(since)
+        except ValueError:
+            self._reply(HTTPStatus.BAD_REQUEST, {"error": '"since" must be a number'})
+            return
+        mission = self.server.mission.status()
+        self._reply(
+            HTTPStatus.OK,
+            {
+                "results": self.server.vision.since(after),
+                "mission": {"state": mission["state"], "step": mission["step"]},
+                "now": time.time(),
+            },
+        )
 
     def _sim_truth(self) -> None:
         truth = self.server.sim.truth()
@@ -461,6 +504,7 @@ class ApiHandler(WebHandler):
             "/mission/target": self._mission_target,
             "/mission/launch_pose": self._mission_launch_pose,
             "/mission/abort": self._mission_abort,
+            "/vision": self._vision_post,
         }
         if self.server.sim:
             routes.update(
@@ -633,6 +677,7 @@ class ApiHandler(WebHandler):
             bbox=tuple(corners),
             confidence=_number(body, "confidence", 1.0, 0.0, 1.0),
             label=label[:MAX_LABEL_CHARS] if label else None,
+            anchor=_choice(body, "anchor", ANCHOR_CENTRE, ANCHORS),
         )
         accepted, why = self.server.mission.report_target(detection)
         return HTTPStatus.OK, {
@@ -640,6 +685,14 @@ class ApiHandler(WebHandler):
             "state": why if accepted else None,
             "reason": None if accepted else why,
         }
+
+    def _vision_post(self, body: dict[str, Any]) -> Reply:
+        try:
+            result = parse_result(body)
+        except ValueError as error:
+            raise BadRequest(str(error)) from error
+        self.server.vision.add(result)
+        return HTTPStatus.OK, {"ok": True}
 
     def _mission_launch_pose(self, body: dict[str, Any]) -> Reply:
         pose = LaunchPose(
@@ -884,7 +937,7 @@ def _mission_config(body: dict[str, Any]) -> MissionConfig:
         patrol_alt_m=number("patrol_alt_m"),
         patrol_tilt_deg=tilt,
         align_m=number("align_m", 0, 5),
-        approach=_choice(body, "approach", APPROACH_FLY_OVER, APPROACHES),
+        approach=_choice(body, "approach", defaults.approach, APPROACHES),
         approach_speed=number("approach_speed", 0.05, 1),
         approach_tilt_deg=number("approach_tilt_deg", GIMBAL_BOTTOM_DEG, 0),
         orbit_alt_m=number("orbit_alt_m"),  # null or missing: the current altitude

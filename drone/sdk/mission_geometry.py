@@ -7,6 +7,11 @@
 - image: (u, v) = fractions of the image width and height, y down; a pinhole camera with the
   intrinsics of camera.py (read at every call: the focal length is being re-calibrated) and the
   camera tilt (0 = level, -90 = straight down).
+
+A standing person's floor point: vertical lines converge in the image on the nadir (the point
+straight below the camera), so a person's body box runs along the line through the nadir and
+their feet are the end of the box nearest to it (floor_contact). With the camera tilted the
+nadir is below the image and that is the bottom centre; straight down it is the image centre.
 """
 
 import math
@@ -74,6 +79,33 @@ def ground_offset(
     return scale * (ahead - yn * down), scale * xn
 
 
+def nadir_v(tilt_deg: float) -> float | None:
+    """Image row (fraction, y down; can be > 1) of the point straight below the camera, where
+    vertical lines converge. None when the camera does not look down."""
+    tilt = math.radians(tilt_deg)
+    ahead, down = math.cos(tilt), -math.sin(tilt)
+    if down < MIN_RAY_DOWN:
+        return None
+    return 0.5 + ahead / down * camera.CAMERA_FOCAL_PX / camera.CAMERA_HEIGHT_PX
+
+
+def floor_contact(bbox: tuple[float, float, float, float], tilt_deg: float) -> tuple[float, float]:
+    """(u, v) where a standing person in `bbox` (x0, y0, x1, y1, fractions) touches the floor:
+    where the line from the box centre to the nadir leaves the box (the nadir itself when it
+    is inside: the person is right below). Camera level or up: the bottom centre."""
+    x0, y0, x1, y1 = bbox
+    cu, cv = (x0 + x1) / 2, (y0 + y1) / 2
+    nv = nadir_v(tilt_deg)
+    if nv is None:
+        return cu, y1
+    if x0 <= 0.5 <= x1 and y0 <= nv <= y1:
+        return 0.5, nv
+    du, dv = 0.5 - cu, nv - cv
+    scales = [half / abs(d) for half, d in (((x1 - x0) / 2, du), ((y1 - y0) / 2, dv)) if d]
+    scale = min(scales, default=0.0)
+    return cu + scale * du, cv + scale * dv
+
+
 def body_to_frame(fwd: float, right: float, heading_deg: float) -> tuple[float, float]:
     heading = math.radians(heading_deg)
     return (
@@ -95,20 +127,55 @@ def project_box(
 ) -> tuple[float, float, float, float] | None:
     """The image box (u0, v0, u1, v1) of a `size_m` square facing the camera, centred on a
     body-frame point; None outside the image or behind the camera. The inverse of
-    ground_offset (the simulator's fake detector uses it)."""
+    ground_offset (the simulator's fake face uses it)."""
+    point = project_point(fwd, right, down, tilt_deg)
+    if point is None:
+        return None
+    u, v, depth = point
+    if not (0.0 <= u <= 1.0 and 0.0 <= v <= 1.0):
+        return None
+    half_u = size_m / 2 / depth * camera.CAMERA_FOCAL_PX / camera.CAMERA_WIDTH_PX
+    half_v = size_m / 2 / depth * camera.CAMERA_FOCAL_PX / camera.CAMERA_HEIGHT_PX
+    return max(0.0, u - half_u), max(0.0, v - half_v), min(1.0, u + half_u), min(1.0, v + half_v)
+
+
+def project_point(
+    fwd: float, right: float, down: float, tilt_deg: float
+) -> tuple[float, float, float] | None:
+    """(u, v, depth) of a body-frame point in the image (may fall outside 0..1); None behind
+    the camera."""
     tilt = math.radians(tilt_deg)
-    ahead, below = math.cos(tilt), -math.sin(tilt)  # the optical axis: forward, down parts
+    ahead, below = math.cos(tilt), -math.sin(tilt)
     depth = fwd * ahead + down * below
     if depth < MIN_DEPTH_M:
         return None
-    fx = camera.CAMERA_FOCAL_PX / camera.CAMERA_WIDTH_PX  # focal length in image fractions
-    fy = camera.CAMERA_FOCAL_PX / camera.CAMERA_HEIGHT_PX
-    u = 0.5 + right / depth * fx
-    v = 0.5 + (down * ahead - fwd * below) / depth * fy
-    if not (0.0 <= u <= 1.0 and 0.0 <= v <= 1.0):
+    u = 0.5 + right / depth * camera.CAMERA_FOCAL_PX / camera.CAMERA_WIDTH_PX
+    v = (
+        0.5
+        + (down * ahead - fwd * below) / depth * camera.CAMERA_FOCAL_PX / camera.CAMERA_HEIGHT_PX
+    )
+    return u, v, depth
+
+
+def project_person(
+    fwd: float, right: float, floor_m: float, tilt_deg: float, height_m: float, width_m: float
+) -> tuple[float, float, float, float] | None:
+    """The image box of a standing person (a vertical segment `height_m` tall, `width_m` wide)
+    whose feet are at body-frame (fwd, right), `floor_m` below the camera; clipped to the
+    image, None when outside it or behind the camera. What a person detector would give."""
+    corners = []
+    for down in (floor_m, floor_m - height_m):  # feet, head
+        point = project_point(fwd, right, down, tilt_deg)
+        if point is None:
+            return None
+        u, v, depth = point
+        half_u = width_m / 2 / depth * camera.CAMERA_FOCAL_PX / camera.CAMERA_WIDTH_PX
+        corners += [(u - half_u, v), (u + half_u, v)]
+    x0, x1 = min(c[0] for c in corners), max(c[0] for c in corners)
+    y0, y1 = min(c[1] for c in corners), max(c[1] for c in corners)
+    if x1 <= 0.0 or x0 >= 1.0 or y1 <= 0.0 or y0 >= 1.0:
         return None
-    half_u, half_v = size_m / 2 / depth * fx, size_m / 2 / depth * fy
-    return max(0.0, u - half_u), max(0.0, v - half_v), min(1.0, u + half_u), min(1.0, v + half_v)
+    return max(0.0, x0), max(0.0, y0), min(1.0, x1), min(1.0, y1)
 
 
 def wrap_rad(angle: float) -> float:

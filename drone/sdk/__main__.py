@@ -143,7 +143,12 @@ def cmd_serve(args: argparse.Namespace) -> None:
 
 def cmd_sim(args: argparse.Namespace) -> None:
     drone = connect_sim(
-        args.max, DeadReckoner(args.yaw_rate), args.frame_yaw_offset, args.seed, args.room
+        args.max,
+        DeadReckoner(args.yaw_rate),
+        args.frame_yaw_offset,
+        args.seed,
+        args.room,
+        video_dir=str(args.video) if args.video else None,
     )
     _serve(drone, args)
 
@@ -174,6 +179,12 @@ def main() -> None:
         default=DEFAULT_ROOM_HALF_M,
         help="walls at +-this many metres from the start (default %(default)s; e.g. 4 for "
         "drone.patrol.bounce --fake-depth)",
+    )
+    sim.add_argument(
+        "--video",
+        type=Path,
+        help="recorded drone frames (a folder of frame_*.jpg, looped) as the camera, e.g. to run "
+        'drone.identify.feed against the simulator; send /sim/child {"detect": false} too',
     )
     sim.add_argument("--no-browser", action="store_true", help="don't open a browser tab")
     _add_sdk_arguments(sim)

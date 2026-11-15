@@ -1,14 +1,17 @@
 # drone/identify: find the lost child in the drone video
 
 Open-source models from the OpenCV Zoo, offline, CPU only: YuNet finds faces, SFace compares
-them with the reference photos. About 60 ms per 1280×720 frame on a laptop.
+them with the reference photos, YOLOX-S finds whole people (the body tracker). About 60 ms per
+1280×720 frame for all three on a laptop (M-series: faces ~12 ms, YOLOX ~40 ms).
 
 ## Set up (once, with internet)
 ```bash
 mkdir -p drone/identify/people/leo                  # one folder per person (not in git)
 cp photo_of_leo.jpg drone/identify/people/leo/      # clear, front-facing photos
-uv run --with opencv-python-headless python -m drone.identify.models   # 38 MB of models
+uv run --with opencv-contrib-python-headless python -m drone.identify.models   # 75 MB of models
 ```
+That also puts OpenCV (with contrib's CSRT tracker) in uv's cache, so from then on everything
+runs without a network: add `--offline` to `uv run` (without it uv tries the index first).
 Add a few other people too: a face that looks more like someone else is never taken for Leo.
 
 ## During the flight
@@ -24,16 +27,32 @@ uv run --with opencv-python-headless python -m drone.identify leo      # only Le
   (exit code 1) after `--timeout` seconds.
 
 ## Feeding the lost-child mission
-`feed` reads the drone SDK server's frames (`GET /frame.jpg`) and posts the child to the mission
-(`POST /mission/target`, drone/sdk/API.md) with each frame's time. It recognises the child by
-face, then keeps tracking the head with an OpenCV tracker, because the approach ends with the
-camera straight down where no face is visible:
+`feed` reads the drone SDK server's frames (`GET /frame.jpg`) and, for each, posts the child to
+the mission (`POST /mission/target`, drone/sdk/API.md) and everything it saw to the web page's
+video overlay (`POST /vision`), with the frame's time:
 ```bash
-uv run --with opencv-contrib-python-headless python -m drone.identify.feed leo --url http://<mac>:8077
+uv run --offline --with opencv-contrib-python-headless python -m drone.identify.feed leo --url http://127.0.0.1:8077
 ```
-The posted box is the head: start the mission with `target_height_m` = the child's head height
-(about 1.0 standing, 0.6 sitting). Plain `opencv-python-headless` also works (MIL tracker, worse
-than contrib's CSRT).
+It recognises the child by face (2 frames in a row), then tracks the **body**, because the
+approach ends with the camera straight down where no face is visible (body_track.py): the person
+box (YOLOX) around the face, matched every frame by overlap, size and clothes colour, with a
+CSRT tracker for the frames the detector misses; the face re-confirms whenever it is seen, a
+recognised face of someone else in the box drops the lock. The body is posted with anchor
+`"feet"`: the mission puts its floor contact point on the floor, so `target_height_m` does not
+matter. Until a body box is found around the face, the head is posted (anchor `"centre"`,
+`target_height_m`). Confidence 0.9 face seen, 0.8 body found by the detector, 0.4 tracker only
+(drawn on the page, below the mission's `min_confidence`).
+
+On the page (drone/fly or the simulator): persons dashed grey, faces grey with their name, the
+child's face white, the tracked body red; top left the lock state, the face match and the
+mission's step. The video is delayed by the detector's latency (~0.1 s) so the boxes sit on the
+frame they belong to; **B** turns the overlay (and the delay) off.
+
+Test it on recorded frames (annotated copies in `--out`, one log line per frame):
+```bash
+uv run --offline --with opencv-contrib-python-headless python -m drone.identify.feed leo \
+    --frames recordings/frames/<session> --first 40 --count 90 --out /tmp/annotated
+```
 
 ## On recorded flights
 ```bash

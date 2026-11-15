@@ -56,6 +56,13 @@
   /* video and what floats over it */
   .video { position: relative; min-height: 0; background: var(--bg); overflow: hidden; }
   .video img { width: 100%; height: 100%; object-fit: contain; display: block; }
+  /* vision overlay (drone.sdk server + drone/identify/feed.py): boxes drawn on the shown frame */
+  .video canvas.vision { position: absolute; inset: 0; width: 100%; height: 100%; pointer-events: none; }
+  .vision-chip { position: absolute; left: 10px; top: 10px; z-index: 1; max-width: calc(100% - 20px);
+    padding: 4px 8px; background: rgba(7, 8, 11, .72); color: var(--ink); font-size: 11.5px;
+    line-height: 1.45; pointer-events: none; white-space: pre-line; }
+  .vision-chip b { color: #ff6a5f; font-weight: 600; }
+  body.mini .vision-chip, body.map-open .vision-chip { display: none; }
   body.mini .video { position: absolute; z-index: 2; top: var(--gap); left: var(--gap);
     width: var(--pip-w); height: auto; aspect-ratio: 16 / 9; border: 1px solid var(--line); cursor: pointer; }
   .no-video { position: absolute; inset: 0; display: grid; place-content: center; gap: 8px;
@@ -330,6 +337,8 @@
     <section class="stage">
       <div class="video" id="video" title="">
         <img id="stream" alt="">
+        <canvas class="vision" id="vision-canvas"></canvas>
+        <div class="vision-chip mono" id="vision-chip" hidden></div>
         <div class="no-video" id="no-video">
           <div class="big">No video</div>
           <div class="mono" id="no-video-detail">waiting for the server</div>
@@ -1457,7 +1466,7 @@ function reopenStreamIfNeeded(frames) {
   const restarted = serverLost || frames < seenFrames || (seenFrames === 0 && frames > 0);
   seenFrames = frames;
   serverLost = false;
-  if (restarted) stream.src = `/video.mjpg?${Date.now()}`;
+  if (restarted) openStream();
 }
 
 async function poll() {
@@ -1503,8 +1512,230 @@ function renderClock() {
 }
 
 const stream = $("stream");
-stream.onerror = () => setTimeout(() => { stream.src = `/video.mjpg?${Date.now()}`; }, RETRY_VIDEO_MS);
-stream.src = "/video.mjpg";
+stream.onerror = () => setTimeout(openStream, RETRY_VIDEO_MS);
+
+// ---- vision overlay (drone.sdk server only): GET /vision, boxes on the frame they belong to ----
+// While a detector posts results (drone/identify/feed.py, or the simulator's fake one), the page
+// reads /video.mjpg itself to know each frame's X-Frame-Time, shows the video delayed by the
+// detector's latency and draws the result of that same frame: boxes never lag the picture.
+// Otherwise (or with B) the plain <img> stream, no delay. Colours: persons thin grey, faces
+// grey, the target's face white, the tracked body red.
+const VISION_KEY = "b";
+const VISION_POLL_MS = 200;
+const VISION_ACTIVE_MS = 3000;   // no result for this long: back to the plain stream
+const VISION_KEEP_S = 4;         // results and buffered frames kept, in frame time
+const VISION_MATCH_S = 0.25;     // a result is drawn on frames this close to its frame time
+const VISION_MAX_DELAY_S = 1.5;  // the video is never delayed more than this
+const VISION_DELAY_SMOOTH = 0.2; // new latency samples weigh this much
+const VISION_MARGIN_S = 0.03;
+const VISION_COLOURS = { person: "rgba(170,176,186,.55)", face: "#a9aeb8", targetFace: "#ffffff", body: "#ff4b3e" };
+const MJPEG_HEADER_END = new Uint8Array([13, 10, 13, 10]);
+const vision = {
+  enabled: true, available: true, timed: false, results: [], since: 0, lastAt: 0, mission: null,
+  delay: 0, frames: [], newest: 0, shownTime: null, shownUrl: null, reader: null,
+};
+
+function openStream() {
+  if (vision.timed) startTimedStream();
+  else { stopTimedStream(); stream.src = `/video.mjpg?${Date.now()}`; }
+}
+
+function setTimed(timed) {
+  if (timed === vision.timed) return;
+  vision.timed = timed;
+  openStream();
+}
+
+// The MJPEG stream read by hand: each part's X-Frame-Time and JPEG.
+async function startTimedStream() {
+  stopTimedStream();
+  const response = await fetch(`/video.mjpg?${Date.now()}`, { cache: "no-store" }).catch(() => null);
+  if (!response || !response.ok || !response.body) { setTimeout(openStream, RETRY_VIDEO_MS); return; }
+  const reader = response.body.getReader();
+  vision.reader = reader;
+  let buffer = new Uint8Array(0);
+  while (vision.reader === reader) {
+    const { value, done } = await reader.read().catch(() => ({ done: true }));
+    if (done) break;
+    const joined = new Uint8Array(buffer.length + value.length);
+    joined.set(buffer); joined.set(value, buffer.length);
+    buffer = takeParts(joined);
+  }
+  if (vision.reader === reader) { vision.reader = null; setTimeout(openStream, RETRY_VIDEO_MS); }
+}
+
+function stopTimedStream() {
+  const reader = vision.reader;
+  vision.reader = null;
+  if (reader) reader.cancel().catch(() => {});
+  vision.frames = [];
+}
+
+// Complete parts out of the buffer into vision.frames; returns what is left.
+function takeParts(buffer) {
+  for (;;) {
+    const headerEnd = indexOf(buffer, MJPEG_HEADER_END);
+    if (headerEnd < 0) return buffer;
+    const head = new TextDecoder().decode(buffer.subarray(0, headerEnd));
+    const length = Number((/content-length:\s*(\d+)/i.exec(head) || [])[1]);
+    const time = Number((/x-frame-time:\s*([\d.]+)/i.exec(head) || [])[1]);
+    const start = headerEnd + MJPEG_HEADER_END.length;
+    if (!length) return buffer.slice(start);
+    if (buffer.length < start + length) return buffer;
+    const jpeg = new Blob([buffer.slice(start, start + length)], { type: "image/jpeg" });
+    if (time) addFrame(time, jpeg);
+    buffer = buffer.slice(start + length);
+  }
+}
+
+function indexOf(buffer, pattern) {
+  outer: for (let i = 0; i + pattern.length <= buffer.length; i++) {
+    for (let j = 0; j < pattern.length; j++) if (buffer[i + j] !== pattern[j]) continue outer;
+    return i;
+  }
+  return -1;
+}
+
+function addFrame(time, jpeg) {
+  vision.frames.push({ time, jpeg });
+  vision.newest = Math.max(vision.newest, time);
+  while (vision.frames.length && vision.frames[0].time < vision.newest - VISION_KEEP_S) vision.frames.shift();
+}
+
+async function pollVision() {
+  if (!vision.available) return;
+  try {
+    const response = await fetch(`/vision?since=${vision.since}`, { cache: "no-store", signal: AbortSignal.timeout(STALE_MS) });
+    if (response.status === 404) { vision.available = false; return; }  // hoverctl alone: no detector
+    const reply = await response.json();
+    vision.mission = reply.mission;
+    if (reply.results.length) addResults(reply.results);
+  } catch { /* the server's state poll reports a lost server */ }
+  setTimeout(pollVision, VISION_POLL_MS);
+}
+
+function addResults(results) {
+  vision.results.push(...results);
+  vision.since = results[results.length - 1].frame_time;
+  vision.lastAt = performance.now();
+  vision.results = vision.results.filter((r) => r.frame_time > vision.since - VISION_KEEP_S);
+  if (vision.newest) {  // the detector's latency, in frame time: how far to delay the video
+    const behind = Math.min(Math.max(vision.newest - vision.since, 0), VISION_MAX_DELAY_S);
+    vision.delay += VISION_DELAY_SMOOTH * (behind - vision.delay);
+  }
+}
+
+// Every animation frame: the buffered frame to show, and the boxes of that frame.
+function renderVision() {
+  requestAnimationFrame(renderVision);
+  const active = vision.enabled && performance.now() - vision.lastAt < VISION_ACTIVE_MS;
+  setTimed(active);
+  if (vision.timed) showBufferedFrame();
+  drawVision(active ? nearestResult(vision.timed ? vision.shownTime : vision.since) : null);
+}
+
+function showBufferedFrame() {
+  if (!vision.frames.length) return;
+  const wanted = vision.newest - vision.delay - VISION_MARGIN_S;
+  let frame = vision.frames[0];
+  for (const candidate of vision.frames) if (candidate.time <= wanted) frame = candidate;
+  if (frame.time === vision.shownTime) return;
+  const previous = vision.shownUrl;
+  vision.shownUrl = URL.createObjectURL(frame.jpeg);
+  vision.shownTime = frame.time;
+  stream.src = vision.shownUrl;
+  if (previous) setTimeout(() => URL.revokeObjectURL(previous), RETRY_VIDEO_MS);
+}
+
+function nearestResult(time) {
+  if (time == null) return null;
+  let best = null;
+  for (const result of vision.results) {
+    if (!best || Math.abs(result.frame_time - time) < Math.abs(best.frame_time - time)) best = result;
+  }
+  return best && Math.abs(best.frame_time - time) <= VISION_MATCH_S ? best : null;
+}
+
+function drawVision(result) {
+  const canvas = $("vision-canvas");
+  const box = $("video").getBoundingClientRect();
+  const ratio = window.devicePixelRatio || 1;
+  canvas.width = Math.round(box.width * ratio);
+  canvas.height = Math.round(box.height * ratio);
+  const context = canvas.getContext("2d");
+  context.setTransform(ratio, 0, 0, ratio, 0, 0);
+  context.clearRect(0, 0, box.width, box.height);
+  const chip = $("vision-chip");
+  chip.hidden = !result;
+  if (!result || !stream.naturalWidth) return;
+  // The picture's rectangle inside the element (object-fit: contain).
+  const scale = Math.min(box.width / stream.naturalWidth, box.height / stream.naturalHeight);
+  const width = stream.naturalWidth * scale, height = stream.naturalHeight * scale;
+  const left = (box.width - width) / 2, top = (box.height - height) / 2;
+  const rect = (bbox) => [left + bbox[0] * width, top + bbox[1] * height, (bbox[2] - bbox[0]) * width, (bbox[3] - bbox[1]) * height];
+  const label = (text, x, y, colour) => {
+    context.font = "600 11.5px ui-monospace, Menlo, monospace";
+    const w = context.measureText(text).width + 8;
+    context.fillStyle = "rgba(7,8,11,.72)";
+    context.fillRect(x, y - 15, w, 16);
+    context.fillStyle = colour;
+    context.fillText(text, x + 4, y - 3);
+  };
+  context.lineWidth = 1;
+  context.setLineDash([4, 3]);
+  context.strokeStyle = VISION_COLOURS.person;
+  for (const person of result.persons) context.strokeRect(...rect(person.bbox));
+  context.setLineDash([]);
+  for (const face of result.faces) {
+    const colour = face.target ? VISION_COLOURS.targetFace : VISION_COLOURS.face;
+    context.lineWidth = face.target ? 2.5 : 1.5;
+    context.strokeStyle = colour;
+    const [x, y, w, h] = rect(face.bbox);
+    context.strokeRect(x, y, w, h);
+    const similarity = face.similarity == null ? "" : ` ${face.similarity.toFixed(2)}`;
+    label(`${face.name || "?"}${similarity}`, x, y, colour);
+  }
+  const target = result.target;
+  if (target) {
+    const [x, y, w, h] = rect(target.bbox);
+    context.lineWidth = 3;
+    context.strokeStyle = VISION_COLOURS.body;
+    context.strokeRect(x, y, w, h);
+    const confidence = target.confidence == null ? "" : ` ${target.confidence.toFixed(1)}`;
+    const below = y + h + 16 <= top + height ? y + h + 16 : y + h - 4;  // inside when no room below
+    label(`${result.name || "target"} · ${target.kind}${confidence} · ${target.source || ""}`, x, below, VISION_COLOURS.body);
+  }
+  renderVisionChip(chip, result);
+}
+
+// The state line over the video: lock, target, face match, timing, mission step (text nodes:
+// names come from the detector).
+function renderVisionChip(chip, result) {
+  const target = result.target;
+  const face = target && target.similarity != null
+    ? `face ${target.similarity.toFixed(2)}, ${target.face_age_s?.toFixed(1) ?? "?"} s ago` : "no face match yet";
+  const state = document.createElement("b");
+  state.textContent = result.state === "locked" ? "LOCKED" : "SEARCHING";
+  const lines = [
+    ` ${result.name || ""}` +
+      (target ? ` · ${target.kind} ${target.confidence?.toFixed(1) ?? ""} (${target.source || "?"}) · ${face}` : ""),
+    `${result.faces.length} faces · ${result.persons.length} persons` +
+      (result.ms != null ? ` · ${Math.round(result.ms)} ms` : "") +
+      (vision.timed ? ` · video delayed ${vision.delay.toFixed(2)} s to match` : ""),
+  ];
+  const mission = vision.mission;
+  if (mission && mission.state !== "idle") lines.push(`mission ${mission.state}${mission.step ? `: ${mission.step}` : ""}`);
+  chip.replaceChildren(state, document.createTextNode(lines.join("\n")));
+}
+
+window.addEventListener("keydown", (event) => {
+  if (keyName(event) !== VISION_KEY || event.repeat || typing() || event.metaKey || event.ctrlKey || event.altKey) return;
+  vision.enabled = !vision.enabled;
+});
+
+openStream();
+pollVision();
+requestAnimationFrame(renderVision);
 
 // ---- map view (drone.sdk server only): GET /map/state, every layer in one frame ----
 // World = the state's frame: the robot's `map` (or the drone's takeoff frame before the

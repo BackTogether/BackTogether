@@ -16,7 +16,9 @@ recording, a simulator, an HTTP API and a ROS client.
 | `navigate.py` | `Navigator` (goto, turn_to, climb_to, hover, supervise) and `calibrate_yaw` |
 | `patrol.py` | `Patrol` of waypoints with dwell, 360 scan and per-waypoint callbacks |
 | `mission.py` | the lost-child mission: launch, align, patrol, approach, report, orbit, return ([below](#for-the-robot-team-ros1)) |
-| `mission_geometry.py` | its frames (drone, launch, map) and the camera model: bbox → floor point, and back for the sim |
+| `approach_track.py` | the mission's default approach: camera-steered close-in, then camera at -90 and centred over the child, the fix |
+| `mission_geometry.py` | its frames (drone, launch, map) and the camera model: bbox → floor point (a body's feet), and back for the sim |
+| `vision.py` | the detector's boxes per frame, for the web page's video overlay (`/vision`) |
 | `safety.py` | `SafetyLimits`: geofence, altitude, battery, loss timeouts, max speed |
 | `sim.py` | the simulator (`connect_sim`): same interface, nothing leaves the laptop |
 | `server.py`, `__main__.py` | the web page + HTTP API ([API.md](API.md)) |
@@ -417,10 +419,11 @@ cd ~/drone && python3 ros_node.py _url:=http://<mac ip>:8077              # rosr
 | Topic | Type | What |
 |---|---|---|
 | `/drone/image/compressed` | `sensor_msgs/CompressedImage` | JPEG, `header.stamp` = when the picture reached the Mac, on the robot's clock (offset learned from the 10 Hz status), frame `drone_camera` |
-| `/drone/detection` (in) | `std_msgs/String` | JSON `{"stamp": <the image's header.stamp, s>, "bbox": [x0, y0, x1, y1], "confidence": 0.9, "label": "leo"}`, bbox as fractions of the image (y down) |
+| `/drone/detection` (in) | `std_msgs/String` | JSON `{"stamp": <the image's header.stamp, s>, "bbox": [x0, y0, x1, y1], "confidence": 0.9, "label": "leo", "anchor": "feet"}`, bbox as fractions of the image (y down); `anchor` `"feet"` for a whole body, `"centre"` (default) for a head |
 | `/drone/mission` | `std_msgs/String`, latched | JSON of `GET /mission` on every change (`state`, `step`, `child`...) |
 | `/drone/child_pose` | `geometry_msgs/PoseStamped`, latched | the child in `map` (orientation: facing it from the robot); in `drone_takeoff` while the launch pose is unknown |
 | `/move_base_simple/goal` | `geometry_msgs/PoseStamped` | once per child report (`~send_goal`): `~standoff` m short of the child on the line from the robot's current tf pose, facing it |
+| `/drone/fix` | `geometry_msgs/PoseArray`, latched | once per child report, same frame as `/drone/child_pose`: `poses[0]` = the drone when it took the fix, straight over the child with the camera at -90 (`z` = its height above the floor, orientation = its yaw), `poses[1]` = the child (`z` 0); `header.stamp` = the fix's frame time on the robot's clock |
 | `/drone/pose_map` | `geometry_msgs/PoseStamped` | the drone in `map` once aligned |
 | `/drone/odom` | `nav_msgs/Odometry` | the drone in `drone_takeoff` (as before) |
 | tf | | `map → drone_takeoff` (once aligned) and `drone_takeoff → drone_base`: rviz shows the drone on the map |
@@ -450,20 +453,23 @@ the node running; the drone on the robot's top, camera forward):
    ```
 3. Press the drone's button. It climbs to 2 m, sets the camera to -40° (up to ~30 s while it
    anchors the tilt estimate), flies the 1.5 m leg, patrols.
-4. The detector (drone/identify on the Mac over `/video.mjpg`, or a ROS node on
-   `/drone/image/compressed`) reports the child (`POST /mission/target` or `/drone/detection`).
-   The drone stops, flies over the point, points the camera straight down and centres the
-   child. **While the camera looks down, report the person's bbox (head/body), not only a face
-   match**, or the approach times out (10 s without a detection) and the patrol resumes.
-5. `reporting`: `/drone/child_pose` and `/move_base_simple/goal` are published once: the robot
-   drives to the child, stopping 0.8 m short, facing it.
-6. The drone descends to 1.2 m, circles the child twice (r 1.5 m), flies back to the takeoff
-   point and lands there (on the floor: the robot has left).
+4. The detector on the Mac (drone/identify/feed.py, started before the flight:
+   `uv run --offline --with opencv-contrib-python-headless python -m drone.identify.feed <name>`)
+   recognises the child by face, then tracks the body and posts it (`POST /mission/target`,
+   anchor `"feet"`; a ROS detector can use `/drone/detection`). The page draws its boxes on the
+   video. The drone stops the patrol and closes in with the camera following the child, then
+   with the camera straight down slides until the body is centred in the image and takes the
+   fix (4 centred frames).
+5. `reporting`: `/drone/child_pose`, `/drone/fix` (the drone and the child) and
+   `/move_base_simple/goal` are published once: the robot drives to the child, stopping 0.8 m
+   short, facing it.
+6. The drone circles the child twice (r 1.5 m) at its altitude (`orbit_alt_m` to change it),
+   flies back to the takeoff point and lands there (on the floor: the robot has left).
 Any time: `rostopic pub -1 /drone/stop std_msgs/Empty` (hover, mission ends) or
 `/drone/mission/abort` (back home and land); STOP/LAND in the page work too.
 
 **Test without the drone** (the simulator has a fake child, 3.5 m ahead and 1.5 m left of the
-launch point, and a fake detector that reports its bbox when it is in the camera view):
+launch point, and a fake detector that reports its body box when it is in the camera view):
 ```bash
 uv run python -m drone.sdk sim --http-port 8090 --bind 0.0.0.0 --no-browser       # on the Mac
 curl -XPOST <mac>:8090/sim/child -d '{"fwd": 3, "left": -2}'   # move the child (or "detect": false)
@@ -475,12 +481,21 @@ curl -XPOST <mac>:8090/sim/button                                   # the takeof
 rostopic echo /move_base_simple/goal                                # ~1-2 min later
 curl <mac>:8090/sim/truth                                           # child.map: the true position
 ```
-Measured in the sim (seed 1, frame 20° off the heading): child in `map` within 0.09-0.26 m of
-the truth; goal 0.80 m short; whole mission ~3 min with one orbit. The sim's video is a test
-pattern, so a real detector sees nothing there: use the fake one, or read `/sim/truth` →
-`child.bbox` in a test detector.
+Measured in the sim (frame 20° off the heading, approach "track"): overhead and centred within
+15-31 px, child within 0.12-0.24 m of the truth, the drone's fix within 0.02 m of the child;
+goal 0.80 m short; whole mission ~2.5 min with one orbit. The sim's video is a test pattern, so
+a real detector sees nothing there: use the fake one, or replay recorded drone frames as the
+camera and run the real feed on them (it shows the page's overlay; the mission then chases
+where those people would be, so abort it):
+```bash
+uv run python -m drone.sdk sim --http-port 8096 --video recordings/frames/<session>
+curl -XPOST localhost:8096/sim/child -d '{"detect": false}'      # the fake detector off
+uv run --offline --with opencv-contrib-python-headless python -m drone.identify.feed <name> --url http://127.0.0.1:8096
+```
 
-**Limits.** Untested on the real X1. The aligning leg assumes no yaw during takeoff and the
+**Limits.** Untested on the real X1. The overhead centring needs the camera tilt estimate to
+reach -90 (the gimbal held down) and a body box from straight above (YOLOX finds people from
+above on our recordings, less surely than from the side). The aligning leg assumes no yaw during takeoff and the
 camera facing the robot's forward (error ~atan(odometry noise / leg) ≈ 4°, i.e. 0.25 m at 4 m).
 The orbit's heading comes from the estimator (yaw stick × the calibrated 24.2 °/s, or the video
 yaw), so the camera may drift off the child over two turns. Odometry drift adds to the child's

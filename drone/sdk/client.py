@@ -157,12 +157,16 @@ class DroneClient:
         bbox: list[float],
         confidence: float = 1.0,
         label: str | None = None,
+        anchor: str | None = None,
     ) -> dict[str, Any]:
         """Report a detection: bbox [x0, y0, x1, y1] as fractions of the image (y down),
-        frame_time = the frame's X-Frame-Time. The reply says if the mission used it."""
+        frame_time = the frame's X-Frame-Time, anchor "feet" for a whole body ("centre", the
+        default, for a head or face). The reply says if the mission used it."""
         body: dict[str, Any] = {"frame_time": frame_time, "bbox": bbox, "confidence": confidence}
         if label is not None:
             body["label"] = label
+        if anchor is not None:
+            body["anchor"] = anchor
         return self._request("POST", "/mission/target", body)
 
     def mission_launch_pose(self, x: float, y: float, yaw: float) -> dict[str, Any]:

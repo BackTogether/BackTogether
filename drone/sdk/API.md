@@ -27,6 +27,7 @@ estimate (see README.md, "For navigation/positioning work"), not a compass.
 | `GET /frame.jpg` | the latest frame (JPEG); `503` before the first. Headers `X-Frame-Time` and `X-Drone-Pose` (below) |
 | `GET /video.mjpg` | MJPEG stream (`multipart/x-mixed-replace`, each part has `Content-Length`, `X-Frame-Time` and `X-Drone-Pose`) |
 | `GET /mission` | the lost-child mission's state (see [Mission](#mission-lost-child-search)) |
+| `GET /vision?since=<frame time>` | the detector's results for frames after `since` (see [Vision](#vision-the-pages-video-overlay)) |
 | `GET /sim/truth` | simulator only: true `x`, `y`, `alt`, `heading_deg`, `front_m` (wall ahead), `wall_hits`, and `child` (the fake child: `fwd`, `left` in the launch frame, `x`, `y` in the takeoff frame, `map` once the launch pose is known, `in_view`, true `bbox`) |
 
 **Frame metadata** (every frame, for detectors): `X-Frame-Time` = unix time (the Mac's clock,
@@ -90,21 +91,26 @@ Simulator only: `POST /sim/button` (the takeoff button), `/sim/battery {"pct"}`,
 `/sim/cut {"what": "link" | "telemetry" | "video", "seconds"}`, `/sim/push {"dx", "dy"}` (a gust,
 in the takeoff frame), `/sim/child {"fwd"?, "left"?, "detect"?, "miss"?}` (the fake child, metres
 ahead of / left of the launch point, default 3.5 / 1.5; `detect` false hides it from the fake
-detector, `miss` = fraction of frames it misses, 0.2).
+detector, `miss` = fraction of frames it misses, 0.2). The fake detector reports the child's
+body box (a standing child 1.2 m tall, anchor `"feet"`) to the mission and body + face to
+`/vision`. `sim --video <folder of frame_*.jpg>` replays recorded drone frames as the camera
+(looped, 30 fps), to run drone/identify/feed.py against the simulator.
 
 ## Mission (lost-child search)
 `drone/sdk/mission.py`. One autopilot action that flies the whole demo: **launching** (waits
 for the button takeoff; enters MANUAL itself if needed) → **climbing** (to `patrol_alt_m`, camera
 to `patrol_tilt_deg`) → **aligning** (flies `align_m` straight ahead: the odometry displacement
 is the robot's forward axis in the drone frame; the drone must be launched facing the robot's
-forward) → **patrolling** → **approaching** (stops the patrol and closes in at the patrol altitude, never descending, with
-horizontal sticks up to `approach_speed`. `approach` `"fly_over"`: flies over the detection,
-camera to `approach_tilt_deg`, then stop-and-correct visual servo until the bbox centre is at the
-image centre. `"track"` (drone/sdk/approach_track.py): the gimbal follows the child the whole
-way, the drone turns toward it and creeps forward, and it is overhead when the camera reaches
--90; the position is the median of 4 fixes there. No detection for `lost_timeout_s` or over
-`approach_timeout_s` → back to patrolling) →
-**reporting** (the child's position is in `child`, a photo is saved, hovers 3 s) → **orbiting**
+forward) → **patrolling** → **approaching** (stops the patrol and closes in at the patrol
+altitude, never descending, with horizontal sticks up to `approach_speed`. `approach` `"track"`
+(default, drone/sdk/approach_track.py): the gimbal follows the child the whole way, the drone
+turns toward it and creeps forward; within 0.25 m the camera goes to -90 and the drone slides in
+short steps until the bbox centre is within 60 px of the image centre; 4 such frames give the
+fix (medians). `"fly_over"`: flies over the detection, camera to `approach_tilt_deg`, then
+stop-and-correct visual servo until the bbox centre is at the image centre. No detection for
+`lost_timeout_s` or over `approach_timeout_s` → back to patrolling) →
+**reporting** (the child's position and the drone's pose at the fix are in `child`, a photo is
+saved, hovers 3 s) → **orbiting**
 (at `orbit_alt_m`, default the current altitude, `orbit_turns` circles of `orbit_radius_m` facing the child, camera at
 atan(height / radius) down) → **returning** (to the takeoff point) → **landed**. Other ends:
 **stopped** (any STOP, LAND or flight key: the drone hovers, `stopped_in` says where), **aborted**
@@ -115,7 +121,7 @@ found"). Safety rules (geofence, battery, link loss) apply throughout.
 | Method | Body | Reply |
 |---|---|---|
 | `POST /mission/start` | the fields below, all optional except the waypoints | `202 {"accepted": true}`; `400` bad field or waypoint outside the fence; `409` busy |
-| `POST /mission/target` | `{"frame_time"?, "bbox": [x0, y0, x1, y1], "confidence"? (1), "label"?}`: bbox as fractions of the image (0..1, y down); `frame_time` = the frame's `X-Frame-Time` (default: now) | `200 {"accepted", "state", "reason"}`: accepted while searching (launching..approaching) with `confidence >= min_confidence`; a fresh one (frame < 3 s old) during the patrol starts the approach |
+| `POST /mission/target` | `{"frame_time"?, "bbox": [x0, y0, x1, y1], "confidence"? (1), "label"?, "anchor"? ("centre")}`: bbox as fractions of the image (0..1, y down); `frame_time` = the frame's `X-Frame-Time` (default: now); `anchor` `"feet"` = a whole standing body: its floor contact point goes on the floor, `"centre"` = a head or face: its centre, `target_height_m` above the floor | `200 {"accepted", "state", "reason"}`: accepted while searching (launching..approaching) with `confidence >= min_confidence`; a fresh one (frame < 3 s old) during the patrol starts the approach |
 | `POST /mission/launch_pose` | `{"x", "y", "yaw"}`: the robot's pose in `map` at takeoff (metres, radians, ROS) | `200 {"ok": true}`: enables the `map` coordinates and the goal. The ROS node sends it from tf |
 | `POST /mission/abort` | - | `200 {"ok": true}`: back to the takeoff point and land; `409` no mission running |
 
@@ -127,11 +133,11 @@ mission hovers under the safety rules and accepts `/move` from an outside patrol
 `drone.patrol.dvd --sdk`; when the approach starts `/move` answers `409 "stopped: the mission
 flies the drone now"`, which ends that patrol); `loops` (0 = until found), `dwell_s` (1), `scan`
 (false), `patrol_alt_m` (2.0, above the takeoff point), `patrol_tilt_deg` (-40; null = leave it),
-`align_m` (1.5; 0 = no leg, then only frame "drone"), `approach` (`"fly_over"` or `"track"`),
+`align_m` (1.5; 0 = no leg, then only frame "drone"), `approach` (`"track"` or `"fly_over"`),
 `approach_speed` (0.2, stick fraction 0.05..1), `approach_tilt_deg` (-90), `orbit_alt_m`
 (null: the current altitude), `orbit_radius_m` (1.5), `orbit_turns` (2; 0 = none), `standoff_m` (0.8), `launch_height_m`
-(0: the takeoff point above the floor, the robot's top), `target_height_m` (0.5: the detected
-point above the floor), `min_confidence` (0.5), `takeoff_timeout_s` (120), `patrol_timeout_s`
+(0: the takeoff point above the floor, the robot's top), `target_height_m` (0.5: an anchor
+`"centre"` detection's point above the floor; not used for `"feet"`), `min_confidence` (0.5), `takeoff_timeout_s` (120), `patrol_timeout_s`
 (600), `approach_timeout_s` (90), `lost_timeout_s` (10).
 
 `GET /mission` (also `"mission"` in `/status` and every `/events` message):
@@ -147,15 +153,33 @@ point above the floor), `min_confidence` (0.5), `takeoff_timeout_s` (120), `patr
  "pose_map": {"x": 3.5, "y": 4.7, "z": 2.0, "yaw": 0.84},
  "child": {"id": 1, "time": 1794694117.8, "photo": "recordings/photo_....jpg",
            "drone": {"x": 2.9, "y": -2.57}, "launch": {"x": 3.6, "y": 1.4},
-           "map": {"x": 3.44, "y": 5.02}, "goal": {"x": 2.94, "y": 4.39, "yaw": 0.89}},
+           "map": {"x": 3.44, "y": 5.02}, "goal": {"x": 2.94, "y": 4.39, "yaw": 0.89},
+           "fix": {"time": 1794694117.5, "samples": 4, "centre_error_px": 15.1, "tilt_deg": -90.0,
+                   "drone": {"x": 2.89, "y": -2.58, "alt": 1.81, "heading_deg": -54.0},
+                   "launch": {"x": 3.59, "y": 1.41}, "map": {"x": 3.43, "y": 5.03, "z": 1.81, "yaw": 1.13}}},
  "patrol": null, "safety": null, "accepts_moves": false, "updated_at": 1794694118.0}
 ```
 - `child.drone` is in the takeoff frame; `launch` (x ahead, y left of the robot at launch) needs
   the aligning leg; `map` and `goal` (`standoff_m` short of the child on the line from the launch
   pose, facing it) need the launch pose too. `null` until known.
+- `child.fix`: the drone when it took the fix, straight over the child with the camera at -90
+  (medians of `samples` centred frames; `centre_error_px` = bbox centre to image centre;
+  `time` = the last frame's time): `drone` in the takeoff frame (`alt` above the takeoff point),
+  `launch`, and `map` (`z` above the floor = `alt` + `launch_height_m`, `yaw` radians ROS).
 - `map_from_drone`: the ROS frame `drone_takeoff` (the takeoff frame with y flipped, as in
   ros_node's `/drone/odom`) in `map`. `pose_map`: the drone in `map` now.
 - `safety`: why the safety rules hold the drone (returning home, riding out a loss), or null.
+
+## Vision (the page's video overlay)
+`drone/sdk/vision.py`. The detector posts what it saw in each frame; the page draws it on that
+same frame (it reads `/video.mjpg` itself for the `X-Frame-Time` of each part and delays the
+video by the detector's latency while results come in). drone/identify/feed.py posts every
+frame it looks at; the simulator's fake detector posts its child. Results are kept 5 s.
+
+| Method | Body | Reply |
+|---|---|---|
+| `POST /vision` | `{"frame_time", "state": "searching" \| "locked", "name"?, "ms"?, "faces": [{"bbox", "name"?, "similarity"?, "target"?}], "persons": [{"bbox", "score"?}], "target"?: {"bbox", "kind": "body" \| "head", "confidence"?, "source"? ("face", "detector", "tracker"), "similarity"?, "face_age_s"?}}`, boxes as fractions of the image | `200 {"ok": true}`; `400` bad field |
+| `GET /vision?since=<frame time>` | - | `200 {"results": [the posted results, oldest first, + "received_at"], "mission": {"state", "step"}, "now"}` |
 
 ## Map view
 What the web page's map shows (README "Map view"), in one frame: the robot's `map` (metres,

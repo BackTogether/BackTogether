@@ -13,7 +13,9 @@ What it models, on purpose close to what we measured on the X1:
 - Odometry at a fixed 1 Hz with noise and a random-walk drift, in a frame that resets at
   takeoff and is rotated from the drone's heading by `frame_yaw_offset_deg`. On the ground it
   reads an old frame, like the real drone.
-- `SimCamera`: an ffmpeg test pattern encoded to H.264 and fed to the real decoder.
+- `SimCamera`: an ffmpeg test pattern encoded to H.264 and fed to the real decoder; or recorded
+  drone frames (`video_dir`: frame_*.jpg, looped at 30 fps), so drone/identify/feed.py can run
+  against the simulator and draw on the page.
 - A square room around the start point (`room_half_m`, a rectangle with `room_half_y_m`; by
   default larger than the default geofence, so only patrols that look for walls meet them).
   The drone stops at a wall (and `wall_hits` counts it); truth()["front_m"] is the true
@@ -21,9 +23,11 @@ What it models, on purpose close to what we measured on the X1:
   (drone.patrol.bounce --fake-depth).
 - Faults for testing: set_battery(), cut("link" | "telemetry" | "video", seconds), push().
 - `SimDetector`: a fake lost child standing in the room and a fake detector that reports the
-  child's bbox (like drone/identify would) whenever the child is in the simulated camera's view
-  (true pose, the camera tilt estimate, the intrinsics of camera.py), with latency, misses and
-  noise. The mission (mission.py) gets its reports; the server places the child (/sim/child).
+  child's body box (like drone/identify/feed.py: a standing person, anchor "feet") whenever the
+  child is in the simulated camera's view (true pose, the camera tilt estimate, the intrinsics
+  of camera.py), with latency, misses and noise, plus a face box while the camera is not too
+  steep to see it. The mission (mission.py) gets the body; the page's overlay both (/vision);
+  the server places the child (/sim/child).
 """
 
 import math
@@ -43,7 +47,7 @@ from drone.hoverctl.sticks import StickSender
 
 from .drone import Drone
 from .estimate import DEFAULT_YAW_RATE_DPS, Estimator, wrap_deg
-from .mission_geometry import project_box
+from .mission_geometry import project_box, project_person
 
 PHYSICS_PERIOD_S = 0.02
 MAX_SPEED_MPS = 2.0  # horizontal, at stick 100
@@ -72,12 +76,17 @@ DEFAULT_ROOM_HALF_M = 10.0  # walls this far from the start point, in x and y
 WALL_CONTACT_M = 0.15  # the cage touches the wall this far from the centre
 FRONT_CORRIDOR_HALF_WIDTH_M = 0.5  # like drone.patrol.front_distance's obstacle corridor
 VIDEO_SOURCE = "testsrc2=size=640x360:rate=30"
+REPLAY_FPS = 30  # recorded frames (video_dir) are played at this rate
+REPLAY_PATTERN = "frame_*.jpg"
 VIDEO_READ_BYTES = 1 << 16
 # The fake child, in the robot's frame at launch (x forward, y left; the drone starts facing +x)
 SIM_CHILD_FWD_M = 3.5
 SIM_CHILD_LEFT_M = 1.5
-SIM_CHILD_HEIGHT_M = 0.5  # the point a detector centres on (MissionConfig.target_height_m)
-SIM_CHILD_SIZE_M = 0.5  # bbox width and height, metres
+SIM_CHILD_TALL_M = 1.2  # a standing child
+SIM_CHILD_WIDTH_M = 0.4  # shoulders
+SIM_FACE_M = 0.18  # face box width and height
+SIM_FACE_BELOW_TOP_M = 0.12  # face centre below the top of the head
+FACE_HIDDEN_TILT_DEG = -60.0  # camera steeper than this: the top of the head, no face
 DETECT_PERIOD_S = 0.3  # with the latency: ~2 detections a second, like a CPU detector
 DETECT_LATENCY_S = 0.25
 DETECT_MISS = 0.2  # fraction of frames where the child is not detected
@@ -458,7 +467,8 @@ class SimSticks(StickSender):
 class SimCamera:
     """An ffmpeg test pattern as H.264, fed to the real decoder (VideoReceiver's interface)."""
 
-    def __init__(self, link: SimLink) -> None:
+    def __init__(self, link: SimLink, video_dir: str | None = None) -> None:
+        self.video_dir = video_dir
         self.decoder = MjpegDecoder("h264")
         self.port = 0
         self.packets = 0
@@ -471,9 +481,15 @@ class SimCamera:
     def start(self) -> None:
         if not shutil.which("ffmpeg"):
             raise SystemExit("ffmpeg not found: install it (brew / apt / winget install ffmpeg)")
+        source = ["-f", "lavfi", "-i", VIDEO_SOURCE]
+        if self.video_dir:
+            source = [
+                "-stream_loop", "-1", "-framerate", str(REPLAY_FPS), "-pattern_type", "glob",
+                "-i", os.path.join(self.video_dir, REPLAY_PATTERN),
+            ]  # fmt: skip
         command = [
             "ffmpeg", "-hide_banner", "-loglevel", "error", "-re",
-            "-f", "lavfi", "-i", VIDEO_SOURCE,
+            *source,
             "-c:v", "libx264", "-preset", "ultrafast", "-tune", "zerolatency",
             # SPS/PPS before every keyframe, like the drone (recordings start on one)
             "-g", "30", "-x264-params", "repeat-headers=1",
@@ -533,12 +549,14 @@ class SimCamera:
                 listener(chunk)
 
 
-Report = Callable[[float, tuple[float, float, float, float], float, str], Any]
+Box = tuple[float, float, float, float]
+Report = Callable[[float, Box, Box | None, float, str], Any]
 
 
 class SimDetector:
-    """See the module docstring. `report(frame_time, bbox, confidence, label)` gets each
-    detection (bbox = x0, y0, x1, y1 as fractions of the image, y down)."""
+    """See the module docstring. `report(frame_time, body, face, confidence, label)` gets each
+    detection (boxes = x0, y0, x1, y1 as fractions of the image, y down; face None when the
+    camera looks down too steeply to see it)."""
 
     def __init__(self, drone: Drone, report: Report, seed: int | None = None) -> None:
         self.drone = drone
@@ -586,8 +604,27 @@ class SimDetector:
             "reports": self.reports,
         }
 
-    def observe(self) -> tuple[float, float, float, float] | None:
-        """The child's true bbox in the camera now, None when it is out of view."""
+    def observe(self) -> Box | None:
+        """The child's true body box in the camera now, None when it is out of view."""
+        seen = self._body_frame()
+        if seen is None:
+            return None
+        fwd, right, floor = seen
+        tilt = self._tilt_deg()
+        return project_person(fwd, right, floor, tilt, SIM_CHILD_TALL_M, SIM_CHILD_WIDTH_M)
+
+    def observe_face(self) -> Box | None:
+        """The child's face box now; None out of view or seen from too steeply above."""
+        seen = self._body_frame()
+        tilt = self._tilt_deg()
+        if seen is None or tilt < FACE_HIDDEN_TILT_DEG:
+            return None
+        fwd, right, floor = seen
+        down = floor - SIM_CHILD_TALL_M + SIM_FACE_BELOW_TOP_M
+        return project_box(fwd, right, down, tilt, SIM_FACE_M)
+
+    def _body_frame(self) -> tuple[float, float, float] | None:
+        """(forward, right) of the child's feet from the drone, and the floor below the camera."""
         if not self.drone.telemetry().in_flight or self.link.video_cut():
             return None
         truth = self.link.truth()
@@ -596,8 +633,7 @@ class SimDetector:
         dx, dy = x - truth["x"], y - truth["y"]
         fwd = dx * math.cos(heading) + dy * math.sin(heading)
         right = -dx * math.sin(heading) + dy * math.cos(heading)
-        down = truth["alt"] - SIM_CHILD_HEIGHT_M
-        return project_box(fwd, right, down, self._tilt_deg(), SIM_CHILD_SIZE_M)
+        return fwd, right, truth["alt"]
 
     def _frame_xy(self) -> tuple[float, float]:
         return self.link.frame_point(self.fwd, -self.left)  # world y is to the right
@@ -609,16 +645,31 @@ class SimDetector:
     def _run(self) -> None:
         while not self._stop.wait(DETECT_PERIOD_S):
             frame_time = time.time()
-            bbox = self.observe() if self.detect else None
-            if bbox is None or self._random.random() < self.miss:
+            body = self.observe() if self.detect else None
+            if body is None or self._random.random() < self.miss:
                 continue
             noise = self._random.gauss(0, DETECT_NOISE), self._random.gauss(0, DETECT_NOISE)
-            bbox = (bbox[0] + noise[0], bbox[1] + noise[1], bbox[2] + noise[0], bbox[3] + noise[1])
+            face = self.observe_face()
             time.sleep(DETECT_LATENCY_S)
             self.reports += 1
             self.report(
-                frame_time, tuple(round(v, 4) for v in bbox), DETECT_CONFIDENCE, DETECT_LABEL
+                frame_time,
+                _shifted(body, noise),
+                None if face is None else _shifted(face, noise),
+                DETECT_CONFIDENCE,
+                DETECT_LABEL,
             )
+
+
+def _shifted(box: Box, noise: tuple[float, float]) -> Box:
+    """The box moved by `noise` (image fractions), clipped to the image."""
+    x0, y0, x1, y1 = box
+    return (
+        round(min(max(x0 + noise[0], 0.0), 1.0), 4),
+        round(min(max(y0 + noise[1], 0.0), 1.0), 4),
+        round(min(max(x1 + noise[0], 0.0), 1.0), 4),
+        round(min(max(y1 + noise[1], 0.0), 1.0), 4),
+    )
 
 
 def connect_sim(
@@ -628,12 +679,14 @@ def connect_sim(
     seed: int | None = None,
     room_half_m: float = DEFAULT_ROOM_HALF_M,
     room_half_y_m: float | None = None,
+    video_dir: str | None = None,
 ) -> Drone:
-    """A started Drone on the simulator; the SimLink is `drone.link`."""
+    """A started Drone on the simulator; the SimLink is `drone.link`. `video_dir`: recorded
+    frames (frame_*.jpg) as the camera instead of the test pattern."""
     link = SimLink(frame_yaw_offset_deg, seed, room_half_m, room_half_y_m)
     sticks = SimSticks(link, max_speed)
     link.sticks = sticks
-    drone = Drone(link, sticks, SimCamera(link), estimator)
+    drone = Drone(link, sticks, SimCamera(link, video_dir), estimator)
     drone.start()
     return drone
 

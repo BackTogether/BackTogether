@@ -26,16 +26,20 @@ Frames:
 
 Detections carry the time of the frame they were found in (X-Frame-Time of /frame.jpg or of
 each /video.mjpg part); the pose and camera tilt at that time come from a 10 s history, so the
-detector's latency does not matter. A bbox centre becomes a floor point through the pinhole
-model of camera.py and the height above the target (altitude + launch_height_m -
-target_height_m).
+detector's latency does not matter. A detection's `anchor` says which point of the bbox to put
+on the floor, through the pinhole model of camera.py:
+- "feet" (a whole body, drone/identify/feed.py): its floor contact point
+  (mission_geometry.floor_contact), on the floor: exact whatever the child's height;
+- "centre" (a head, a face, the default): the bbox centre, target_height_m above the floor.
 
 Approach (`approach`), both slow (`approach_speed`) and at the patrol altitude (no descent):
+- "track" (default): approach_track.py, the camera follows the child the whole way down to
+  -90, then the drone centres the bbox in the image and takes the fix there.
 - "fly_over": goto the floor point of the triggering detection, then camera down and
   stop-and-correct until the bbox is centred (below).
-- "track": approach_track.py, the camera follows the child the whole way and the gimbal
-  reaches -90 when the drone is overhead.
-The orbit then flies at `orbit_alt_m`; None (the default) keeps the current altitude.
+Both end exactly over the child: the report has the child's position and the drone's pose at
+the fix (child["fix"]). The orbit then flies at `orbit_alt_m`; None (the default) keeps the
+current altitude.
 
 Safety: every flight step runs under the Navigator's rules (geofence, battery, link loss);
 STOP (Drone.stop through the server) ends the mission at once; each step has a timeout.
@@ -46,17 +50,25 @@ import math
 import threading
 import time
 from collections import deque
-from collections.abc import Callable, Sequence
+from collections.abc import Callable
 from dataclasses import asdict, dataclass, field, replace
 from typing import Any
 
-from .approach_track import TrackApproach, TrackSettings
+from .approach_track import (
+    ChildFix,
+    OverheadSample,
+    TrackApproach,
+    TrackSettings,
+    centre_error_px,
+    child_fix,
+)
 from .client import standoff_goal
 from .estimate import DEFAULT_YAW_RATE_DPS, wrap_deg
 from .mission_geometry import (
     Alignment,
     LaunchPose,
     body_to_frame,
+    floor_contact,
     frame_to_body,
     ground_offset,
     wrap_rad,
@@ -107,6 +119,10 @@ STRATEGIES = (STRATEGY_WAYPOINTS, STRATEGY_EXTERNAL)
 APPROACH_FLY_OVER = "fly_over"  # goto the detection, then centre with the camera down
 APPROACH_TRACK = "track"  # approach_track.py: the camera follows the child all the way
 APPROACHES = (APPROACH_FLY_OVER, APPROACH_TRACK)
+# Which point of a detection's bbox goes on the floor
+ANCHOR_CENTRE = "centre"  # the bbox centre, target_height_m above the floor (head, face)
+ANCHOR_FEET = "feet"  # a standing body: its floor contact point, on the floor
+ANCHORS = (ANCHOR_CENTRE, ANCHOR_FEET)
 # Why the mission interrupted its own step (Drone.stop), by priority
 REASON_TARGET = "target"
 REASON_TIMEOUT = "timeout"
@@ -165,7 +181,7 @@ class MissionConfig:
     patrol_alt_m: float = 2.0  # above the takeoff point
     patrol_tilt_deg: float | None = -40.0  # None: leave the camera where it is
     align_m: float = 1.5  # the calibration leg; 0 = none (then only frame "drone")
-    approach: str = APPROACH_FLY_OVER
+    approach: str = APPROACH_TRACK
     approach_speed: float = 0.2  # horizontal stick fraction while approaching
     approach_tilt_deg: float = -90.0
     orbit_alt_m: float | None = None  # None: orbit at the current altitude (no descent)
@@ -173,7 +189,7 @@ class MissionConfig:
     orbit_turns: float = 2.0  # 0 = no orbit
     standoff_m: float = 0.8  # the robot's goal stops this short of the child
     launch_height_m: float = 0.0  # the takeoff point above the floor (the robot's top)
-    target_height_m: float = 0.5  # the detected point above the floor
+    target_height_m: float = 0.5  # a "centre" detection's point above the floor
     min_confidence: float = 0.5
     takeoff_timeout_s: float = 120.0
     patrol_timeout_s: float = 600.0
@@ -194,12 +210,20 @@ class Detection:
     bbox: tuple[float, float, float, float]
     confidence: float = 1.0
     label: str | None = None
+    anchor: str = ANCHOR_CENTRE
     received_at: float = field(default_factory=time.time)
 
     @property
     def centre(self) -> tuple[float, float]:
         x0, y0, x1, y1 = self.bbox
         return (x0 + x1) / 2, (y0 + y1) / 2
+
+    def floor_point(self, tilt_deg: float) -> tuple[float, float, bool]:
+        """(u, v) of the point to place, and True when that point is on the floor (a body's
+        feet), False when it is target_height_m above it (the bbox centre)."""
+        if self.anchor == ANCHOR_FEET:
+            return (*floor_contact(self.bbox, tilt_deg), True)
+        return (*self.centre, False)
 
     def as_dict(self) -> dict[str, Any]:
         return {**asdict(self), "age_s": round(time.time() - self.frame_time, 2)}
@@ -403,11 +427,11 @@ class Mission:
             ended = self._search(config)
             if ended:
                 return self._go_home(f"child not found: {ended}")
-            child = self._approach(config)
-            if child is not None:
+            fix = self._approach(config)
+            if fix is not None:
                 break
-        self._report(child)
-        self._orbit(config, child)
+        self._report(fix)
+        self._orbit(config, fix.child)
         return self._go_home("child reported")
 
     def _launch(self, config: MissionConfig) -> None:
@@ -518,9 +542,9 @@ class Mission:
         self.patrol = Patrol(self.navigator, with_alt[nearest:] + with_alt[:nearest], options)
         return lambda navigator: self.patrol.run()
 
-    def _approach(self, config: MissionConfig) -> tuple[float, float] | None:
-        """Fly over the detection, camera down, centre the child. Its drone-frame position,
-        or None when lost or out of time (the patrol resumes)."""
+    def _approach(self, config: MissionConfig) -> ChildFix | None:
+        """Fly over the detection, camera down, centre the child. The fix (the child and the
+        drone over it), or None when lost or out of time (the patrol resumes)."""
         with self._lock:
             self._attempts += 1
             trigger = self._latest
@@ -539,12 +563,11 @@ class Mission:
                 self._ignore_until = time.time() + RETRY_COOLDOWN_S
             return None
 
-    def _track(
-        self, config: MissionConfig, trigger: Detection | None, deadline: float
-    ) -> tuple[float, float]:
+    def _track(self, config: MissionConfig, trigger: Detection | None, deadline: float) -> ChildFix:
         settings = TrackSettings(
             speed=config.approach_speed,
-            height_offset_m=config.launch_height_m - config.target_height_m,
+            launch_height_m=config.launch_height_m,
+            target_height_m=config.target_height_m,
             lost_timeout_s=config.lost_timeout_s,
         )
         approach = TrackApproach(
@@ -566,11 +589,11 @@ class Mission:
             x, y, None, COARSE_TOLERANCE_M, _left(deadline), max_fraction=config.approach_speed
         )
 
-    def _centre(self, config: MissionConfig, deadline: float) -> tuple[float, float]:
+    def _centre(self, config: MissionConfig, deadline: float) -> ChildFix:
         """Visual servo, stop-and-correct: use only frames taken after the drone settled."""
         settled = time.time()
         last_seen = time.time()
-        centred: list[tuple[float, float]] = []
+        centred: list[OverheadSample] = []
         while True:
             if time.monotonic() > deadline:
                 raise TimeoutError(f"not centred within {config.approach_timeout_s:.0f} s")
@@ -587,16 +610,18 @@ class Mission:
             error = math.hypot(fwd, right)
             self._step_note(f"centring: {error:.2f} m off")
             if error <= CENTRED_M:
-                centred.append(child)
+                pose, tilt = self.history.at(detection.frame_time)
+                error_px = centre_error_px(detection)
+                centred.append(OverheadSample(child, pose, tilt, error_px, detection.frame_time))
                 if len(centred) >= CENTRED_COUNT:
-                    return _mean(centred)
+                    return child_fix(centred)
                 continue
             centred.clear()
             self._pulse(fwd, right, min(APPROACH_FRACTION, config.approach_speed))
             self.navigator.hover(SETTLE_S)
             settled = time.time()
 
-    def _report(self, child: tuple[float, float]) -> None:
+    def _report(self, fix: ChildFix) -> None:
         photo = None
         with contextlib.suppress(RuntimeError):  # no frame: the position is what matters
             photo = str(self.drone.take_photo())
@@ -605,7 +630,8 @@ class Mission:
             self._child = {
                 "id": self._children,
                 "time": time.time(),
-                "drone": {"x": round(child[0], 3), "y": round(child[1], 3)},
+                "drone": {"x": round(fix.child[0], 3), "y": round(fix.child[1], 3)},
+                "fix": fix.as_dict(),
                 "photo": photo,
             }
         self._set(REPORTING, "hovering over the child")
@@ -718,8 +744,10 @@ class Mission:
         if sample is None or sample[1] is None:
             return None
         pose, tilt = sample
-        height = max(pose.alt + config.launch_height_m - config.target_height_m, MIN_RANGE_M)
-        target = ground_offset(*detection.centre, tilt, height)
+        u, v, on_floor = detection.floor_point(tilt)
+        above_floor = 0.0 if on_floor else config.target_height_m
+        height = max(pose.alt + config.launch_height_m - above_floor, MIN_RANGE_M)
+        target = ground_offset(u, v, tilt, height)
         if target is None:
             return None
         centre = ground_offset(0.5, 0.5, tilt, height) or (0.0, 0.0)
@@ -914,12 +942,25 @@ def _pose_in_map(
 ) -> dict[str, float] | None:
     if alignment is None or launch is None or config is None or not pose.in_flight:
         return None
-    x, y = launch.map_from_launch(*alignment.launch_from_drone(pose.x, pose.y))
-    yaw = launch.yaw + math.radians(alignment.forward_deg - pose.heading_deg)
+    return _drone_in_map(pose.x, pose.y, pose.alt, pose.heading_deg, alignment, launch, config)
+
+
+def _drone_in_map(
+    x: float,
+    y: float,
+    alt: float,
+    heading_deg: float,
+    alignment: Alignment,
+    launch: LaunchPose,
+    config: MissionConfig,
+) -> dict[str, float]:
+    """A drone-frame pose in `map`: z above the floor, yaw in radians (ROS)."""
+    map_x, map_y = launch.map_from_launch(*alignment.launch_from_drone(x, y))
+    yaw = launch.yaw + math.radians(alignment.forward_deg - heading_deg)
     return {
-        "x": round(x, 3),
-        "y": round(y, 3),
-        "z": round(pose.alt + config.launch_height_m, 3),
+        "x": round(map_x, 3),
+        "y": round(map_y, 3),
+        "z": round(alt + config.launch_height_m, 3),
         "yaw": round(wrap_rad(yaw), 4),
     }
 
@@ -931,18 +972,31 @@ def _child_report(
     config: MissionConfig | None,
 ) -> dict[str, Any] | None:
     """The child in every frame we can: drone always, launch once aligned, map (and the
-    robot's goal: `standoff_m` short of the child, facing it) once the launch pose is known."""
+    robot's goal: `standoff_m` short of the child, facing it) once the launch pose is known.
+    Same for the drone's pose at the fix (`fix`: drone frame, `fix.launch`, `fix.map`)."""
     if child is None:
         return None
+    fix = child.get("fix")
     report = {**child, "launch": None, "map": None, "goal": None}
+    if fix:
+        report["fix"] = {**fix, "launch": None, "map": None}
     if alignment is None or config is None:
         return report
     fwd, left = alignment.launch_from_drone(child["drone"]["x"], child["drone"]["y"])
     report["launch"] = {"x": round(fwd, 3), "y": round(left, 3)}
+    if fix:
+        drone = fix["drone"]
+        fix_fwd, fix_left = alignment.launch_from_drone(drone["x"], drone["y"])
+        report["fix"]["launch"] = {"x": round(fix_fwd, 3), "y": round(fix_left, 3)}
     if launch is None:
         return report
     x, y = launch.map_from_launch(fwd, left)
     report["map"] = {"x": round(x, 3), "y": round(y, 3)}
+    if fix:
+        drone = fix["drone"]
+        report["fix"]["map"] = _drone_in_map(
+            drone["x"], drone["y"], drone["alt"], drone["heading_deg"], alignment, launch, config
+        )
     goal_x, goal_y, goal_yaw = standoff_goal(launch.x, launch.y, x, y, config.standoff_m)
     report["goal"] = {"x": round(goal_x, 3), "y": round(goal_y, 3), "yaw": round(goal_yaw, 4)}
     return report
@@ -962,7 +1016,3 @@ def _left(deadline: float) -> float:
 
 def _clip(value: float, limit: float) -> float:
     return max(-limit, min(limit, value))
-
-
-def _mean(points: Sequence[tuple[float, float]]) -> tuple[float, float]:
-    return sum(p[0] for p in points) / len(points), sum(p[1] for p in points) / len(points)

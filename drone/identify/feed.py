@@ -1,24 +1,20 @@
-"""Feed the lost-child mission: recognise the child by face, then keep tracking them without it.
+"""Feed the lost-child mission: recognise the child by face, then track their body.
 
-    uv run --with opencv-contrib-python-headless python -m drone.identify.feed leo
-    uv run --with opencv-contrib-python-headless python -m drone.identify.feed leo \
+    uv run --offline --with opencv-contrib-python-headless python -m drone.identify.feed leo
+    uv run --offline --with opencv-contrib-python-headless python -m drone.identify.feed leo \
         --url http://<mac>:8077
 
-Reads the drone SDK server's latest frame (GET /frame.jpg, with its X-Frame-Time) and posts the
-child's box to POST /mission/target (drone/sdk/API.md, "Mission"), with that frame time.
+Reads the drone SDK server's latest frame (GET /frame.jpg, with its X-Frame-Time) and, for each:
+- POST /vision: every face and person and the tracked target, for the web page's video overlay;
+- POST /mission/target: the child's box with that frame time (drone/sdk/API.md, "Mission"). A
+  body box is sent with anchor "feet" (the mission puts its floor contact point on the floor),
+  a head box (no body around the face yet) with anchor "centre" (target_height_m applies).
+The tracking itself is body_track.py.
 
-Why a tracker: the approach looks at the child more and more from above (camera down to -90
-deg), where no face is visible. So:
-- searching: every face is checked against the database; the target seen in CONFIRM_FRAMES
-  frames in a row is locked;
-- locked: a tracker follows the head box (the face box grown to take in the hair, which stays
-  visible from above). Whenever the target's face is seen again the tracker restarts on it
-  (fixes drift); a face of someone else inside the box drops the lock (the tracker jumped to
-  another person); a tracker failure for LOST_S goes back to searching.
+On recorded frames, without a server (annotated copies in --out, a log line per frame):
 
-The posted box is the head, so start the mission with target_height_m = the child's head height
-(about 1.0 standing, 0.6 sitting). CSRT (opencv-contrib) tracks much better than MIL, the only
-tracker in plain opencv without extra model files.
+    uv run --offline --with opencv-contrib-python-headless python -m drone.identify.feed leo \
+        --frames recordings/frames/<session> --first 40 --count 90 --out /tmp/annotated
 """
 
 import argparse
@@ -28,43 +24,36 @@ import logging
 import time
 import urllib.request
 from pathlib import Path
+from typing import Any
 
 import cv2
 import numpy as np
 
+from . import annotate
 from .__main__ import load_people
+from .body_track import BODY, BodyTracker, FrameResult, make_tracker
 from .faces import FaceEmbedder
-from .live import CONFIRM_FRAMES
-from .people import PEOPLE_DIR, People
+from .people import PEOPLE_DIR, People, is_photo
+from .persons import PersonDetector
 
 DEFAULT_URL = "http://localhost:8077"
 FRAME_TIME_HEADER = "X-Frame-Time"
 HTTP_TIMEOUT_S = 2.0
 IDLE_S = 0.05  # no new frame yet
-HEAD_GROW = 1.6  # head box = face box scaled by this, around the face centre...
-HEAD_LIFT = 0.15  # ...and moved up by this fraction of the face height (hair)
-TRACK_WIDTH = 640  # the tracker runs on a copy this wide (speed)
-LOST_S = 2.0  # tracker failing this long: back to searching
-FACE_CONFIDENCE = 0.9  # posted confidence: the target's face is in the frame
-TRACK_CONFIDENCE = 0.7  # only the tracker (MissionConfig.min_confidence is 0.5)
-LABEL_FACE = "face"
-LABEL_TRACK = "track"
+FULL_SIZE = 0  # faces searched at full resolution: they are small from the patrol altitude
+FACES_EMBEDDED = 6  # largest faces compared with the database per frame (~5 ms each)
+ANCHOR_FEET = "feet"  # drone/sdk/mission.py
+ANCHOR_CENTRE = "centre"
+RECORDED_FPS = 30.0  # the X1's stream: frame times of a recording
 
 log = logging.getLogger("identify")
 
-Box = tuple[int, int, int, int]  # left, top, width, height in pixels
+Box = tuple[int, int, int, int]
 
 
-def make_tracker() -> cv2.Tracker:
-    """CSRT when opencv-contrib is installed, else MIL."""
-    if hasattr(cv2, "TrackerCSRT_create"):
-        return cv2.TrackerCSRT_create()
-    return cv2.TrackerMIL_create()
-
-
-class DroneFrames:
-    """The SDK server's latest frame, each new one once. Network errors (wifi) only skip a
-    frame or a report: the loop keeps going."""
+class DroneServer:
+    """The SDK server: its latest frame, each new one once, and the two reports. Network errors
+    (wifi) only skip a frame or a report: the loop keeps going."""
 
     def __init__(self, url: str) -> None:
         self.url = url.rstrip("/")
@@ -87,163 +76,158 @@ class DroneFrames:
         self._last_time = frame_time
         return frame_time, image
 
-    def report(self, frame_time: float, bbox: list[float], confidence: float, label: str) -> str:
-        """POST /mission/target; the mission's answer (state, or why it was refused)."""
-        body = {"frame_time": frame_time, "bbox": bbox, "confidence": confidence, "label": label}
+    def post(self, path: str, body: dict[str, Any]) -> dict[str, Any] | str:
+        """The JSON answer, or why it was not sent."""
         request = urllib.request.Request(
-            f"{self.url}/mission/target",
+            f"{self.url}{path}",
             data=json.dumps(body).encode(),
             headers={"Content-Type": "application/json"},
         )
         try:
             with urllib.request.urlopen(request, timeout=HTTP_TIMEOUT_S) as reply:
-                answer = json.load(reply)
+                return json.load(reply)
         except (OSError, http.client.HTTPException, ValueError) as error:
             return f"not sent: {error}"
-        accepted = "accepted" if answer.get("accepted") else "refused"
-        return f"{accepted} ({answer.get('reason') or answer.get('state')})"
-
-
-class ChildTracker:
-    """Face recognition until the target is confirmed, then a tracker on the head."""
-
-    def __init__(self, target: str, embedder: FaceEmbedder, people: People) -> None:
-        self.target = target
-        self.embedder = embedder
-        self.people = people
-        self.in_a_row = 0
-        self.tracker: cv2.Tracker | None = None
-        self.scale = 1.0
-        self.failing_since: float | None = None
-
-    @property
-    def locked(self) -> bool:
-        return self.tracker is not None
-
-    def update(self, image: np.ndarray) -> tuple[Box, float, str] | None:
-        """(head box, confidence, label) of the child in this frame, or None."""
-        target_face, other_faces = self._faces(image)
-        if target_face is not None:
-            self.in_a_row += 1
-            if self.locked or self.in_a_row >= CONFIRM_FRAMES:
-                head = head_box(target_face, image.shape)
-                self._start_tracker(image, head)
-                return head, FACE_CONFIDENCE, LABEL_FACE
-            return None
-        self.in_a_row = 0
-        if not self.locked:
-            return None
-        box = self._track(image)
-        if box is None:
-            return None
-        if any(_centre_inside(face, box) for face in other_faces):
-            log.info("someone else's face in the tracked box: lock dropped")
-            self.tracker = None
-            return None
-        return box, TRACK_CONFIDENCE, LABEL_TRACK
-
-    def _faces(self, image: np.ndarray) -> tuple[Box | None, list[Box]]:
-        """The target's face (the most similar one) and the recognised faces of others.
-        Unrecognised faces are neither: from far or the side they may be the child."""
-        best: tuple[float, Box] | None = None
-        others = []
-        for face in self.embedder.faces(image):
-            name, similarity = self.people.classify(face.embedding)
-            if name == self.target:
-                if best is None or similarity > best[0]:
-                    best = (similarity, face.box)
-            elif name is not None:
-                others.append(face.box)
-        return (best[1] if best else None), others
-
-    def _start_tracker(self, image: np.ndarray, box: Box) -> None:
-        if not self.locked:
-            log.info("%s locked", self.target)
-        small = self._small(image)
-        self.tracker = make_tracker()
-        self.tracker.init(small, tuple(round(v * self.scale) for v in box))
-        self.failing_since = None
-
-    def _track(self, image: np.ndarray) -> Box | None:
-        ok, small_box = self.tracker.update(self._small(image))
-        if ok:
-            self.failing_since = None
-            return tuple(round(v / self.scale) for v in small_box)
-        now = time.monotonic()
-        self.failing_since = self.failing_since or now
-        if now - self.failing_since > LOST_S:
-            log.info("tracker lost %s for %.0f s: searching again", self.target, LOST_S)
-            self.tracker = None
-        return None
-
-    def _small(self, image: np.ndarray) -> np.ndarray:
-        width = image.shape[1]
-        self.scale = min(1.0, TRACK_WIDTH / width)
-        if self.scale == 1.0:
-            return image
-        return cv2.resize(image, None, fx=self.scale, fy=self.scale)
-
-
-def head_box(face: Box, shape: tuple[int, ...]) -> Box:
-    """The face box grown around its centre and lifted to take in the hair, inside the image."""
-    left, top, width, height = face
-    cx, cy = left + width / 2, top + height / 2 - HEAD_LIFT * height
-    half_w, half_h = width * HEAD_GROW / 2, height * HEAD_GROW / 2
-    x0, y0 = max(0, round(cx - half_w)), max(0, round(cy - half_h))
-    x1, y1 = min(shape[1], round(cx + half_w)), min(shape[0], round(cy + half_h))
-    return x0, y0, x1 - x0, y1 - y0
 
 
 def fractions(box: Box, shape: tuple[int, ...]) -> list[float]:
-    """[x0, y0, x1, y1] as fractions of the image (the mission's bbox)."""
+    """[x0, y0, x1, y1] as fractions of the image (the API's bbox), inside the image."""
     left, top, width, height = box
     h, w = shape[:2]
-    return [
-        round(left / w, 4),
-        round(top / h, 4),
-        round((left + width) / w, 4),
-        round((top + height) / h, 4),
-    ]
+    x0, y0 = min(max(left / w, 0.0), 1.0), min(max(top / h, 0.0), 1.0)
+    x1, y1 = min(max((left + width) / w, 0.0), 1.0), min(max((top + height) / h, 0.0), 1.0)
+    return [round(x0, 4), round(y0, 4), round(x1, 4), round(y1, 4)]
 
 
-def _centre_inside(face: Box, box: Box) -> bool:
-    cx, cy = face[0] + face[2] / 2, face[1] + face[3] / 2
-    return box[0] <= cx <= box[0] + box[2] and box[1] <= cy <= box[1] + box[3]
+def vision_body(
+    result: FrameResult, frame_time: float, shape: tuple[int, ...], target: str
+) -> dict[str, Any]:
+    """POST /vision's body (drone/sdk/API.md, "Vision")."""
+    body: dict[str, Any] = {
+        "frame_time": frame_time,
+        "state": result.state,
+        "name": target,
+        "ms": round(result.ms, 1),
+        "faces": [
+            {
+                "bbox": fractions(f.box, shape),
+                "name": f.name,
+                "similarity": round(f.similarity, 3),
+                "target": f.target,
+            }
+            for f in result.faces
+        ],
+        "persons": [
+            {"bbox": fractions(p.box, shape), "score": round(p.score, 3)} for p in result.persons
+        ],
+        "target": None,
+    }
+    if result.target is not None:
+        t = result.target
+        body["target"] = {
+            "bbox": fractions(t.box, shape),
+            "kind": t.kind,
+            "confidence": t.confidence,
+            "source": t.source,
+            "similarity": None if t.similarity is None else round(t.similarity, 3),
+            "face_age_s": t.face_age_s,
+        }
+    return body
 
 
-def run(target: str, url: str, people: People) -> None:
-    frames = DroneFrames(url)
-    child = ChildTracker(target, FaceEmbedder(), people)
-    last_answer = None
+def mission_body(
+    result: FrameResult, frame_time: float, shape: tuple[int, ...], target: str
+) -> dict[str, Any] | None:
+    """POST /mission/target's body, or None without a target."""
+    if result.target is None:
+        return None
+    t = result.target
+    return {
+        "frame_time": frame_time,
+        "bbox": fractions(t.box, shape),
+        "confidence": t.confidence,
+        "label": f"{target} {t.kind} ({t.source})",
+        "anchor": ANCHOR_FEET if t.kind == BODY else ANCHOR_CENTRE,
+    }
+
+
+def make_tracker_for(target: str, people: People) -> BodyTracker:
+    embedder = FaceEmbedder(detect_width=FULL_SIZE, max_faces=FACES_EMBEDDED)
+    return BodyTracker(target, embedder, people, PersonDetector())
+
+
+def run_live(target: str, url: str, people: People) -> None:
+    server = DroneServer(url)
+    tracker = make_tracker_for(target, people)
+    last = None
     while True:
-        frame = frames.next()
+        frame = server.next()
         if frame is None:
             time.sleep(IDLE_S)
             continue
         frame_time, image = frame
-        seen = child.update(image)
-        if seen is None:
+        result = tracker.update(image, frame_time)
+        server.post("/vision", vision_body(result, frame_time, image.shape, target))
+        report = mission_body(result, frame_time, image.shape, target)
+        answer = server.post("/mission/target", report) if report else None
+        summary = _summary(result, answer)
+        if summary != last:
+            log.info("%s", summary)
+            last = summary
+
+
+def run_recorded(target: str, people: People, args: argparse.Namespace) -> None:
+    """The tracker over recorded frames in order; annotated copies in --out."""
+    frames = sorted(path for path in args.frames.iterdir() if is_photo(path))
+    frames = frames[args.first : args.first + args.count if args.count else None]
+    tracker = make_tracker_for(target, people)
+    args.out.mkdir(parents=True, exist_ok=True)
+    total_ms = 0.0
+    for index, frame in enumerate(frames):
+        image = cv2.imread(str(frame))
+        if image is None:
             continue
-        box, confidence, label = seen
-        answer = frames.report(frame_time, fractions(box, image.shape), confidence, label)
-        if answer != last_answer:
-            log.info("%s %s at %s: %s", target, label, box, answer)
-            last_answer = answer
+        result = tracker.update(image, index / RECORDED_FPS)
+        total_ms += result.ms
+        log.info("%s %s", frame.name, _summary(result, None))
+        view = annotate.draw(image, result, target, frame.name)
+        cv2.imwrite(str(args.out / frame.name), view)
+    log.info("%d frames, %.0f ms per frame", len(frames), total_ms / max(len(frames), 1))
+
+
+def _summary(result: FrameResult, answer: dict[str, Any] | str | None) -> str:
+    target = result.target
+    seen = "nothing" if target is None else f"{target.kind} {target.confidence} ({target.source})"
+    faces = ", ".join(f"{f.name or '?'} {f.similarity:.2f}" for f in result.faces) or "no face"
+    text = f"{result.state}: {seen}; {len(result.persons)} persons; faces: {faces}"
+    if isinstance(answer, dict):
+        text += f"; mission {'accepted' if answer.get('accepted') else answer.get('reason')}"
+    elif answer:
+        text += f"; mission {answer}"
+    return text
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="recognise and track the child for the mission")
+    parser = argparse.ArgumentParser(description="recognise the child, track the body, feed it")
     parser.add_argument("target", help="the person to look for (folder name in the database)")
     parser.add_argument("--url", default=DEFAULT_URL, help="drone SDK server")
     parser.add_argument("--people", type=Path, default=PEOPLE_DIR, help="people database")
+    parser.add_argument("--frames", type=Path, help="recorded frames instead of the server")
+    parser.add_argument("--first", type=int, default=0, help="--frames: first frame index")
+    parser.add_argument("--count", type=int, default=0, help="--frames: how many (0 = all)")
+    parser.add_argument("--out", type=Path, default=Path("annotated"), help="--frames: output")
     args = parser.parse_args()
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(name)s: %(message)s")
     people = load_people(args.people)
     if args.target not in people.names:
         parser.error(f"{args.target} has no usable photo in {args.people} ({people.names})")
-    log.info("tracking %s for the mission at %s (%s)", args.target, args.url, make_tracker())
+    log.info("tracker %s, faces up to %d per frame", make_tracker(), FACES_EMBEDDED)
     try:
-        run(args.target, args.url, people)
+        if args.frames:
+            run_recorded(args.target, people, args)
+        else:
+            log.info("feeding the mission at %s with %s", args.url, args.target)
+            run_live(args.target, args.url, people)
     except KeyboardInterrupt:
         print("stopped")
 

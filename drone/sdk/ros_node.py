@@ -17,6 +17,11 @@ Publishes
                            the robot's launch pose is unknown
   /move_base_simple/goal   geometry_msgs/PoseStamped  once per child report, ~standoff short of
                            the child, facing it (from the robot's pose now, tf map->base_footprint)
+  /drone/fix               geometry_msgs/PoseArray (latched)  once per child report, same frame as
+                           /drone/child_pose: poses[0] = the drone when it took the fix, exactly
+                           over the child with the camera straight down (z = height above the
+                           floor, orientation = its yaw), poses[1] = the child (z = 0, as in
+                           /drone/child_pose); header.stamp = the fix's frame time on this clock
   /drone/pose_map          geometry_msgs/PoseStamped  the drone in "map", once aligned (10 Hz)
   tf  map -> drone_takeoff (once aligned) and drone_takeoff -> drone_base (always)
 Subscribes
@@ -28,7 +33,8 @@ Subscribes
   /drone/mission/abort  std_msgs/Empty   back to the takeoff point and land
   /drone/detection      std_msgs/String  JSON {"stamp": <header.stamp of the image, seconds>,
                         "bbox": [x0, y0, x1, y1] (fractions of the image, y down),
-                        "confidence": 0..1, "label"?}; "frame_time" (the Mac's) instead of
+                        "confidence": 0..1, "label"?, "anchor"?: "feet" for a whole body,
+                        "centre" (default) for a head}; "frame_time" (the Mac's) instead of
                         "stamp" also works
   /drone/launch_pose    geometry_msgs/PoseStamped  the robot's pose in "map" at takeoff, if tf
                         cannot give it (the node posts it by itself from tf otherwise)
@@ -57,7 +63,7 @@ from collections import deque
 import rospy
 import tf2_ros
 from client import DroneApiError, DroneClient, standoff_goal
-from geometry_msgs.msg import PoseStamped, Quaternion, TransformStamped, Twist
+from geometry_msgs.msg import Pose, PoseArray, PoseStamped, Quaternion, TransformStamped, Twist
 from nav_msgs.msg import OccupancyGrid, Odometry
 from sensor_msgs.msg import BatteryState, CompressedImage
 from std_msgs.msg import Empty, String
@@ -111,6 +117,7 @@ class DroneNode:
         self.state = rospy.Publisher("/drone/state", String, queue_size=10)
         self.mission = rospy.Publisher("/drone/mission", String, queue_size=10, latch=True)
         self.child = rospy.Publisher("/drone/child_pose", PoseStamped, queue_size=1, latch=True)
+        self.fix = rospy.Publisher("/drone/fix", PoseArray, queue_size=1, latch=True)
         self.pose_map = rospy.Publisher("/drone/pose_map", PoseStamped, queue_size=10)
         goal_topic = rospy.get_param("~goal_topic", "/move_base_simple/goal")
         self.goal = rospy.Publisher(goal_topic, PoseStamped, queue_size=1)
@@ -185,7 +192,11 @@ class DroneNode:
             if frame_time is None and body.get("stamp") is not None:
                 frame_time = self.mac_time(float(body["stamp"]))
             reply = self.client.mission_target(
-                frame_time, body["bbox"], body.get("confidence", 1.0), body.get("label")
+                frame_time,
+                body["bbox"],
+                body.get("confidence", 1.0),
+                body.get("label"),
+                body.get("anchor"),
             )
             if not reply.get("accepted"):
                 rospy.logdebug_throttle(WARN_PERIOD_S, f"detection not used: {reply.get('reason')}")
@@ -325,6 +336,7 @@ class DroneNode:
         if not child.get("map"):
             drone = child["drone"]  # drone frame -> "drone_takeoff" (ROS axes: y flips)
             self.child.publish(self.pose_stamped(ODOM_FRAME, drone["x"], -drone["y"], 0.0))
+            self.publish_fix(child, ODOM_FRAME, (drone["x"], -drone["y"], 0.0))
             rospy.logwarn("child found, but no launch pose: no map position and no goal")
             return
         x, y = child["map"]["x"], child["map"]["y"]
@@ -334,10 +346,42 @@ class DroneNode:
             standoff = (mission.get("config") or {}).get("standoff_m", 0.0)
         goal_x, goal_y, goal_yaw = standoff_goal(robot[0], robot[1], x, y, float(standoff))
         self.child.publish(self.pose_stamped(self.map_frame, x, y, goal_yaw))
+        self.publish_fix(child, self.map_frame, (x, y, goal_yaw))
         rospy.loginfo(f"child at x {x:.2f} y {y:.2f} in {self.map_frame}")
         if self.send_goal:
             self.goal.publish(self.pose_stamped(self.map_frame, goal_x, goal_y, goal_yaw))
             rospy.loginfo(f"goal sent: x {goal_x:.2f} y {goal_y:.2f} yaw {goal_yaw:.2f}")
+
+    def publish_fix(self, child: dict, frame: str, child_xy_yaw: tuple) -> None:
+        """/drone/fix: [the drone at the fix, the child], in `frame` (map, or drone_takeoff
+        while the launch pose is unknown). Nothing without a fix (an older Mac server)."""
+        fix = child.get("fix")
+        if not fix:
+            return
+        if frame == ODOM_FRAME:
+            drone = fix["drone"]  # drone frame -> "drone_takeoff": y and the heading flip
+            pose = {"x": drone["x"], "y": -drone["y"], "z": drone["alt"]}
+            pose["yaw"] = -math.radians(drone["heading_deg"])
+        elif fix.get("map"):
+            pose = fix["map"]
+        else:
+            return
+        message = PoseArray()
+        message.header.stamp = rospy.Time.from_sec(self.robot_time(fix["time"]))
+        message.header.frame_id = frame
+        message.poses = [
+            _pose(pose["x"], pose["y"], pose["z"], pose["yaw"]),
+            _pose(child_xy_yaw[0], child_xy_yaw[1], 0.0, child_xy_yaw[2]),
+        ]
+        self.fix.publish(message)
+        rospy.loginfo(
+            f"drone fix: drone at x {pose['x']:.2f} y {pose['y']:.2f} z {pose['z']:.2f} in "
+            f"{frame}, {fix['centre_error_px']:.0f} px from centred, {fix['samples']} frames"
+        )
+
+    def robot_time(self, mac_time: float) -> float:
+        """A Mac unix time on this node's clock (the learned offset)."""
+        return mac_time + (min(self.clock_offsets) if self.clock_offsets else 0.0)
 
     def robot_pose(self) -> tuple[float, float, float] | None:
         """(x, y, yaw) of the robot in the map frame from tf, or None."""
@@ -409,6 +453,13 @@ class DroneNode:
         message.present = True
         message.voltage = float("nan")
         self.battery.publish(message)
+
+
+def _pose(x: float, y: float, z: float, yaw: float) -> Pose:
+    message = Pose()
+    message.position.x, message.position.y, message.position.z = x, y, z
+    message.orientation = _yaw_quaternion(yaw)
+    return message
 
 
 def _yaw_of(q: Quaternion) -> float:
