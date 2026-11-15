@@ -1,0 +1,15 @@
+#!/usr/bin/env bash
+# Talk to the robot's child_goal_server through ngrok (drone/report_child.py). Works from any
+# network with internet: drone Wi-Fi + iPhone on USB is fine.
+# Usage: drone/robot             # is the robot reachable and ready?
+#        drone/robot 2 0         # a child 2 m ahead, 0 m left of the robot: it drives there
+#        drone/robot --watch     # with drone/find: send the child the mission finds
+set -euo pipefail
+cd "$(dirname "$0")/.."
+NUMBER='^-?[0-9]+([.][0-9]+)?$'
+if [[ $# -eq 0 ]]; then
+  set -- --ping
+elif [[ $# -eq 2 && $1 =~ $NUMBER && $2 =~ $NUMBER ]]; then
+  set -- --x "$1" --y "$2" --follow
+fi
+exec uv run --offline python -m drone.report_child "$@"
