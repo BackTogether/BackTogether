@@ -67,6 +67,18 @@ Colours of the torso and the legs + an SVM overfitted to this person, with the p
 look like the drone's view from above. Held-out photos: 100 % recognised at 1 % of other people
 passing; none of 146 people in unseen hall frames passed.
 
+## Robot
+`robot` finds the robot (Bobac) in drone frames from afar, to fly back to it before landing on
+its pad (`pad`). Photos of the robot alone on the floor, seen diagonally, in
+`drone/identify/robot/` (not in git); train once with a video of the hall without the robot:
+```bash
+uv run --with opencv-python-headless python -m drone.identify.robot train --negatives <video>
+uv run --with opencv-python-headless python -m drone.identify.robot check <image or folder>
+```
+Non-floor blobs + HOG and colours + an SVM overfitted to this robot. 4 folds of held-out photos:
+88 % found, no false positive in 124 unseen hall frames; ~30 ms per frame. `train` saves
+`models/robot_check.jpg` with the robot box it found in each photo: check it.
+
 ## Landing pad
 `pad` finds the landing pad on the robot (white square, grey circle, orange H) in drone frames,
 seen diagonally from 0.6-4 m. Put a few photos of the pad in `drone/identify/base/` (not in git),
