@@ -8,9 +8,10 @@ blind with goto and only then looks down. This one keeps the child in view the w
   row), so as the drone gets closer the camera tilts down by itself. Far away the drone turns to
   face the child and creeps forward; near it (NEAR_M) it stops turning and slides
   forward/sideways, so the target below never ends up behind the yaw axis. The speed shrinks
-  with the distance, and the drone waits when the child is about to leave the bottom of the
-  image (the gimbal is slow: ~6 deg/s at speed cap 60). The altitude is held where the approach
-  started: it never descends on its own.
+  with the distance (last SLOWDOWN_M), the camera starts down to -90 within PRETILT_M, and far
+  away the drone waits when the child is about to leave the bottom of the image. A missed
+  detection or two does not stop it: it flies on the last fix for HOLD_S. The altitude is held
+  where the approach started: it never descends on its own.
 - overhead (within CENTRED_M of the child): the camera goes to its bottom stop (-90) and stays
   there; then stop-and-correct on the image itself: short slides until the bbox centre is within
   CENTRE_TOL_PX of the image centre, using only frames taken after the drone settled. SAMPLES
@@ -50,7 +51,9 @@ from .navigate import (
 from .telemetry import Pose
 
 NEAR_M = 1.0  # closer than this: slide instead of turning
-SLOWDOWN_M = 1.5  # the speed falls linearly inside this distance
+SLOWDOWN_M = 1.0  # the speed falls linearly inside this distance
+PRETILT_M = 0.8  # closer: the camera already goes down to -90 while closing in (from 2 m up
+# the child is still in view at this distance with the camera straight down)
 MIN_FRACTION = 0.08  # slowest useful forward/sideways stick while not centred
 TURN_FIRST_DEG = 25.0  # child further off the nose than this: turn on the spot first
 YAW_GAIN = 1 / 30  # turn stick per degree of bearing
@@ -64,7 +67,8 @@ OVERHEAD_TILT_DEG = -89.0  # camera at its bottom stop (the estimate clamps at -
 CENTRE_TOL_PX = 250.0  # bbox centre to image centre: the fix is placed geometrically anyway
 OVERHEAD_LEAVE_M = 1.0  # the child this far from below: close in again
 SAMPLES = 3  # centred frames overhead (not necessarily in a row) whose median is the fix
-HOLD_S = 0.8  # last fix older than this: hover until a new one comes
+HOLD_S = 2.0  # last fix older than this: stop and turn to where it was (the fix is a floor
+# point: a detector at ~2 frames/s missing one or two must not stop the drone)
 MIN_RANGE_M = 0.3
 
 PoseAt = Callable[[float], tuple[Pose, float | None] | None]
@@ -234,7 +238,8 @@ class TrackApproach:
             v_now = self._fix.v + (tilt_now - self._fix.tilt_deg) / camera.CAMERA_VFOV_DEG
             move_fwd, move_right, turn = self._steer(fwd, right, distance, v_now)
             self.note(f"track: {distance:.2f} m to go, camera {tilt_now:.0f} deg")
-            self._send(epoch, move_fwd, move_right, turn, _gimbal(v_now))
+            gimbal = PIN_DOWN if distance < PRETILT_M else _gimbal(v_now)
+            self._send(epoch, move_fwd, move_right, turn, gimbal)
             self.drone.sleep(TICK_S, epoch)
 
     def _steer(
@@ -242,8 +247,8 @@ class TrackApproach:
     ) -> tuple[float, float, float]:
         """(forward, right, turn) sticks toward the child."""
         fraction = max(MIN_FRACTION, self.settings.speed * min(1.0, distance / SLOWDOWN_M))
-        if v_now > WAIT_V:
-            fraction = 0.0  # about to leave the image: the gimbal first
+        if v_now > WAIT_V and distance >= PRETILT_M:
+            fraction = 0.0  # about to leave the image: the gimbal first (close: it is going down)
         if distance > NEAR_M:
             bearing = math.degrees(math.atan2(right, fwd))
             turn = _clip(bearing * YAW_GAIN, MAX_TURN)
@@ -260,8 +265,9 @@ class TrackApproach:
         while self._tilt_now() > OVERHEAD_TILT_DEG:
             self._check(epoch, deadline)
             self._check_lost(time.time() - self._last_seen)
+            self._take_sighting()
             self.note(f"track: over the child, camera {self._tilt_now():.0f} deg going down")
-            self._send(epoch, tilt=PIN_DOWN)
+            self._send(epoch, *self._slide_to_fix(), tilt=PIN_DOWN)  # no hovering meanwhile
             self.drone.sleep(TICK_S, epoch)
         self._after = time.time()  # from now on only frames with the camera straight down
         samples: list[OverheadSample] = []
@@ -289,6 +295,17 @@ class TrackApproach:
                 continue
             self.note(f"track: overhead, centring: {sample.error_px:.0f} px off")
             self._nudge(epoch, *self._centre_offset(sighting, sample))
+
+    def _slide_to_fix(self) -> tuple[float, float]:
+        """(forward, right) sticks sliding toward the last fix, slow (the camera is moving)."""
+        pose = self.drone.pose()
+        fwd, right = frame_to_body(
+            self._fix.child[0] - pose.x, self._fix.child[1] - pose.y, pose.heading_deg
+        )
+        distance = math.hypot(fwd, right)
+        if distance < MIN_RANGE_M:
+            return 0.0, 0.0
+        return MIN_FRACTION * fwd / distance, MIN_FRACTION * right / distance
 
     def _overhead_sample(self, sighting: Sighting) -> OverheadSample | None:
         """A sighting from a frame with the camera straight down, placed; None otherwise."""

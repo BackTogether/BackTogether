@@ -134,7 +134,7 @@ mission hovers under the safety rules and accepts `/move` from an outside patrol
 flies the drone now"`, which ends that patrol); `loops` (0 = until found), `dwell_s` (1), `scan`
 (false), `patrol_alt_m` (2.0, above the takeoff point), `patrol_tilt_deg` (-40; null = leave it),
 `align_m` (1.5; 0 = no leg, then only frame "drone"), `approach` (`"track"` or `"fly_over"`),
-`approach_speed` (0.2, stick fraction 0.05..1), `approach_tilt_deg` (-90), `orbit_alt_m`
+`approach_speed` (0.35, stick fraction 0.05..1), `approach_tilt_deg` (-90), `orbit_alt_m`
 (null: the current altitude), `orbit_radius_m` (1.5), `orbit_turns` (2; 0 = none), `standoff_m` (0.8), `launch_height_m`
 (0: the takeoff point above the floor, the robot's top), `target_height_m` (0.5: an anchor
 `"centre"` detection's point above the floor; not used for `"feet"`), `min_confidence` (0.5), `takeoff_timeout_s` (120), `patrol_timeout_s`

@@ -200,7 +200,7 @@ class MissionConfig:
     patrol_tilt_deg: float | None = -40.0  # None: leave the camera where it is
     align_m: float = 1.5  # the calibration leg; 0 = none (then only frame "drone")
     approach: str = APPROACH_TRACK
-    approach_speed: float = 0.2  # horizontal stick fraction while approaching
+    approach_speed: float = 0.35  # horizontal stick fraction while approaching
     approach_tilt_deg: float = -90.0
     orbit_alt_m: float | None = None  # None: orbit at the current altitude (no descent)
     orbit_radius_m: float = 1.5
