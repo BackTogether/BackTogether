@@ -122,9 +122,13 @@ class CareSession:
         """The whole episode: call the parents, wait until one joins and then hangs up (we take
         that as "the parent has arrived"), then back to idle. Blocks until then or stop()."""
         self._note(f"robot is with {self._name} in the {self._zone}")
-        self._speech.say_text(
-            f"Hi {self._name}! I am a friendly robot. Your {self._parent} sent me to find you."
-        )
+        # the voice agent greets the child itself; the robot's own voice is only the fallback
+        if self._agent:
+            self._start_agent()
+        else:
+            self._speech.say_text(
+                f"Hi {self._name}! I am a friendly robot. Your {self._parent} sent me to find you."
+            )
         if ASK_QUESTIONS:
             self._how_are_you = self._ask_how_are_you()
             if self._stopped.is_set():
@@ -136,7 +140,6 @@ class CareSession:
         # the robot enters the call first and the parents are told after, so a parent who joins
         # at once finds the child already there
         self._start_call()
-        self._start_agent()
         self._tell_parents()
         self._wait_for_parent()
 
@@ -248,7 +251,8 @@ class CareSession:
             self._show_call(self._robot_call_url)
         self._set_state("video_call")
         self._note("video call open on the screen: " + self._call_url)
-        self._speech.say_text(f"I am calling your {self._parent}. Look at my screen!")
+        if not self._agent:  # the agent tells the child itself
+            self._speech.say_text(f"I am calling your {self._parent}. Look at my screen!")
 
     def _wait_for_parent(self) -> None:
         """Follow who is in the call. When a parent who joined leaves again, the episode is over."""
