@@ -19,6 +19,7 @@ the report when the drone's camera did not point along the robot's front at take
 
 The drone server keeps showing the last mission's child. Only a child reported after --watch
 started (or after the time given to deliver()) is sent: never the one of an earlier rehearsal.
+That compares the drone server's clock with ours: run --watch on the machine that runs drone/fly.
 
     python3 -m drone.report_child --to http://<ROBOT_IP>:8001 --ping        # before the flight
     python3 -m drone.report_child --to http://<ROBOT_IP>:8001 --watch       # start it BEFORE
@@ -46,6 +47,7 @@ NTFY_PREFIX = "ntfy:"
 NTFY_SERVER = "https://ntfy.sh"
 ACK_SUFFIX = "-ack"  # the relay answers on "<topic>-ack"
 ROBOT_FRAME = "robot"  # ahead / left of the robot where it stood at takeoff
+ROBOT_REFUSALS = (400, 409)  # child_goal_server's "never": a wrong report, or the robot moved
 HTTP_TIMEOUT_S = 6.0  # the venue Wi-Fi answers the robot's pings in 0.3-4.6 s
 HTTP_RETRY_FIRST_S = 0.5
 HTTP_RETRY_MAX_S = 2.0
@@ -69,7 +71,7 @@ class LinkError(Exception):
 
 
 class RefusedError(LinkError):
-    """The robot said no to this report (a 4xx answer): repeating it cannot help."""
+    """The robot said no to this report (its own 400 or 409): repeating it cannot help."""
 
 
 class HttpTarget:
@@ -83,7 +85,8 @@ class HttpTarget:
     def send(self, body: dict[str, Any], wait_s: float) -> dict[str, Any]:
         """The robot's acknowledgement of a report, else LinkError (or RefusedError)."""
         data = json.dumps(body).encode()
-        reply = _answer(*_http("POST", self.name + CHILD_FOUND_PATH, data, HTTP_TIMEOUT_S))
+        answer = _http("POST", self.name + CHILD_FOUND_PATH, data, HTTP_TIMEOUT_S)
+        reply = _answer(*answer, key=body["mission_id"])
         if reply.get("mission_id") != body["mission_id"]:
             raise LinkError("an answer without our mission_id: is that the child_goal_server?")
         return reply
@@ -131,7 +134,8 @@ class NtfyTarget:
                     if answer.get("ack") == key and isinstance(status, int):
                         reply = _object(json.dumps(answer.get("reply")))
                         if not 200 <= status < 300:
-                            refusal = (status, json.dumps(reply))
+                            if refusal is None or reply.get("mission_id") == key:
+                                refusal = (status, json.dumps(reply))
                         elif "mission_id" not in body or reply.get("mission_id") == key:
                             return reply
                         # else not the robot's: its acknowledgement repeats the mission_id
@@ -144,7 +148,7 @@ class NtfyTarget:
             raise LinkError(f"ntfy: {_reason(error)}") from error
         if refusal is None:
             raise LinkError("sent through ntfy, no answer from the robot's relay yet")
-        return _answer(*refusal)
+        return _answer(*refusal, key=key)
 
     def _publish(self, body: dict[str, Any]) -> None:
         status, text = _http("POST", self._topic_url, json.dumps(body).encode(), HTTP_TIMEOUT_S)
@@ -387,14 +391,17 @@ def _http(method: str, url: str, body: bytes | None, timeout: float) -> tuple[in
         raise LinkError(_reason(error)) from error
 
 
-def _answer(status: int, text: str) -> dict[str, Any]:
-    """The JSON object of the robot's 2xx answer. A 4xx is its refusal (RefusedError); anything
-    else (503 "no pose yet", another 5xx, no status) is a LinkError: worth another try."""
+def _answer(status: int, text: str, key: str | None = None) -> dict[str, Any]:
+    """The JSON object of a 2xx answer. The robot's own refusal of report `key` (a 400 or 409
+    that repeats its mission_id) is a RefusedError. Anything else is a LinkError, worth another
+    try: 503 "no pose yet", no status, or a 4xx from whatever else answers at that address."""
     reply = _object(text)
     if 200 <= status < 300:
         return reply
     reason = f"HTTP {status}: {reply.get('error') or text[:80]}"
-    raise RefusedError(reason) if 400 <= status < 500 else LinkError(reason)
+    if status in ROBOT_REFUSALS and key is not None and reply.get("mission_id") == key:
+        raise RefusedError(reason)
+    raise LinkError(reason)
 
 
 def _object(text: str | bytes) -> dict[str, Any]:
@@ -465,13 +472,13 @@ def main() -> None:
     if args.ping:
         raise SystemExit(0 if ping(args.to) else 1)
     if args.watch:
-        if not ping(args.to, count=1):
-            log.warning("robot link: NOT answering now; a report is retried until it does")
         try:
+            if not ping(args.to, count=1):
+                log.warning("robot link: NOT answering now; a report is retried until it does")
             watch(args.watch, args.to, args.heading_offset)
         except KeyboardInterrupt:
-            finish()  # a report may still wait for its acknowledgement: Ctrl+C again gives up
-        return
+            # a report may still wait for its acknowledgement: Ctrl+C again gives up
+            raise SystemExit(0 if finish() else 1) from None
     if args.x is None or args.y is None:
         parser.error("give --ping, --watch, or --x and --y")
     body = _body(args.mission_id or f"manual-{int(time.time())}", args.x, args.y)
