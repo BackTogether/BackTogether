@@ -247,7 +247,9 @@ def search(
                 mission = client.mission()
                 state = mission["state"]
                 if args.robot:
-                    deliver(mission, [args.robot], started_at, args.heading_offset)
+                    deliver(
+                        mission, [args.robot], started_at, args.heading_offset, args.launch_ahead
+                    )
                 if done_with_child(mission, args):
                     client.stop()  # hover there
                     return mission
@@ -342,6 +344,12 @@ def main() -> None:
         help="--robot: degrees the camera pointed left of the robot's front at takeoff",
     )
     parser.add_argument(
+        "--launch-ahead",
+        type=float,
+        default=0.0,
+        help="--robot: metres in front of the robot the drone took off",
+    )
+    parser.add_argument(
         "--watch",
         action="store_true",
         help="fly by hand: recognise, track and record the boxes (no flight command)",
@@ -405,17 +413,17 @@ def main() -> None:
         print(f"mission ended without the child: {state}: {message}")
     if child:
         print(f"child at {child.get('drone')} m from the takeoff point (drone frame)")
-        print_for_robot(mission, name, args.heading_offset)
+        print_for_robot(mission, name, args)
     if args.robot and child:
         follow_robot(mission, args, started_at)
     recording.stop()
 
 
-def print_for_robot(mission: dict[str, Any], name: str, heading_offset_deg: float) -> None:
+def print_for_robot(mission: dict[str, Any], name: str, args: argparse.Namespace) -> None:
     """The child in the robot's frame (what --robot sends), as the command that sends it by
     hand: x metres ahead of where the robot stood at takeoff, y to its left."""
     try:
-        report = child_report(mission, heading_offset_deg)
+        report = child_report(mission, args.heading_offset, args.launch_ahead)
     except ValueError as error:
         print(f"no robot-frame position for {name}: {error}")
         return
@@ -444,7 +452,7 @@ def follow_robot(mission: dict[str, Any], args: argparse.Namespace, started_at: 
     """Wait for the robot's acknowledgement of the report, then show it driving to the child
     until it arrives (Ctrl+C stops watching; the drone keeps hovering)."""
     # the delivery the search started (deliver() starts each report once), None if not sent
-    sent = deliver(mission, [args.robot], started_at, args.heading_offset)
+    sent = deliver(mission, [args.robot], started_at, args.heading_offset, args.launch_ahead)
     try:
         if sent is None or not finish():
             print("the robot did NOT get the child (see above): by hand, drone/robot <x> <y>")
