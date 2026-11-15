@@ -65,6 +65,16 @@ Pushing to `main` with changes under `web/` deploys it through
 [.github/workflows/pages.yml](.github/workflows/pages.yml). **Once, by a repo admin:**
 Settings → Pages → Build and deployment → Source: **GitHub Actions**.
 
+## Drone laptop link: Mac on the drone Wi-Fi + iPhone over USB (what we use)
+The Mac flies the drone on its Wi-Fi (`HoverX1_060039`) and gets internet at the same time from
+an iPhone on a USB cable (Personal Hotspot → "Allow Others to Join"): two networks at once, one
+per interface. In System Settings → Network → "…" → Set Service Order, put **iPhone USB above
+Wi-Fi**; then `route -n get default` must show the iPhone (`en7`-like) and
+`route -n get <DRONE_IP>` must show `en0`. The child report reaches the robot through the
+internet: `python3 -m drone.report_child --to ntfy:<topic> --watch` on the Mac, and on the robot
+the launch's `child_relay` with the same secret topic in `CHILD_LINK_TOPIC`. An Android over USB
+does not work on macOS (RNDIS); the Ethernet link below is the alternative without a phone.
+
 ## Ethernet connection (drone laptop ↔ robot laptop)
 The laptop that flies the drone has its Wi-Fi on the drone (`HoverX1_060039`, no internet), so it
 cannot reach the robot. A second laptop on the event Wi-Fi carries its child reports to the robot,
