@@ -59,11 +59,11 @@ V_DEADBAND = 0.08  # bbox centre this close to the middle row: the gimbal stays
 WAIT_V = 0.8  # bbox centre lower than this: stop and let the gimbal catch up
 GIMBAL_STICK = 1.0  # full gimbal input: the dead zone is 13.5 % of the stick
 PIN_DOWN = -GIMBAL_STICK  # overhead: keeps the camera at its bottom stop
-CENTRED_M = 0.25  # this close to the child: the overhead stage starts
+CENTRED_M = 0.5  # this close to the child: the overhead stage starts
 OVERHEAD_TILT_DEG = -89.0  # camera at its bottom stop (the estimate clamps at -90)
-CENTRE_TOL_PX = 60.0  # bbox centre to image centre (~0.2 m from 2.8 m above the floor)
+CENTRE_TOL_PX = 250.0  # bbox centre to image centre: the fix is placed geometrically anyway
 OVERHEAD_LEAVE_M = 1.0  # the child this far from below: close in again
-SAMPLES = 4  # centred frames overhead whose median is the fix
+SAMPLES = 3  # centred frames overhead (not necessarily in a row) whose median is the fix
 HOLD_S = 0.8  # last fix older than this: hover until a new one comes
 MIN_RANGE_M = 0.3
 
@@ -287,7 +287,6 @@ class TrackApproach:
                 if len(samples) >= SAMPLES:
                     return child_fix(samples)
                 continue
-            samples.clear()
             self.note(f"track: overhead, centring: {sample.error_px:.0f} px off")
             self._nudge(epoch, *self._centre_offset(sighting, sample))
 
