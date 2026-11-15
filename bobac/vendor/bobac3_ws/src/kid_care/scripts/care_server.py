@@ -23,7 +23,7 @@ answers need Vosk and its model (see listen.py). The video call uses CALL_BASE_U
 server, default in care.py). The child profile is found next to this file, or where
 KID_CARE_PROFILE points (the launch file sets it, so an installed package works too). Its name
 gives way to the one the parent typed on the web page for the person being searched
-(KID_CARE_PERSON): scripts/web_inbox.py's request.json in that person's folder of KID_CARE_FACES.
+(KID_CARE_PERSON): scripts/web_inbox.py's ~/web_requests/<person>.json.
 """
 
 import argparse
@@ -50,10 +50,9 @@ import speech
 DEFAULT_PORT = 8000
 HERE = Path(__file__).resolve().parent
 PROFILE_PATH = Path(os.environ.get("KID_CARE_PROFILE") or HERE.parent / "config" / "child.json")
-# The person face_check searches for, and face_rec's folders (the web's requests land there)
+# The person face_check searches for, and where scripts/web_inbox.py keeps the web's requests
 PERSON = os.environ.get("KID_CARE_PERSON", "")
-FACE_DIRECTORY = Path(os.environ.get("KID_CARE_FACES") or Path.home() / ".reinovo" / "face_data")
-WEB_REQUEST_FILE = "request.json"
+WEB_REQUESTS = Path.home() / "web_requests"
 BUZZER_TIMEOUT_S = 5
 CALL_PROFILE_DIR = Path.home() / "leuk" / "call-firefox"
 CALL_LOG_PATH = Path.home() / "leuk" / "call-firefox.log"
@@ -209,21 +208,16 @@ class CallWindow:
         self._members = None
 
 
-def requested_name(person: str, faces: Path = FACE_DIRECTORY):
-    """The name the parent typed on the web page for `person`, None without one. The web's folders
-    are in lower case and a hand-made one may not be: compared without case."""
+def requested_name(person: str, requests: Path = WEB_REQUESTS):
+    """The name the parent typed on the web page for `person`, None without one (web_inbox.py
+    names its files in lower case; face_check's person may not be)."""
     if not person:
         return None
-    for folder in sorted(faces.glob("*")):
-        if folder.name.lower() != person.lower():
-            continue
-        try:
-            name = json.loads((folder / WEB_REQUEST_FILE).read_text(encoding="utf-8")).get("name")
-        except (OSError, ValueError, AttributeError):
-            continue  # a folder of photos added by hand, without a request
-        if isinstance(name, str) and name.strip():
-            return name.strip().title()  # typed "JoRgE" or "jorge": greeted as "Jorge"
-    return None
+    try:
+        name = json.loads((requests / f"{person.lower()}.json").read_text(encoding="utf-8"))["name"]
+    except (OSError, ValueError, KeyError, TypeError):
+        return None  # no web request for this person: the profile's name
+    return name.strip().title() if isinstance(name, str) and name.strip() else None
 
 
 class CareServer(ThreadingHTTPServer):

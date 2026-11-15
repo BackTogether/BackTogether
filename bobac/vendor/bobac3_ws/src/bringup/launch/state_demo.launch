@@ -56,6 +56,5 @@
     <arg name="start_state" value="care"/>
     <arg name="hide_splash" value="$(arg splash)"/>
     <arg name="person" value="$(arg person)"/>
-    <arg name="face_directory" value="$(arg face_directory)"/>
   </include>
 </launch>

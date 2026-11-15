@@ -12,7 +12,7 @@ Wants=network-online.target
 After=network-online.target
 
 [Service]
-ExecStart=/usr/bin/python3 %h/leukerbard-robotics-AI-hackathon-2026/scripts/web_inbox.py --out %h/.reinovo/face_data
+ExecStart=/usr/bin/python3 %h/leukerbard-robotics-AI-hackathon-2026/scripts/web_inbox.py --out %h/.reinovo/face_data --check-faces
 Restart=always
 RestartSec=5
 
