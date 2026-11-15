@@ -34,6 +34,7 @@ import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
+import agent_process
 import care
 import caregiver
 import listen
@@ -189,6 +190,7 @@ class CareServer(ThreadingHTTPServer):
         self.ears = ears
         self.call_base = call_base
         self.call_window = CallWindow()
+        self.agent = agent_process if agent_process.available() else None
         self.session = None
         self.session_thread = None
         self.session_lock = threading.Lock()
@@ -210,6 +212,7 @@ class CareServer(ThreadingHTTPServer):
                 self.call_base,
                 self.call_window.show,
                 self.call_window.members,
+                self.agent,
             )
             self.session_thread = threading.Thread(target=self.session.run, daemon=True)
             self.session_thread.start()

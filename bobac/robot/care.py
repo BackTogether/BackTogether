@@ -74,13 +74,16 @@ class CareSession:
         call_base="",
         show_call=None,
         call_members=None,
+        agent=None,
     ):
         """`child`: profile dict (config/child.json). `speech`: module with say / say_text /
         play_file. `telegram`: caregiver.Telegram (one chat per parent) or None. `buzz() -> None`
         reaches the robot hardware. `listen`: module with wait_word
         (listen.py) to also accept spoken answers, or None. `call_base`: Jitsi server URL.
         `show_call(url or None)`: opens / closes the video call on the robot screen, or None.
-        `call_members() -> int or None`: people in that call counting the robot (None: unknown)."""
+        `call_members() -> int or None`: people in that call counting the robot (None: unknown).
+        `agent`: module with start(variables) / stop() (agent_process.py): a voice agent that
+        talks with the child while nobody else is in the call, or None."""
         self._child = child
         self._name = child["name"].split()[0]
         self._parent = child["parents"][0]["called"]
@@ -92,6 +95,7 @@ class CareSession:
         self._listen = listen
         self._show_call = show_call
         self._call_members = call_members
+        self._agent = agent
         room = f"find-{self._name.lower()}-{uuid.uuid4().hex[:8]}"
         self._call_url = "{}/{}".format((call_base or DEFAULT_CALL_BASE_URL).rstrip("/"), room)
         robot_name = urllib.parse.quote(json.dumps(self._name))
@@ -132,6 +136,7 @@ class CareSession:
         # the robot enters the call first and the parents are told after, so a parent who joins
         # at once finds the child already there
         self._start_call()
+        self._start_agent()
         self._tell_parents()
         self._wait_for_parent()
 
@@ -268,6 +273,8 @@ class CareSession:
             changed, self._parent_in_call = self._parent_in_call != in_call, in_call
         if changed:
             self._note("parent joined the call" if in_call else "parent left the call")
+        if changed and in_call:
+            self._stop_agent()  # the parent talks now, the agent must not talk over them
 
     def _parent_arrived(self) -> None:
         """The parent hung up: they are with the child now. Back to how the robot was before."""
@@ -277,7 +284,24 @@ class CareSession:
         self._speech.say("family_here")
         self._set_state("idle")
 
+    def _start_agent(self) -> None:
+        if self._agent:
+            self._agent.start(
+                {
+                    "child_name": self._name,
+                    "child_age": self._child["age"],
+                    "parent_called": self._parent,
+                    "emergency_number": self._child["emergency_number"],
+                }
+            )
+            self._note("voice agent talking with the child")
+
+    def _stop_agent(self) -> None:
+        if self._agent:
+            self._agent.stop()
+
     def _end_call(self) -> None:
+        self._stop_agent()
         with self._lock:
             was_active, self._call_active = self._call_active, False
         if was_active and self._show_call:
