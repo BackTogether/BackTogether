@@ -77,7 +77,7 @@ that time (takeoff frame; `tilt_deg` null until anchored). Browsers: the headers
 | `POST /move` | `{"fwd", "right", "up", "turn"}` each -1..1 (fraction of the speed cap), `"seconds"` 0..5 (default 0.5), `"resume"` (bool) | `200 {"ok": true}`. Velocity command held for `seconds`, then neutral (the watchdog): stream it faster than that. `409` while an action runs, after a STOP (until `"resume": true`), or while the safety rules hold or fly home |
 | `POST /goto` | `{"x", "y", "alt"?}` (alt default: current) | `202 {"accepted": true}`; `400` outside the geofence/altitude limits; `409` not flying in MANUAL or busy |
 | `POST /turn` | `{"heading"}` or `{"by"}` (degrees, + = right) | `202` / `409` |
-| `POST /tilt` | `{"deg"}` -90..15 (0 = level, -90 = down) | `202`: moves the camera to that estimated tilt, anchoring the estimate at a stop first if unknown (up to ~20 s); `409` if the sticks are locked |
+| `POST /tilt` | `{"deg"}` -90..15 (0 = level, -90 = down), `"anchor"?` (default false) | `202`: moves the camera to that estimated tilt, anchoring the estimate at a stop first if unknown or with `anchor` (up to ~20 s); `409` if the sticks are locked |
 | `POST /patrol` | `{"waypoints": [{"x", "y", "alt"?, "dwell_s"?, "scan"?}], "loops"? (1, 0 = forever), "dwell_s"? (2), "scan"? (false), "return_home"? (true), "land"? (false)}` | `202` / `400` / `409` |
 | `POST /stop` | - | `200 {"ok": true}`: STOP. Cancels any action at once, sticks neutral, the drone hovers |
 | `POST /land` | - | `200 {"ok", "error"}`: STOP, then land |

@@ -75,6 +75,12 @@ class TiltEstimator:
             self._low = _clamp(self._low + change)
             self._high = _clamp(self._high + change)
 
+    def forget(self) -> None:
+        """Back to unknown, so the next set_tilt pushes into a stop again: the camera may have
+        moved without our sticks (a landing, a drone restart, the phone app)."""
+        with self._lock:
+            self._low, self._high, self._reported = GIMBAL_BOTTOM_DEG, GIMBAL_TOP_DEG, None
+
     def update(self, telemetry: Telemetry) -> None:
         """A tilt the drone reports (never seen on the X1) replaces the estimate when it
         changes."""
