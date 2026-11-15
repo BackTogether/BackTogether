@@ -1,0 +1,148 @@
+"""Receive the parents' search requests from the web page and save the child's photos.
+
+The page (web/) POSTs each request to an ntfy topic (`apiUrl` in web/config.js). This listens to
+that topic and saves every request in a folder named after the child, in capitals:
+
+    <out>/JORGE/photo-1.jpg, photo-2.jpg ...   the photos the parent sent
+    <out>/JORGE/request.json                   name, request id and time (no photo bytes)
+
+A later request for the same name replaces that folder's photos. Only requests sent while this
+runs are saved. Standard library only, Python 3.8+: the same file runs on the robot and on the
+drone laptop.
+
+    python3 scripts/web_inbox.py                              # saves in ~/search_requests
+    python3 scripts/web_inbox.py --out ~/.reinovo/face_data   # straight into the robot's faces
+    python3 scripts/web_inbox.py --out drone/identify/people  # straight into the drone's faces
+"""
+
+import argparse
+import base64
+import binascii
+import json
+import logging
+import re
+import time
+import unicodedata
+import urllib.request
+from pathlib import Path
+
+WEB_CONFIG = Path(__file__).resolve().parent.parent / "web" / "config.js"
+DEFAULT_OUT = Path.home() / "search_requests"
+SCHEMA_PREFIX = "find-my-child/search-request@"
+JPEG_START = b"\xff\xd8"
+STREAM_TIMEOUT_S = 120.0
+DOWNLOAD_TIMEOUT_S = 30.0
+RECONNECT_S = 3.0
+
+log = logging.getLogger("web_inbox")
+# No proxy, whatever the system settings say (the robot's environment sets none it needs)
+_opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+
+
+def topic_url_from_config(config=WEB_CONFIG):
+    """The page's `apiUrl`: the ntfy topic it posts to."""
+    match = re.search(r'apiUrl:\s*"([^"]*)"', config.read_text(encoding="utf-8"))
+    url = match.group(1) if match else ""
+    if "ntfy" not in url:
+        raise SystemExit(f"{config}: apiUrl is not an ntfy topic ({url or 'empty'})")
+    return url
+
+
+def folder_name(child_name, fallback):
+    """'Jorge Martín' -> 'JORGE_MARTIN': capitals, letters, digits and underscores only."""
+    ascii_name = unicodedata.normalize("NFKD", child_name).encode("ascii", "ignore").decode()
+    return re.sub(r"[^A-Z0-9]+", "_", ascii_name.upper()).strip("_") or fallback.upper()
+
+
+def read_request(event):
+    """The page's request from one ntfy event (a large body arrives as an attachment), or None."""
+    try:
+        attachment = event.get("attachment")
+        if attachment:
+            with _opener.open(attachment["url"], timeout=DOWNLOAD_TIMEOUT_S) as response:
+                text = response.read().decode("utf-8")
+        else:
+            text = event.get("message", "")
+        request = json.loads(text)
+    except (OSError, ValueError, KeyError) as error:
+        log.warning("skipped a message that is not a search request: %s", error)
+        return None
+    schema = str(request.get("schema", "")) if isinstance(request, dict) else ""
+    if not schema.startswith(SCHEMA_PREFIX):
+        log.warning("skipped a message that is not a search request")
+        return None
+    return request
+
+
+def save(request, out):
+    """Write the request's photos in out/<NAME>/. Returns (folder, photos saved)."""
+    request_id = str(request.get("request_id") or "request")
+    name = str((request.get("child") or {}).get("name") or "").strip()
+    folder = out / folder_name(name, request_id)
+    photos = request.get("photos") or [request.get("photo") or {}]
+    images = []
+    for index, photo in enumerate(photos, start=1):
+        try:
+            data = base64.b64decode(photo.get("data") or "", validate=True)
+        except (binascii.Error, AttributeError, ValueError):
+            data = b""
+        if data.startswith(JPEG_START):
+            images.append(data)
+        else:
+            log.warning("photo %d of %s is not a JPEG: skipped", index, request_id)
+    if not images:
+        return folder, 0
+    folder.mkdir(parents=True, exist_ok=True)
+    for old in folder.glob("photo-*.jpg"):  # a new request for this name replaces its photos
+        old.unlink()
+    for index, data in enumerate(images, start=1):
+        (folder / f"photo-{index}.jpg").write_bytes(data)
+    summary = {
+        "name": name,
+        "request_id": request_id,
+        "requested_at": request.get("requested_at"),
+        "photos": len(images),
+    }
+    text = json.dumps(summary, indent=2, ensure_ascii=False) + "\n"
+    (folder / "request.json").write_text(text, encoding="utf-8")
+    return folder, len(images)
+
+
+def listen(topic_url):
+    """Yield every new ntfy message on the topic, reconnecting when the link drops."""
+    since = str(int(time.time()))  # only requests sent from now on
+    while True:
+        try:
+            url = f"{topic_url}/json?since={since}"
+            with _opener.open(url, timeout=STREAM_TIMEOUT_S) as stream:
+                log.info("listening on %s", topic_url)
+                for line in stream:
+                    event = json.loads(line)
+                    if event.get("event") == "message":
+                        since = event["id"]  # after a reconnect, carry on from here
+                        yield event
+        except (OSError, ValueError) as error:
+            log.warning("ntfy link lost (%s), reconnecting", error)
+        time.sleep(RECONNECT_S)
+
+
+def main():
+    parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
+    parser.add_argument("--out", type=Path, default=DEFAULT_OUT, help="where the folders go")
+    parser.add_argument("--topic-url", help="ntfy topic (default: apiUrl in web/config.js)")
+    args = parser.parse_args()
+    logging.basicConfig(level=logging.INFO, format="%(asctime)s %(name)s: %(message)s")
+    out = args.out.expanduser()
+    for event in listen(args.topic_url or topic_url_from_config()):
+        request = read_request(event)
+        if request is None:
+            continue
+        folder, saved = save(request, out)
+        if saved:
+            log.info("%s: %d photo(s) saved in %s", request.get("request_id"), saved, folder)
+        else:
+            log.warning("%s: no usable photo", request.get("request_id"))
+
+
+if __name__ == "__main__":
+    main()

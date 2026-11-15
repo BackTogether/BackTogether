@@ -25,8 +25,8 @@ const el = {
   year: $("#year"),
 };
 
-/** The photo the parent picked, already downscaled: { dataUrl, mediaType, name, width, height }. */
-let photo = null;
+/** The photos the parent picked, already downscaled: [{ dataUrl, mediaType, name, width, height }]. */
+let photos = [];
 
 /* ------------------------------------------------------------------- photo */
 
@@ -53,32 +53,37 @@ async function downscaleImage(file, maxSize, quality) {
   };
 }
 
-async function acceptPhoto(file) {
-  if (!file) return;
-  if (!file.type.startsWith("image/")) {
-    showFormError("That file is not an image. A normal phone photo of your child works best.");
+/** Replaces the chosen photos with `files`: several views of the face help the recognition. */
+async function acceptPhotos(files) {
+  const picked = [...(files || [])].slice(0, CONFIG.photoMaxCount || 5);
+  if (!picked.length) return;
+  if (picked.some((file) => !file.type.startsWith("image/"))) {
+    showFormError("One of those files is not an image. Normal phone photos of your child work best.");
     return;
   }
-  if (file.size > 25 * 1024 * 1024) {
-    showFormError("That image is larger than 25 MB. Please pick a smaller one.");
+  if (picked.some((file) => file.size > 25 * 1024 * 1024)) {
+    showFormError("One of those images is larger than 25 MB. Please pick smaller ones.");
     return;
   }
   try {
-    photo = await downscaleImage(file, CONFIG.photoMaxSize || 1024, CONFIG.photoQuality || 0.82);
+    const size = CONFIG.photoMaxSize || 1024;
+    const quality = CONFIG.photoQuality || 0.82;
+    photos = await Promise.all(picked.map((file) => downscaleImage(file, size, quality)));
   } catch (error) {
     console.error(error);
-    showFormError("That image could not be read. Try another photo.");
+    photos = [];
+    showFormError("One of those images could not be read. Try other photos.");
     return;
   }
-  el.photoPreview.src = photo.dataUrl;
-  // Not the file name: a phone photo name is long and useless to the parent.
-  el.photoName.textContent = `Photo ready · ${photo.width}×${photo.height}`;
+  el.photoPreview.src = photos[0].dataUrl;
+  // Not the file names: a phone photo name is long and useless to the parent.
+  el.photoName.textContent = photos.length === 1 ? "Photo ready" : `${photos.length} photos ready`;
   el.dropzone.dataset.state = "filled";
   showFormError("");
 }
 
 function clearPhoto() {
-  photo = null;
+  photos = [];
   el.photoInput.value = "";
   el.photoPreview.removeAttribute("src");
   el.photoName.textContent = "";
@@ -92,9 +97,20 @@ function requestId() {
   return `FMC-${new Date().toISOString().slice(0, 10).replace(/-/g, "")}-${random.toUpperCase()}`;
 }
 
+/** One photo as sent: base64 JPEG without the "data:image/jpeg;base64," prefix. */
+function photoField(picked) {
+  return {
+    filename: picked.name,
+    media_type: picked.mediaType,
+    width: picked.width,
+    height: picked.height,
+    data: picked.dataUrl.split(",")[1],
+  };
+}
+
 /**
  * The body POSTed to the robot bridge. Documented in README.md: the drone side reads
- * `photo.data` (base64 JPEG) to build the face model and `child.name` to label the search.
+ * `photos[].data` (base64 JPEGs; `photo` is the first) and `child.name` to label the search.
  */
 function buildPayload(form, id) {
   const data = new FormData(form);
@@ -107,14 +123,8 @@ function buildPayload(form, id) {
     child: {
       name: String(data.get("child_name") || "").trim(),
     },
-    photo: {
-      filename: photo.name,
-      media_type: photo.mediaType,
-      width: photo.width,
-      height: photo.height,
-      // Base64 without the "data:image/jpeg;base64," prefix.
-      data: photo.dataUrl.split(",")[1],
-    },
+    photo: photoField(photos[0]),
+    photos: photos.map(photoField),
     client: {
       page: location.href,
       user_agent: navigator.userAgent,
@@ -173,7 +183,7 @@ async function onSubmit(event) {
     el.childName.focus();
     return;
   }
-  if (!photo) {
+  if (!photos.length) {
     showFormError("A photo of your child is what the drone searches with: please add one.");
     el.dropzone.focus();
     return;
@@ -207,7 +217,7 @@ async function onSubmit(event) {
 /* ------------------------------------------------------------------- setup */
 
 function wirePhotoInput() {
-  el.photoInput.addEventListener("change", (event) => acceptPhoto(event.target.files?.[0]));
+  el.photoInput.addEventListener("change", (event) => acceptPhotos(event.target.files));
   el.photoClear.addEventListener("click", clearPhoto);
 
   el.dropzone.addEventListener("click", () => el.photoInput.click());
@@ -229,7 +239,7 @@ function wirePhotoInput() {
       delete el.dropzone.dataset.drag;
     });
   }
-  el.dropzone.addEventListener("drop", (event) => acceptPhoto(event.dataTransfer?.files?.[0]));
+  el.dropzone.addEventListener("drop", (event) => acceptPhotos(event.dataTransfer?.files));
 }
 
 function init() {
