@@ -3,9 +3,10 @@ rem Windows twin of drone/demo (keep the two in step): take off from the floor L
 rem front of the robot, sweep at 3 m, find the child, hover over them, send them to the robot
 rem through ngrok and stay there; PAD_WAIT_S after the robot's pad came in view, land on it.
 rem Needs drone\fly running and, on the robot, roslaunch bringup state_demo.launch.
-rem Usage: drone\demo [child, default jorge] [more drone\find options, e.g. --length 10 --width 6]
+rem Without a child it first waits for the parent's request from the web page.
+rem Usage: drone\demo [child] [more drone\find options, e.g. --alt 2.2 --length 10 --width 6]
 setlocal
-set "CHILD=jorge"
+set "CHILD=--from-web"
 set "FIRST=%~1"
 if defined FIRST if not "%FIRST:~0,1%"=="-" (
   set "CHILD=%~1"

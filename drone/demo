@@ -5,16 +5,18 @@
 # them while it drives there. Then drone/dock_robot.py: PAD_WAIT_S after the robot's pad came in
 # view, land on it. Both record the flight (recordings/, ~/Downloads). Needs drone/fly running and,
 # on the robot, roslaunch bringup state_demo.launch (it drives there and starts the care flow).
-# Usage: drone/demo [child, default jorge] [more drone/find options, e.g. --length 10 --width 6]
+# Without a child it first waits for the parent's request from the web page (name + photos,
+# saved like drone/inbox does) and looks for that child.
+# Usage: drone/demo [child] [more drone/find options, e.g. --alt 2.2 --length 10 --width 6]
 #        then press the drone's button
 set -euo pipefail
 cd "$(dirname "$0")/.."
-CHILD=jorge
+CHILD=(--from-web)
 if [[ $# -gt 0 && $1 != -* ]]; then
-  CHILD=$1
+  CHILD=("$1")
   shift
 fi
 LAUNCH_AHEAD_M=0.5  # the drone takes off from the floor this far in front of the robot
 PAD_WAIT_S=120  # it lands on the robot's pad this long after the pad came in view
-drone/find "$CHILD" --alt 3 --orbit 0 --sweep --collect --robot --launch-ahead "$LAUNCH_AHEAD_M" "$@"
+drone/find "${CHILD[@]}" --alt 3 --orbit 0 --sweep --collect --robot --launch-ahead "$LAUNCH_AHEAD_M" "$@"
 exec drone/dock --pad-wait "$PAD_WAIT_S"
