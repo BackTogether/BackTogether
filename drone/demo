@@ -1,0 +1,20 @@
+#!/usr/bin/env bash
+# The whole demo, drone side. drone/find_child.py: take off from the floor LAUNCH_AHEAD_M in front
+# of the robot (camera facing the robot's front), lawnmower sweep at 3 m, find the child, fly over
+# them with the camera straight down, send the child to the robot through ngrok and stay over
+# them while it drives there. Then drone/dock_robot.py: PAD_WAIT_S after the robot's pad came in
+# view, land on it. Both record the flight (recordings/, ~/Downloads). Needs drone/fly running and,
+# on the robot, roslaunch bringup state_demo.launch (it drives there and starts the care flow).
+# Usage: drone/demo [child, default jorge] [more drone/find options, e.g. --length 10 --width 6]
+#        then press the drone's button
+set -euo pipefail
+cd "$(dirname "$0")/.."
+CHILD=jorge
+if [[ $# -gt 0 && $1 != -* ]]; then
+  CHILD=$1
+  shift
+fi
+LAUNCH_AHEAD_M=0.5  # the drone takes off from the floor this far in front of the robot
+PAD_WAIT_S=120  # it lands on the robot's pad this long after the pad came in view
+drone/find "$CHILD" --alt 3 --orbit 0 --sweep --collect --robot --launch-ahead "$LAUNCH_AHEAD_M" "$@"
+exec drone/dock --pad-wait "$PAD_WAIT_S"

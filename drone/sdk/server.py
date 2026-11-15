@@ -613,8 +613,9 @@ class ApiHandler(WebHandler):
         drone = self.server.drone
         if drone.sticks.gate_state != GATE_LIVE:
             return HTTPStatus.CONFLICT, {"error": "sticks locked: press Manual control first"}
-        action = functools.partial(drone.set_tilt, deg)
-        return self._start("tilt", action, detail={"target_deg": deg})
+        anchor = bool(_flag(body, "anchor", False))
+        action = functools.partial(drone.set_tilt, deg, anchor)
+        return self._start("tilt", action, detail={"target_deg": deg, "anchor": anchor})
 
     def _photo(self, body: dict[str, Any]) -> Reply:
         try:

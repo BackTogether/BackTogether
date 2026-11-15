@@ -1,0 +1,12 @@
+#!/usr/bin/env bash
+# Watch, on the robot, what it does with the child the drone sends (bringup/scripts/watch_goal.py
+# over ssh): where it stood, the child and the goal as X ahead / Y left of that pose (compare
+# with the drone's `drone/robot X Y`), then where it drives, twice a second. Needs ssh to the
+# robot: the venue Wi-Fi (a Mac on the drone's Wi-Fi cannot reach it; use a teammate's laptop).
+# Also logged on the robot in ~/watch_goal.log. Ctrl+C stops it.
+# Usage: drone/robot_watch [ssh target, default bobac3@<ROBOT_IP>]
+set -euo pipefail
+cd "$(dirname "$0")/.."
+TARGET="${1:-bobac3@<ROBOT_IP>}"
+scp -q bobac/vendor/bobac3_ws/src/bringup/scripts/watch_goal.py "$TARGET:watch_goal.py"
+exec ssh -t "$TARGET" 'bash -ic "python3 -u ~/watch_goal.py"'

@@ -14,7 +14,9 @@ the robot's pad (or LAND in the web page).
     drone/find jorge --sweep         # terminal 2, then the drone's button (--side left: first
                                      #   lane turn to the left; --length/--width bound the hall)
     drone/find jorge                 # the square of waypoints instead of the sweep
-    drone/find jorge --watch         # no flight: recognise and track on the live video only
+    drone/find jorge --watch         # no flight command: recognise and track while you fly by
+                                     #   hand from the page; records each flight, takeoff to landing
+    drone/find jorge --collect       # also save frames for the body model (identify/collect.py)
 
 The child is a folder of face photos (copied into drone/identify/people/<folder name>/, which
 git ignores) or the name of a folder already there. Other people's folders stay in the database:
@@ -46,6 +48,8 @@ from typing import Any
 
 from drone.identify.__main__ import load_people
 from drone.identify.body_track import LOCK_FACE_FRAMES, SEARCHING
+from drone.identify.boxes_video import BoxesVideo
+from drone.identify.collect import Collector
 from drone.identify.feed import (
     DroneServer,
     fractions,
@@ -55,6 +59,7 @@ from drone.identify.feed import (
     vision_body,
 )
 from drone.identify.people import PEOPLE_DIR, People, is_photo
+from drone.report_child import ROBOT_URL, child_report, deliver, finish, follow, mission_id
 from drone.sdk.client import DroneApiError, DroneClient, tilt_on_ground
 from drone.sdk.mission import END_STATES, IDLE, REPORTING, RETURNING
 
@@ -73,6 +78,10 @@ CHILD_REPORTED = "child reported"  # the mission's step flying home after the or
 REPO = Path(__file__).resolve().parent.parent
 LIVE_HELPER = REPO / "drone" / "patrol" / ("live.cmd" if sys.platform == "win32" else "live")
 RECORDINGS = REPO / "recordings"
+# Exit codes, so drone/demo stops instead of going on to land on the robot
+INTERRUPTED = 130  # Ctrl+C (the shell's own code for it)
+NOT_FOUND = 1  # the mission ended without the child
+FLIGHT_POLL_S = 0.5  # --watch: how often it checks whether the drone took off or landed
 
 log = logging.getLogger("find_child")
 
@@ -144,6 +153,14 @@ def load_child(name: str) -> People:
     return people
 
 
+def earliest_report(mission: dict[str, Any]) -> dict[str, Any]:
+    """The mission with its child report, or, before it, the approach's estimate in its place
+    (same id: deliver() sends one of the two, whichever comes first)."""
+    if mission.get("child") is None and mission.get("child_estimate") is not None:
+        return {**mission, "child": mission["child_estimate"]}
+    return mission
+
+
 def done_with_child(mission: dict[str, Any], args: argparse.Namespace) -> bool:
     """Over the child (no orbit), or flying home after the orbit around them: time to STOP.
     Not a return for a patrol timeout, an abort, a failure or a safety rule (those fly home
@@ -157,11 +174,76 @@ def done_with_child(mission: dict[str, Any], args: argparse.Namespace) -> bool:
     )
 
 
+class FlightRecording:
+    """The watch's recordings, from each takeoff to its landing (nothing while on the ground):
+    the camera as it is (drone/fly's MP4 of the stream), the tracker's view with the boxes
+    (recordings/boxes-<child>-<time>.mp4) and, with --collect, frames for the body model. A
+    frame sink of feed.run_live: it checks the drone's flight state every FLIGHT_POLL_S."""
+
+    def __init__(self, client: DroneClient, name: str, collect: bool) -> None:
+        self._client, self._name, self._collect = client, name, collect
+        self._next_poll = 0.0
+        self._video: BoxesVideo | None = None
+        self._collector: Collector | None = None
+        self._camera = False  # drone/fly is recording the camera for us
+
+    def add(self, image: Any, result: Any, frame_time: float) -> None:
+        if time.monotonic() >= self._next_poll:
+            self._next_poll = time.monotonic() + FLIGHT_POLL_S
+            flying = self._in_flight()
+            if flying and self._video is None:
+                self._start()
+            elif flying is False and self._video is not None:
+                log.info("landed")
+                self.stop()
+        if self._video is not None:
+            self._video.add(image, result, frame_time)
+        if self._collector is not None:
+            self._collector.add(image, result, frame_time)
+
+    def stop(self) -> None:
+        """End the recordings of this flight, if any, and print where they are."""
+        if self._video is None:
+            return
+        if self._camera:
+            try:
+                print(f"camera video: {self._client.record(False).get('path')}")
+            except DroneApiError as error:
+                log.warning("camera recording: %s", error)
+        path = self._video.close()
+        print(f"video with the boxes: {path}" if path else "video with the boxes: no frame")
+        report_collected(self._collector)
+        self._video, self._collector, self._camera = None, None, False
+
+    def _in_flight(self) -> bool | None:
+        """None when drone/fly does not answer: keep recording (or not) as before."""
+        try:
+            return bool(self._client.status()["telemetry"]["in_flight"])
+        except DroneApiError:
+            return None
+
+    def _start(self) -> None:
+        self._video = BoxesVideo(RECORDINGS, self._name)
+        self._collector = Collector(RECORDINGS) if self._collect else None
+        try:
+            self._camera = bool(self._client.record(True).get("ok"))
+        except DroneApiError as error:  # e.g. already recording from the page: keep that one
+            log.warning("camera recording: %s", error)
+        log.info("takeoff: recording (boxes in %s)", self._video.path)
+
+
 def search(
-    client: DroneClient, server: DroneServer, name: str, people: People, args: argparse.Namespace
+    client: DroneClient,
+    server: DroneServer,
+    name: str,
+    people: People,
+    args: argparse.Namespace,
+    started_at: float,
+    recording: FlightRecording,
 ) -> dict[str, Any]:
     """Feed the mission until it is done with the child (then STOP: the drone hovers there) or
-    ends. Returns the mission's last status."""
+    ends. Returns the mission's last status. With --robot the child goes to the robot as soon as
+    the mission reports them (in background threads: the flight loop never waits for it)."""
     tracker = make_tracker_for(name, people)
     # at once: it loads its depth model during the takeoff and waits for the mission's patrol
     sweep = start_sweep(args) if args.sweep else None
@@ -175,6 +257,14 @@ def search(
                 next_status = time.monotonic() + STATUS_EVERY_S
                 mission = client.mission()
                 state = mission["state"]
+                if args.robot:
+                    deliver(
+                        earliest_report(mission),
+                        [args.robot],
+                        started_at,
+                        args.heading_offset,
+                        args.launch_ahead,
+                    )
                 if done_with_child(mission, args):
                     client.stop()  # hover there
                     return mission
@@ -191,6 +281,7 @@ def search(
                 continue
             frame_time, image = frame
             result = tracker.update(image, frame_time)
+            recording.add(image, result, frame_time)
             server.post("/vision", vision_body(result, frame_time, image.shape, name))
             report = mission_body(result, frame_time, image.shape, name)
             if report:
@@ -255,7 +346,31 @@ def main() -> None:
     parser.add_argument("--radius", type=float, default=1.5, help="orbit radius, m")
     parser.add_argument("--takeoff-height", type=float, default=0.0, help="m above the floor")
     parser.add_argument(
-        "--watch", action="store_true", help="no flight: recognise and track on the video only"
+        "--robot",
+        nargs="?",
+        const=ROBOT_URL,
+        metavar="TARGET",
+        help=f"send the child to the robot and follow it there (alone: {ROBOT_URL})",
+    )
+    parser.add_argument(
+        "--heading-offset",
+        type=float,
+        default=0.0,
+        help="--robot: degrees the camera pointed left of the robot's front at takeoff",
+    )
+    parser.add_argument(
+        "--launch-ahead",
+        type=float,
+        default=0.0,
+        help="--robot: metres in front of the robot the drone took off",
+    )
+    parser.add_argument(
+        "--watch",
+        action="store_true",
+        help="fly by hand: recognise, track and record the boxes (no flight command)",
+    )
+    parser.add_argument(
+        "--collect", action="store_true", help="save frames for the body model (collect.py)"
     )
     args = parser.parse_args()
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(message)s", datefmt="%H:%M:%S")
@@ -272,12 +387,9 @@ def main() -> None:
         except DroneApiError as error:
             log.warning("manual control: %s (press MANUAL CONTROL in the page)", error)
     if args.watch:
-        log.info("watching for %s on %s: boxes on the page, no flight", name, args.url)
-        try:
-            run_live(name, args.url, people)
-        except KeyboardInterrupt:
-            print("stopped watching")
+        watch(client, name, people, args)
         return
+    recording = FlightRecording(client, name, args.collect)
     if not telemetry["in_flight"]:
         tilt_on_ground(client, args.tilt)
     patrol_config = (
@@ -285,6 +397,7 @@ def main() -> None:
         if args.sweep
         else {"waypoints": parse_waypoints(args.waypoints), "strategy": "waypoints"}
     )
+    started_at = time.time()  # a child reported before this is an earlier mission's
     client.mission_start(
         **patrol_config,
         patrol_alt_m=args.alt,
@@ -298,11 +411,12 @@ def main() -> None:
     patrol = "the sweep" if args.sweep else "the waypoints"
     log.info("looking for %s at %.1f m with %s: press the drone's button", name, args.alt, patrol)
     try:
-        mission = search(client, DroneServer(args.url), name, people, args)
+        mission = search(client, DroneServer(args.url), name, people, args, started_at, recording)
     except KeyboardInterrupt:
         client.stop()
         print("stopped: the drone hovers where it is")
-        return
+        recording.stop()
+        raise SystemExit(INTERRUPTED) from None
     child = mission.get("child")
     state, message = mission["state"], mission.get("message")
     if done_with_child(mission, args):
@@ -314,6 +428,58 @@ def main() -> None:
         print(f"mission ended without the child: {state}: {message}")
     if child:
         print(f"child at {child.get('drone')} m from the takeoff point (drone frame)")
+        print_for_robot(mission, name, args)
+    try:
+        if args.robot and child:
+            follow_robot(mission, args, started_at)
+    except KeyboardInterrupt:
+        print("stopped following the robot: the drone hovers where it is")
+        raise SystemExit(INTERRUPTED) from None
+    finally:
+        recording.stop()
+    if not child:
+        raise SystemExit(NOT_FOUND)
+
+
+def print_for_robot(mission: dict[str, Any], name: str, args: argparse.Namespace) -> None:
+    """The child in the robot's frame (what --robot sends), as the command that sends it by
+    hand: x metres ahead of where the robot stood at takeoff, y to its left."""
+    try:
+        report = child_report(mission, args.heading_offset, args.launch_ahead)
+    except ValueError as error:
+        print(f"no robot-frame position for {name}: {error}")
+        return
+    x, y = report["x"], report["y"]
+    print(f"{name} for the robot: {x:+.2f} m ahead, {y:+.2f} m left -> drone/robot {x:.2f} {y:.2f}")
+
+
+def watch(client: DroneClient, name: str, people: People, args: argparse.Namespace) -> None:
+    """Recognise and track on the live video while the drone is flown by hand (the page), no
+    flight command; record each flight (FlightRecording)."""
+    recording = FlightRecording(client, name, args.collect)
+    log.info("watching for %s on %s: boxes on the page, recording from takeoff", name, args.url)
+    try:
+        run_live(name, args.url, people, [recording])
+    except KeyboardInterrupt:
+        print("stopped watching")
+    recording.stop()
+
+
+def report_collected(collector: Collector | None) -> None:
+    if collector is not None:
+        print(f"{collector.saved} frames for the body model in {collector.folder}")
+
+
+def follow_robot(mission: dict[str, Any], args: argparse.Namespace, started_at: float) -> None:
+    """Wait for the robot's acknowledgement of the report, then show it driving to the child
+    until it arrives (the drone keeps hovering)."""
+    # the delivery the search started (deliver() starts each report once), None if not sent
+    sent = deliver(mission, [args.robot], started_at, args.heading_offset, args.launch_ahead)
+    if sent is None or not finish():
+        print("the robot did NOT get the child (see above): by hand, drone/robot <x> <y>")
+        return
+    arrived = follow(args.robot, mission_id(mission))
+    print("the robot is at the child" if arrived else "the robot did NOT reach the child")
 
 
 if __name__ == "__main__":

@@ -337,13 +337,16 @@ class Drone:
         """The camera tilt estimate (the X1 never reports it): see tilt.py."""
         return self.tilt_estimator.tilt()
 
-    def set_tilt(self, deg: float) -> Tilt:
+    def set_tilt(self, deg: float, anchor: bool = False) -> Tilt:
         """Move the camera to a tilt (deg, +15 top .. 0 level .. -90 down) with the calibrated
-        model (tilt.py), open loop. If the estimate is not anchored, first hold camera-up for a
-        full sweep (+2 s) to reach the top stop; then hold up or down for hold_time(change).
+        model (tilt.py), open loop. If the estimate is not anchored (or `anchor`: forget it
+        first), first hold camera-up for a full sweep (+2 s) to reach the top stop; then hold up
+        or down for hold_time(change).
         The gimbal always gets full input, whatever the speed cap (sticks.py). Blocks (up to
         ~12 s + ~10 s); STOP raises Interrupted."""
         target = min(max(deg, GIMBAL_BOTTOM_DEG), GIMBAL_TOP_DEG)
+        if anchor:
+            self.tilt_estimator.forget()
         cap = AXIS_LIMIT
         full_sweep = hold_time(GIMBAL_TOP_DEG - GIMBAL_BOTTOM_DEG, cap)
         epoch = self._epoch

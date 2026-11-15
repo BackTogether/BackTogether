@@ -117,10 +117,11 @@ class DroneClient:
             body["sport"] = sport
         return self._request("POST", "/speed", body)
 
-    def tilt(self, deg: float) -> dict[str, Any]:
+    def tilt(self, deg: float, anchor: bool = False) -> dict[str, Any]:
         """Move the camera to an estimated tilt (0 = level, -90 = down, up to +20); runs in the
-        background, see status()["task"]."""
-        return self._request("POST", "/tilt", {"deg": deg})
+        background, see status()["task"]. `anchor`: push into the top stop first even if the
+        estimate looks anchored (the camera may have moved without our sticks)."""
+        return self._request("POST", "/tilt", {"deg": deg, "anchor": anchor})
 
     def camera_tilt(self) -> dict[str, Any]:
         """{"deg" (None until anchored), "low_deg", "high_deg", "anchored", "source"}."""
@@ -312,7 +313,7 @@ def tilt_on_ground(client: DroneClient, deg: float) -> None:
     deadline = time.monotonic() + MANUAL_WAIT_S
     while True:
         try:
-            client.tilt(deg)
+            client.tilt(deg, anchor=True)  # a landing or restart may have moved the camera
             break
         except DroneApiError as error:
             if time.monotonic() < deadline:

@@ -1,8 +1,8 @@
-"""Calibrate a face gallery on other people after adding demo-height drone references.
+"""Calibrate a face gallery's threshold on other people.
 
     python -m drone.identify.face_model demo --negatives <video without the target>
 
-All reference faces are kept, including small drone views. The gallery's own threshold is
+The references are the ones people.py keeps (sharp close-ups). The gallery's own threshold is
 saved in people/<name>/threshold.json (not in git), above the highest negative face score.
 This changes the gallery threshold; the pretrained SFace network is unchanged.
 """

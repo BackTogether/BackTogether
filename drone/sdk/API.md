@@ -77,7 +77,7 @@ that time (takeoff frame; `tilt_deg` null until anchored). Browsers: the headers
 | `POST /move` | `{"fwd", "right", "up", "turn"}` each -1..1 (fraction of the speed cap), `"seconds"` 0..5 (default 0.5), `"resume"` (bool) | `200 {"ok": true}`. Velocity command held for `seconds`, then neutral (the watchdog): stream it faster than that. `409` while an action runs, after a STOP (until `"resume": true`), or while the safety rules hold or fly home |
 | `POST /goto` | `{"x", "y", "alt"?}` (alt default: current) | `202 {"accepted": true}`; `400` outside the geofence/altitude limits; `409` not flying in MANUAL or busy |
 | `POST /turn` | `{"heading"}` or `{"by"}` (degrees, + = right) | `202` / `409` |
-| `POST /tilt` | `{"deg"}` -90..15 (0 = level, -90 = down) | `202`: moves the camera to that estimated tilt, anchoring the estimate at a stop first if unknown (up to ~20 s); `409` if the sticks are locked |
+| `POST /tilt` | `{"deg"}` -90..15 (0 = level, -90 = down), `"anchor"?` (default false) | `202`: moves the camera to that estimated tilt, anchoring the estimate at a stop first if unknown or with `anchor` (up to ~20 s); `409` if the sticks are locked |
 | `POST /patrol` | `{"waypoints": [{"x", "y", "alt"?, "dwell_s"?, "scan"?}], "loops"? (1, 0 = forever), "dwell_s"? (2), "scan"? (false), "return_home"? (true), "land"? (false)}` | `202` / `400` / `409` |
 | `POST /stop` | - | `200 {"ok": true}`: STOP. Cancels any action at once, sticks neutral, the drone hovers |
 | `POST /land` | - | `200 {"ok", "error"}`: STOP, then land |
@@ -166,6 +166,9 @@ flies the drone now"`, which ends that patrol); `loops` (0 = until found), `dwel
   (medians of `samples` centred frames; `centre_error_px` = bbox centre to image centre;
   `time` = the last frame's time): `drone` in the takeoff frame (`alt` above the takeoff point),
   `launch`, and `map` (`z` above the floor = `alt` + `launch_height_m`, `yaw` radians ROS).
+- `child_estimate`: the same frames for the approach's estimate of the child as soon as the
+  drone is over them, before the camera goes down and the centring gives `child` (~10 s later);
+  same `id` as the report it becomes (drone/find sends it to the robot at once). `null` before.
 - `map_from_drone`: the ROS frame `drone_takeoff` (the takeoff frame with y flipped, as in
   ros_node's `/drone/odom`) in `map`. `pose_map`: the drone in `map` now.
 - `safety`: why the safety rules hold the drone (returning home, riding out a loss), or null.

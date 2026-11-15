@@ -7,9 +7,14 @@
     drone/dock --care http://<robot>:8090        # also/or: once the parent hung up (8090:
                                                  # demo.launch's care port)
     drone/dock --now                             # land on the robot right away
+    drone/dock --pad-wait 120                    # land 2 min after the robot's pad came in view
     drone/dock --now --sim --sim-robot 3 1       # simulator: fake robot standing at (3, 1)
 
 It waits for the first of:
+- the robot's pad (or the robot) in view for --pad-wait seconds: it drove to the child near the
+  hovering drone, which stays over the child until then, turned toward where the robot should be
+  with the camera at PAD_WAIT_TILT_DEG (PAD_CONFIRM checks in a row start the clock: one frame
+  could be a false sighting). The landing then starts from that view;
 - the robot stands still at the child: its child_goal_server (--arrived, GET /status: the
   http://<robot>:8001 or ntfy:<topic> of drone/report_child.py) says "arrived" for this
   mission's report and its pose has not changed for STILL_S (on arrival it may still turn to
@@ -36,15 +41,21 @@ import math
 import time
 import urllib.error
 import urllib.request
+from dataclasses import replace
 from typing import Any
 
+from drone.identify.feed import DroneServer
 from drone.land_on_pad import (
     DEFAULT_URL,
     PAD_HEIGHT_M,
+    Detect,
+    DetectRobot,
     LandSettings,
     add_sim_arguments,
+    detect_shown,
     detectors,
     land_on_pad,
+    newest_frame,
     stop,
 )
 from drone.report_child import ROBOT_URL, HttpTarget, LinkError, mission_id, parse_target
@@ -65,6 +76,12 @@ STILL_READINGS = 2  # ...in this many readings in a row after the first
 # Readings further apart than this are not compared: the robot's search for the child's face
 # turns it once round in ~21 s (face_check, 0.3 rad/s), back to the very same pose
 MAX_GAP_S = 15.0
+PAD_CONFIRM = 3  # --pad-wait: the pad (or the robot) in this many checks in a row starts the clock
+# --pad-wait: camera tilt while waiting, inside the pad detector's range (25-75 deg down, pad.py
+# TILT_DEG). From 3 m it sees the floor from right below the drone to ~2 m ahead, where the robot
+# stops (0.8 m short of the child, under the drone).
+PAD_WAIT_TILT_DEG = -70.0
+ACTION_POLL_S = 0.2
 NTFY_POLL_S = 10.0  # each poll is a listen and a publish; ntfy.sh refills one request per 5 s
 
 log = logging.getLogger("dock")
@@ -125,6 +142,63 @@ class RobotArrival:
         self._pose = None
 
 
+class PadWait:
+    """Whether the robot's pad (else the robot) has been in view for `wait_s`, from the video:
+    each check looks at the newest frame (its box goes on the page's video)."""
+
+    def __init__(
+        self, client: DroneClient, detect: Detect, detect_robot: DetectRobot | None, wait_s: float
+    ) -> None:
+        self.client, self.detect, self.detect_robot, self.wait_s = (
+            client,
+            detect,
+            detect_robot,
+            wait_s,
+        )
+        self._overlay = DroneServer(client.base_url)
+        self._frame_time = 0.0
+        self._in_a_row = 0
+        self._seen_at: float | None = None  # monotonic time of the confirmed sighting
+        self.fired = False
+
+    def look_at_robot(self) -> None:
+        """Turn on the spot toward where the robot should be, camera to PAD_WAIT_TILT_DEG: the
+        drone stays over the child and the pad comes into view when the robot gets there."""
+        robot, source = robot_position(self.client)
+        pose = self.client.status()["telemetry"]["pose"]
+        bearing = math.degrees(math.atan2(robot[1] - pose["y"], robot[0] - pose["x"]))
+        log.info(
+            "waiting for the robot's pad: facing %s, camera %.0f deg", source, PAD_WAIT_TILT_DEG
+        )
+        self.client.turn(heading=bearing)
+        _wait_action(self.client, "turn")
+        self.client.tilt(PAD_WAIT_TILT_DEG)
+        _wait_action(self.client, "tilt")
+
+    def due(self) -> bool:
+        try:
+            frame = newest_frame(self.client, self._frame_time)
+        except DroneApiError as error:  # no frame yet, wifi
+            log.debug("no frame: %s", error)
+            frame = None
+        if frame is not None:
+            self._frame_time = frame.time
+            seen = detect_shown(self.detect, self._overlay, frame, self.detect_robot)
+            self._in_a_row = self._in_a_row + 1 if seen.pad or seen.robot else 0
+            if self._seen_at is None and self._in_a_row >= PAD_CONFIRM:
+                self._seen_at = time.monotonic()
+                what = "pad" if seen.pad else "robot"
+                log.info("the robot's %s is in view: landing on it in %.0f s", what, self.wait_s)
+        self.fired = self._seen_at is not None and time.monotonic() - self._seen_at >= self.wait_s
+        return self.fired
+
+
+def _wait_action(client: DroneClient, action: str) -> None:
+    """Until the server's action (turn, tilt) ends."""
+    while client.status()["state"] == action:
+        time.sleep(ACTION_POLL_S)
+
+
 def _pose(status: dict[str, Any]) -> dict[str, float] | None:
     """The status's pose when it is a whole {x, y, yaw} of finite numbers, else None."""
     pose = status.get("pose")
@@ -146,6 +220,7 @@ def wait_for_trigger(
     care_url: str | None,
     battery_pct: float,
     arrival: RobotArrival | None = None,
+    pad_wait: PadWait | None = None,
 ) -> str:
     """Block until it is time to go back to the robot; why. RuntimeError if the drone landed."""
     in_call = False
@@ -163,6 +238,8 @@ def wait_for_trigger(
             return f"the mission is flying home ({step}): landing on the robot instead"
         if arrival is not None and mission.get("child") and arrival.stopped(mission):
             return "the robot stands still at the child"
+        if pad_wait is not None and pad_wait.due():
+            return f"the robot's pad has been in view for {pad_wait.wait_s:.0f} s"
         if care_url is not None:
             state = care_state(care_url)
             if state == CALL_STATE and not in_call:
@@ -229,6 +306,9 @@ def main() -> None:
     parser.add_argument("--battery", type=float, default=BATTERY_PCT, help="go back at this %%")
     parser.add_argument("--now", action="store_true", help="go back right away")
     parser.add_argument(
+        "--pad-wait", type=float, metavar="S", help="land S seconds after the pad came in view"
+    )
+    parser.add_argument(
         "--robot", type=float, nargs=2, metavar=("X", "Y"), help="the robot, takeoff frame m"
     )
     parser.add_argument("--pad-height", type=float, default=PAD_HEIGHT_M, help="m above floor")
@@ -242,25 +322,55 @@ def main() -> None:
     except ValueError as error:
         parser.error(str(error))
     detect, detect_robot = detectors(client, args)
+    pad_wait = (
+        None if args.pad_wait is None else PadWait(client, detect, detect_robot, args.pad_wait)
+    )
+    camera = _record(client, True)
     try:
-        reason = "now" if args.now else wait_for_trigger(client, args.care, args.battery, arrival)
+        if pad_wait is not None and not args.now:
+            pad_wait.look_at_robot()
+        reason = (
+            "now"
+            if args.now
+            else wait_for_trigger(client, args.care, args.battery, arrival, pad_wait)
+        )
     except (RuntimeError, DroneApiError) as error:
+        if camera:
+            _record(client, False)
         raise SystemExit(f"not docking: {error}") from error
     except KeyboardInterrupt:
         print("stopped waiting: the drone was not touched")
+        if camera:
+            _record(client, False)
         return
     log.info("going back to the robot: %s", reason)
     stop(client)  # the drone hovers; the mission (or its flight home) ends here
-    robot, source = (tuple(args.robot), "--robot") if args.robot else robot_position(client)
-    log.info("the robot should be at (%.1f, %.1f): %s", robot[0], robot[1], source)
-    settings = LandSettings(
-        pad_height_m=args.pad_height, takeoff_height_m=args.takeoff_height, robot_xy=robot
-    )
+    settings = LandSettings(pad_height_m=args.pad_height, takeoff_height_m=args.takeoff_height)
+    if pad_wait is not None and pad_wait.fired:  # the pad is in view: land from this view
+        settings = replace(settings, search_tilt_deg=PAD_WAIT_TILT_DEG)
+    else:
+        robot, source = (tuple(args.robot), "--robot") if args.robot else robot_position(client)
+        log.info("the robot should be at (%.1f, %.1f): %s", robot[0], robot[1], source)
+        settings = replace(settings, robot_xy=robot)
     try:
         print(land_on_pad(client, detect, settings, detect_robot))
     except KeyboardInterrupt:
         stop(client)
         print("stopped: the drone hovers where it is")
+    if camera:
+        _record(client, False)
+
+
+def _record(client: DroneClient, on: bool) -> bool:
+    """Start or stop drone/fly's camera recording (the docking flight is on the video too)."""
+    try:
+        reply = client.record(on)
+    except DroneApiError as error:  # e.g. already recording from the page: leave it
+        log.warning("camera recording: %s", error)
+        return False
+    if not on:
+        print(f"camera video: {reply.get('path')}")
+    return bool(reply.get("ok"))
 
 
 if __name__ == "__main__":
