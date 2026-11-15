@@ -206,7 +206,7 @@ def run_recorded(target: str, people: People, args: argparse.Namespace) -> None:
         image = cv2.imread(str(frame))
         if image is None:
             continue
-        result = tracker.update(image, index / RECORDED_FPS)
+        result = tracker.update(image, index / args.fps)
         total_ms += result.ms
         log.info("%s %s", frame.name, _summary(result, None))
         view = annotate.draw(image, result, target, frame.name)
@@ -235,6 +235,9 @@ def main() -> None:
     parser.add_argument("--first", type=int, default=0, help="--frames: first frame index")
     parser.add_argument("--count", type=int, default=0, help="--frames: how many (0 = all)")
     parser.add_argument("--out", type=Path, default=Path("annotated"), help="--frames: output")
+    parser.add_argument(
+        "--fps", type=float, default=RECORDED_FPS, help="--frames: frames per second of the folder"
+    )
     args = parser.parse_args()
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(name)s: %(message)s")
     people = load_people(args.people)
