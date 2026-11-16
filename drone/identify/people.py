@@ -1,11 +1,14 @@
 """The people database and the classification head: whose face is this?
 
 One folder of reference photos per person (see the package docstring). Each person is scored by
-the mean similarity of their TOP_K closest photos (one lucky photo is not enough: on drone
-photos of 25-50 px faces, strangers beat the threshold against a single blurry reference). The
-face is that person's when the score passes MATCH_THRESHOLD and beats the next person by
-MATCH_MARGIN, else nobody. Keeping other people in the database makes the answer safer: a face
-that looks more like someone else is never taken for the person we are looking for.
+the mean similarity of their TOP_K closest photos (one lucky photo is not enough). The face is
+that person's when the score passes MATCH_THRESHOLD and beats the next person by MATCH_MARGIN,
+else nobody. Keeping other people in the database makes the answer safer: a face that looks more
+like someone else is never taken for the person we are looking for.
+
+Only sharp close-ups are references (MIN_REFERENCE_FACE_PX). Frames taken by the drone are not:
+the vector of a small, blurry face is close to the vector of every other small, blurry face, so
+with such references the strangers in the drone video reach the score of the person.
 """
 
 import json
@@ -21,10 +24,14 @@ PEOPLE_DIR = Path(__file__).resolve().parent / "people"
 PHOTO_SUFFIXES = {".jpg", ".jpeg", ".png"}
 TOP_K = 3  # a person's score: the mean similarity of their TOP_K closest reference faces
 THRESHOLD_FILE = "threshold.json"  # optional, calibrated per reference gallery (face_model.py)
-# Score above which the face is that person's. Lower than OpenCV's 0.363 for one pair of faces
-# because it is a mean of TOP_K: on the 2026-11-15 04:35 flight it kept 145 of 172 faces of the
-# target (one pair at 0.363: 148) and called nobody else him (one pair: 5 strangers).
-MATCH_THRESHOLD = 0.32
+# Smallest face (shorter side) a reference photo may show. On the 2026-11-15 20:51 flight, ten
+# drone frames of the target (faces of 25-49 px) next to five phone photos (320-420 px) took
+# the median score of the 779 stranger faces from 0.12 to 0.24: 87 of them were called the target.
+MIN_REFERENCE_FACE_PX = 100
+# Score above which the face is that person's. On that flight, with the phone photos only, one
+# stranger face of 779 passes it (a look-alike, 0.41) and 75 of the target's 253 do; at 0.32
+# that look-alike passed in 10 frames within a second, enough to lock on him.
+MATCH_THRESHOLD = 0.38
 MATCH_MARGIN = 0.08  # ...and by this much above the next person's score (else: nobody)
 NO_RUNNER_UP = -1.0  # the score of the next person when there is only one (lowest cosine)
 
@@ -45,8 +52,14 @@ class People:
                 log.warning("no face found in %s: photo ignored", photo)
                 continue
             face = faces[0]  # the largest face is the person
+            if min(face.box[2:]) < MIN_REFERENCE_FACE_PX:
+                log.warning(
+                    "face under %d px in %s: photo ignored (use sharp close-ups, not drone frames)",
+                    MIN_REFERENCE_FACE_PX,
+                    photo,
+                )
+                continue
             references.setdefault(photo.parent.name, []).append(face.embedding)
-        # Keep drone-sized references: discarding them favours phone views at demo altitude.
         self._vectors = {name: np.array(vectors, dtype=np.float32)
                          for name, vectors in references.items()}  # fmt: skip
         self._thresholds = {}

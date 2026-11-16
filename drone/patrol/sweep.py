@@ -56,7 +56,7 @@ from typing import Any
 from drone.patrol.coverage import DEFAULT_OVERLAP, CameraView, lane_spacing
 from drone.patrol.dvd import Perception, loop, new_parser, parse_patrol_args, setup_camera
 from drone.patrol.sdkdrone import DroneState, LocalDrone, PatrolDrone, RemoteDrone, Stopped
-from drone.patrol.sweep_patrol import SweepFinished, SweepPatrol, camera_pitch
+from drone.patrol.sweep_patrol import TURN_YAW_INPUT, SweepFinished, SweepPatrol, camera_pitch
 from drone.sdk import Navigator
 from drone.sdk.mission import END_STATES
 from drone.sdk.mission_geometry import Alignment
@@ -205,7 +205,9 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     )
     flight.add_argument("--length", type=float, help="m: lanes no longer than this")
     flight.add_argument("--width", type=float, help="m: sweep no wider than this")
-    flight.add_argument("--yaw-input", type=float, default=1.0, help="yaw input 0..1 in turns")
+    flight.add_argument(
+        "--yaw-input", type=float, default=TURN_YAW_INPUT, help="yaw input 0..1 in turns"
+    )
     flight.add_argument(
         "--sticks-speed", type=float, default=0.7, help="speed factor while heading=sticks"
     )

@@ -7,7 +7,7 @@ One launch file that starts every block of the demo. Add one include / node per 
 |---|---|
 | `launch/bringup.launch` | includes `slam_nav.launch` and `face_rec/launch/face_rec_topic.launch` (head camera + face recognition), then starts `face_check` and `splash` |
 | `launch/slam_nav.launch` | SLAM + navigation block: robot model, chassis, lidars, gmapping, move_base, rviz |
-| `scripts/face_check.py` | subscribes to `/face_results` and logs `ok` (once per second) while a face named `jorge` is in view. The name is hardcoded in `EXPECTED_PERSON` |
+| `scripts/face_check.py` | on arrival at the child's goal, looks for `person` around it: a turn on the spot, then wider and wider circles (up to `search_radius`) driven facing out of them, then back to the map origin if nobody is there. Publishes the name on `/face_check/found` and follows them ([details](#finding-the-child-around-the-goal-face_check)) |
 | `scripts/child_goal_server.py` | HTTP on :8001 (`child_port`): the drone POSTs the child's `{x, y}` on `/child_found`, in the map frame or (`"frame": "robot"`, what drone/report_child.py sends) ahead / left of the robot; it becomes a `move_base` goal `standoff` (0.8 m) short of the child, facing them. Robot pose from tf (no amcl in this launch). Publishes `/child_goal/reached` on arrival |
 | `scripts/care_trigger.py` | with the child (`/face_check/found`, or `/child_goal/reached` with `start_care_on:=arrived`): hides the image, frees the head camera for the call and POSTs `/care/start` to `bobac/robot/care_server.py` |
 | `launch/state_demo.launch` | the state driven demo: splash, `system_state` (`home`), SLAM + navigation, `arrival_watch`, face recognition and `face_check`, then `kid_care` for the `care` state. The goal is sent by hand |
@@ -77,8 +77,8 @@ state are a no-op in the launches that start no `system_state`, so `bringup.laun
 | State | Who leaves it | On what |
 |---|---|---|
 | `home` | `arrival_watch` | move_base reached the goal sent by hand → `arrived` |
-| `arrived` | `face_check` | starts turning to find the child → `searching` |
-| `searching` | `face_check` | recognised the child → `care`, then it follows them |
+| `arrived` | `face_check` | starts looking for the child → `searching` |
+| `searching` | `face_check` | recognised the child → `care`, then it follows them. Nobody around the goal: it drives home and stays in `searching` |
 
 In `care` the `kid_care` package takes over (`kid_care/launch/kid_care.launch`, included by
 `state_demo.launch`): its `kid_care_start` node hides the splash, frees the head camera and
@@ -101,16 +101,58 @@ roslaunch bringup state_demo.launch open_rviz:=true splash:=false   # to click t
 rostopic pub -1 /move_base_simple/goal geometry_msgs/PoseStamped   '{header: {frame_id: "map"}, pose: {position: {x: 1.0, y: 0.0}, orientation: {w: 1.0}}}'
 rostopic echo /system_state      # home -> arrived -> searching -> care
 ```
-The chain: `home` (waiting) → the goal drives the robot → `arrived` → `face_check` turns on the
-spot (`searching`) → it recognises `jorge` → `care`, and `kid_care` starts the voice agent and
-the video call with the parents. If the child is not found within `face_check`'s `timeout` the
-machine stays in `searching`: send the goal again to retry.
+The chain: `home` (waiting) → the goal drives the robot → `arrived` → `face_check` searches
+around the goal (`searching`) → it recognises `jorge` → `care`, and `kid_care` starts the voice
+agent and the video call with the parents. If the child is nowhere around the goal the robot
+drives back to the map origin and the machine stays in `searching`: send the goal again to
+retry.
 
 ```bash
 export DISPLAY=:0                                  # the call window needs the robot's screen
 roslaunch bringup state_demo.launch zone:="park"   # care:=false to stop before the care flow
 ```
 The keys for the care flow (Gemini, ntfy) are in `kid_care/.env`, never in the repo.
+
+## Finding the child around the goal (`face_check`)
+The drone's odometry is not exact, so the goal it sends is only roughly where the child is:
+often enough the child is not in the head camera when the robot gets there. Turning on the spot
+until the timeout then finds nothing, so the search widens by itself, watching for the face
+through all of it (only `person` counts, as before):
+
+1. **a full turn on the spot**, at the point the robot arrived at, at `turn_speed` (0.3 rad/s,
+   slow enough for the recogniser), measured on tf rather than on the clock;
+2. **wider and wider circles** around that point — `ring_step` (0.3 m) apart, out to
+   `search_radius` (0.6 m). The robot steps straight out onto each circle and then slides
+   round it sideways on the omni base, turning as it goes so it **always faces out of the
+   circle**: every lap looks at the same ground from a new place, which is what brings out a
+   child standing behind something, and the camera never turns back into the circle it has
+   already searched;
+3. **back home** (`home_x`, `home_y`, the map origin: the pose the robot started the run in) by
+   `move_base` when the widest circle finds nobody either, still watching for the face on the
+   way — a sighting cancels the drive and wins.
+
+The lidar (`scan_topic`, `/fuse_scan`: both lidars, all around the robot) keeps it off anything
+in the way: a blocked way out is tried `90°` further round, a blocked lap goes round the other
+way, and a leg that stays blocked is given up instead of forced. Every leg has its own time
+budget, `timeout` (default ~2 min, computed from the circles) caps the whole search, and a new
+`move_base` goal stops it at once. The robot is always left stopped.
+
+A face seen mid search stops the robot where it is, turns it until the face is in the middle of
+the image, and goes to `care`; if the face is lost again the search carries on from there.
+
+```bash
+# the robot stays on the spot, as it did before (and 0.2 m circles instead of 0.3 m)
+roslaunch bringup bringup.launch search_radius:=0
+roslaunch bringup bringup.launch ring_step:=0.2 return_home:=false
+rosrun bringup face_check.py _search_on_start:=true _person:=jorge   # the search alone
+```
+
+Params, all with defaults in `scripts/face_check.py`: `search_radius`, `ring_step`,
+`search_speed` (0.12 m/s), `clearance` (0.4 m of lidar range that counts as in the way),
+`return_home`, `home_x`, `home_y`, `home_timeout`, `odom_frame` (`odom`: the search measures
+itself there, because unlike `map` it does not jump when gmapping corrects itself),
+`robot_frame`, `scan_topic`, plus `person`, `turn_speed`, `timeout`, `target_area` and
+`max_linear` as before.
 
 ## Full screen face gifs (`splash`)
 A few seconds after the launch starts, `splash` opens fullscreen and always on top and plays

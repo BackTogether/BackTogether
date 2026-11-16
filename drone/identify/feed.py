@@ -23,15 +23,15 @@ import json
 import logging
 import time
 import urllib.request
+from collections.abc import Sequence
 from pathlib import Path
-from typing import Any
+from typing import Any, Protocol
 
 import cv2
 import numpy as np
 
 from . import annotate
 from .__main__ import load_people
-from .body_model import BodyModel
 from .body_track import BODY, BodyTracker, FrameResult, make_tracker
 from .faces import FaceEmbedder
 from .people import PEOPLE_DIR, People, is_photo
@@ -50,6 +50,10 @@ RECORDED_FPS = 30.0  # the X1's stream: frame times of a recording
 log = logging.getLogger("identify")
 
 Box = tuple[int, int, int, int]
+
+
+class FrameSink(Protocol):
+    def add(self, image: np.ndarray, result: FrameResult, frame_time: float) -> None: ...
 
 
 class DroneServer:
@@ -154,19 +158,12 @@ def mission_body(
 
 def make_tracker_for(target: str, people: People) -> BodyTracker:
     embedder = FaceEmbedder(detect_width=FULL_SIZE, max_faces=FACES_EMBEDDED)
-    return BodyTracker(target, embedder, people, PersonDetector(), load_body_model())
+    return BodyTracker(target, embedder, people, PersonDetector())
 
 
-def load_body_model() -> BodyModel | None:
-    """The body model if it was trained (body_model.py), else None: faces only."""
-    try:
-        return BodyModel()
-    except FileNotFoundError as error:
-        log.info("no body model (%s): the lock needs the face", error)
-        return None
-
-
-def run_live(target: str, url: str, people: People) -> None:
+def run_live(target: str, url: str, people: People, sinks: Sequence[FrameSink] = ()) -> None:
+    """Track the target on the server's frames; each result also goes to every sink (frames saved
+    for the body model, the video with the boxes)."""
     server = DroneServer(url)
     tracker = make_tracker_for(target, people)
     last = None
@@ -177,6 +174,8 @@ def run_live(target: str, url: str, people: People) -> None:
             continue
         frame_time, image = frame
         result = tracker.update(image, frame_time)
+        for sink in sinks:
+            sink.add(image, result, frame_time)
         server.post("/vision", vision_body(result, frame_time, image.shape, target))
         report = mission_body(result, frame_time, image.shape, target)
         answer = server.post("/mission/target", report) if report else None
@@ -197,7 +196,7 @@ def run_recorded(target: str, people: People, args: argparse.Namespace) -> None:
         image = cv2.imread(str(frame))
         if image is None:
             continue
-        result = tracker.update(image, index / RECORDED_FPS)
+        result = tracker.update(image, index / args.fps)
         total_ms += result.ms
         log.info("%s %s", frame.name, _summary(result, None))
         view = annotate.draw(image, result, target, frame.name)
@@ -226,6 +225,9 @@ def main() -> None:
     parser.add_argument("--first", type=int, default=0, help="--frames: first frame index")
     parser.add_argument("--count", type=int, default=0, help="--frames: how many (0 = all)")
     parser.add_argument("--out", type=Path, default=Path("annotated"), help="--frames: output")
+    parser.add_argument(
+        "--fps", type=float, default=RECORDED_FPS, help="--frames: frames per second of the folder"
+    )
     args = parser.parse_args()
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(name)s: %(message)s")
     people = load_people(args.people)

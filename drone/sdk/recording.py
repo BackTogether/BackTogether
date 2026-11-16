@@ -100,8 +100,10 @@ class Mp4Recorder:
         return self.path
 
     def _command(self, codec: str) -> list[str]:
+        # setts numbers the frames at self.fps: ffmpeg 9 stamps raw H.264 at its 1200000 fps
+        # default whatever -framerate says (a 150 s flight came out 1.7 s long)
         return [
             "ffmpeg", "-hide_banner", "-loglevel", "error", "-y",
             "-fflags", "+genpts", "-f", codec, "-framerate", str(self.fps), "-i", "pipe:0",
-            "-c", "copy", str(self.path),
+            "-c", "copy", "-bsf:v", f"setts=ts=N/({self.fps}*TB)", str(self.path),
         ]  # fmt: skip

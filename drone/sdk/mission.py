@@ -48,6 +48,7 @@ STOP (Drone.stop through the server) ends the mission at once; each step has a t
 """
 
 import contextlib
+import functools
 import math
 import threading
 import time
@@ -154,6 +155,15 @@ REPORT_HOLD_S = 1.0  # hover over the child (the robot's topics are latched)
 LOOK_TURN = 0.4  # yaw input of the look-around once facing the glimpse (~10 deg/s at cap 100)
 LOOK_AIM_DEG = 5.0  # this close to the glimpse's bearing: it has been reached
 LOOK_COOLDOWN_S = 8.0  # after a look-around without the child, glimpses wait this long
+# Once facing the glimpse: fly closer and lower to check it (a face too small to recognise from
+# the patrol altitude), then back up to it and on with the patrol.
+CHECK_FACE_HEIGHT_M = 1.5  # the face placed at standing height: the nearest it can be (safe side)
+CHECK_STOP_M = 2.0  # stop this far (horizontally) from it
+CHECK_ALT_M = 1.7  # ...this high (never higher than the patrol), to see the face from the front
+CHECK_MIN_MOVE_M = 0.5  # closer than this to the stop point: no flight, only the hold
+CHECK_HOLD_S = 4.0  # hover there, facing it, for the face recognition to lock
+CHECK_TIMEOUT_S = 12.0  # the flight to the check point
+CHECK_CLIMB_TRIES = 3
 HISTORY_STATES = 40
 # Aligning leg
 ALIGN_FRACTION = 0.35  # forward stick, fraction of the speed cap
@@ -306,6 +316,9 @@ class Mission:
         self._alignment: Alignment | None = None
         self._launch_pose: LaunchPose | None = None
         self._child: dict[str, Any] | None = None
+        # The approach's estimate once over the child, before the fix (centring takes ~10 s
+        # more): same id as the report it becomes, so the robot can leave at once
+        self._estimate: dict[str, Any] | None = None
         self._children = 0
         self._patrol_deadline: float | None = None
 
@@ -392,7 +405,7 @@ class Mission:
         """GET /mission, and "mission" in /status and /events."""
         with self._lock:
             config, alignment, launch = self._config, self._alignment, self._launch_pose
-            latest, child = self._latest, self._child
+            latest, child, estimate = self._latest, self._child, self._estimate
             status = {
                 "state": self._state,
                 "step": self._step,
@@ -414,6 +427,7 @@ class Mission:
                 "map_from_drone": _map_transform(alignment, launch, config),
                 "pose_map": _pose_in_map(pose, alignment, launch, config),
                 "child": _child_report(child, alignment, launch, config),
+                "child_estimate": _child_report(estimate, alignment, launch, config),
                 "patrol": self.patrol.progress() if self.patrol else None,
                 "safety": self.navigator.blocking_reason(),
                 "accepts_moves": self.accepts_moves(),
@@ -572,6 +586,7 @@ class Mission:
         self.navigator.require_ready()
         epoch = self.drone.epoch
         turned, side, used, aim = 0.0, 1.0, 0.0, None
+        checked = False
         last = self.drone.pose().heading_deg
         try:
             while turned < config.look_max_deg:
@@ -590,6 +605,10 @@ class Mission:
                         side = math.copysign(1.0, error) if error else side
                         if abs(error) <= LOOK_AIM_DEG:
                             aim = None  # facing the glimpse: on that way, slower
+                            if not checked and glimpse is not None:
+                                checked = True
+                                if self._check(config, glimpse):
+                                    break
                         else:
                             turn = math.copysign(
                                 min(1.0, max(LOOK_TURN, abs(error) * YAW_GAIN)), error
@@ -608,6 +627,56 @@ class Mission:
         self._note(f"looked around {turned:.0f} deg: no child; patrolling again")
         with self._lock:
             self._look_until = time.time() + LOOK_COOLDOWN_S
+
+    def _check(self, config: MissionConfig, glimpse: Detection) -> bool:
+        """Fly toward the glimpse, CHECK_STOP_M short of it and down to CHECK_ALT_M, hover there
+        CHECK_HOLD_S for the face to lock, then climb back to the patrol altitude. A detection
+        interrupts it (Interrupted, REASON_TARGET: the approach starts from there); a new
+        glimpse does not. False when the glimpse cannot be placed (the look turns on)."""
+        located = self._locate(config, glimpse, CHECK_FACE_HEIGHT_M)
+        if located is None:
+            return False
+        (x, y), _ = located
+        pose = self.drone.pose()
+        distance = math.hypot(x - pose.x, y - pose.y)
+        patrol_alt = config.patrol_alt_m  # not pose.alt: the turn may have let it sag
+        alt = min(patrol_alt, CHECK_ALT_M)
+        keep = max(0.0, distance - CHECK_STOP_M) / distance if distance else 0.0
+        stop_x, stop_y = self._inside_fence(
+            pose.x + (x - pose.x) * keep, pose.y + (y - pose.y) * keep
+        )
+        self._set(LOOKING, f"checking the glimpse {distance:.1f} m away, down to {alt:.1f} m")
+        if math.hypot(stop_x - pose.x, stop_y - pose.y) >= CHECK_MIN_MOVE_M or patrol_alt > alt:
+            self._past_glimpses(
+                lambda: self.navigator.goto(
+                    stop_x,
+                    stop_y,
+                    alt,
+                    COARSE_TOLERANCE_M,
+                    CHECK_TIMEOUT_S,
+                    max_fraction=config.approach_speed,
+                )  # fmt: skip
+            )
+        self._step_note(f"checking the glimpse: hovering {CHECK_HOLD_S:.0f} s")
+        self._past_glimpses(lambda: self.navigator.hover(CHECK_HOLD_S))
+        self._step_note(f"no lock: back up to {patrol_alt:.1f} m")
+        for _ in range(CHECK_CLIMB_TRIES):  # a glimpse may cut a climb short: climb again
+            here = self.drone.pose()
+            if here.alt >= patrol_alt - COARSE_TOLERANCE_M:
+                break
+            climb = functools.partial(
+                self.navigator.goto, here.x, here.y, patrol_alt, COARSE_TOLERANCE_M, CHECK_TIMEOUT_S
+            )
+            self._past_glimpses(climb)
+        return True
+
+    def _past_glimpses(self, action: Callable[[], Any]) -> None:
+        """A navigator action; a glimpse interrupting it ends it (the caller goes on), anything
+        else (a detection, STOP, a safety rule) is raised."""
+        try:
+            action()
+        except Interrupted:
+            self._raise_unless_glimpse()
 
     def _raise_unless_glimpse(self) -> None:
         """In an `except Interrupted`: a glimpse is consumed here, anything else re-raised."""
@@ -677,7 +746,12 @@ class Mission:
             lost_timeout_s=config.lost_timeout_s,
         )
         approach = TrackApproach(
-            self.navigator, self.history.at, self._fresh_detection, settings, self._step_note
+            self.navigator,
+            self.history.at,
+            self._fresh_detection,
+            settings,
+            self._step_note,
+            self._over_child,
         )
         return approach.run(deadline, trigger)
 
@@ -726,6 +800,14 @@ class Mission:
             self._pulse(fwd, right, min(APPROACH_FRACTION, config.approach_speed))
             self.navigator.hover(SETTLE_S)
             settled = time.time()
+
+    def _over_child(self, child: tuple[float, float]) -> None:
+        with self._lock:
+            self._estimate = {
+                "id": self._children + 1,  # the report it becomes
+                "time": time.time(),
+                "drone": {"x": round(child[0], 3), "y": round(child[1], 3)},
+            }
 
     def _report(self, fix: ChildFix) -> None:
         photo = None
@@ -865,16 +947,19 @@ class Mission:
     # --- helpers --------------------------------------------------------------------------------
 
     def _locate(
-        self, config: MissionConfig, detection: Detection
+        self, config: MissionConfig, detection: Detection, height_m: float | None = None
     ) -> tuple[tuple[float, float], tuple[float, float]] | None:
         """(child in the drone frame, body-frame error between the child and the floor point
-        under the image centre), from the pose and tilt at the detection's frame time."""
+        under the image centre), from the pose and tilt at the detection's frame time.
+        `height_m`: the detection's height above the floor instead of target_height_m."""
         sample = self.history.at(detection.frame_time)
         if sample is None or sample[1] is None:
             return None
         pose, tilt = sample
         u, v, on_floor = detection.floor_point(tilt)
-        above_floor = 0.0 if on_floor else config.target_height_m
+        above_floor = (
+            0.0 if on_floor else (config.target_height_m if height_m is None else height_m)
+        )
         height = max(pose.alt + config.launch_height_m - above_floor, MIN_RANGE_M)
         target = ground_offset(u, v, tilt, height)
         if target is None:

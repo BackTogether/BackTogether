@@ -15,6 +15,12 @@
        child the robot stops, facing them -->
   <arg name="child_port" default="8001"/>
   <arg name="standoff" default="0.8"/>
+  <!-- face_check's search around that goal: how far from it the robot may circle looking for
+       the child, how much wider each circle is, and whether it drives back to the map origin
+       when the child is nowhere. search_radius:=0 keeps it turning on the spot -->
+  <arg name="search_radius" default="0.6"/>
+  <arg name="ring_step" default="0.3"/>
+  <arg name="return_home" default="true"/>
 
   <node if="$(arg splash)" name="splash" pkg="bringup" type="splash.py" output="screen">
     <param name="images" value="$(find bringup)/assets"/>
@@ -48,6 +54,9 @@
   <node name="face_check" pkg="bringup" type="face_check.py" output="screen">
     <param name="person" value="$(arg person)"/>
     <param name="turn_speed" value="0.3"/>
+    <param name="search_radius" value="$(arg search_radius)"/>
+    <param name="ring_step" value="$(arg ring_step)"/>
+    <param name="return_home" value="$(arg return_home)"/>
   </node>
 
   <!-- care: with the child. The care server comes up now and waits; kid_care_start begins the

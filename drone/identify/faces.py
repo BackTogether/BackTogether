@@ -13,7 +13,10 @@ MAX_DETECTED = 50
 DETECTION_VALUES = 15  # box (4) + five landmarks (10) + score
 DETECT_WIDTH = 640  # 11 ms instead of 47 ms at 1280 px on a laptop CPU
 MAX_EMBEDDED = 3  # each embedding costs about 25 ms
-MIN_FACE_PX = 24  # smaller faces give unreliable vectors
+# Smaller faces give unreliable vectors. 20, not 24: on the 15 Nov 21:51 flight the target's face
+# scored 0.41-0.45 at 22-23 px before the lock; on the 20:53 flight no stranger face of 20-24 px
+# reached the threshold (max 0.34), while one of 16-20 px did (0.44).
+MIN_FACE_PX = 20
 
 
 @dataclass
