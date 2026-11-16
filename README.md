@@ -5,7 +5,8 @@
 ![The live demo: the parent's page, the drone's search, the robot reaching the child and the video call](docs/demo.gif)
 
 *The demo, at 3× speed: the parent sends a photo, the drone finds Jorge, the robot drives to him,
-greets him by name and opens the video call with his parent.*
+greets him by name and opens the video call with his parent. Until the parents join the call, the
+robot keeps talking with Jorge and answers him: it is a live voice conversation, not a recording.*
 
 Leukerbad Robotics Hackathon 2026, track *Resilient & Safe City*. Built in three days and shown
 live with the real robots: a **HoverAir X1** drone and a **Bobac3** wheeled ROS robot with a
@@ -27,9 +28,11 @@ screen, a head camera and two lidars.
    drives there.
 5. **The robot drives there** with SLAM and obstacle avoidance. If the child is not in view, it
    turns on the spot, then drives wider circles around the goal until it recognises their face.
-6. **The robot looks after the child.** A voice agent greets them by the name the parent sent
-   and keeps them calm and in place. The parents get a push notification, and a video call with
-   them opens on the robot's screen.
+6. **The robot looks after the child.** A voice agent (Gemini Live) greets them by the name the
+   parent sent. It **talks with the child and answers them** until the parents join: it
+   reassures them, keeps them busy with simple games and questions, and asks them to stay in
+   place. If the child says they are hurt, it asks nearby adults for help. The parents get a
+   push notification, and a video call with them opens on the robot's screen.
 7. **The drone lands back on the robot**, ready for the next search.
 
 ```

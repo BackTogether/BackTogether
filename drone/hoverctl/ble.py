@@ -27,7 +27,8 @@ NAME_PREFIX = "HoverX1"
 PHONE_ID = "2121602680692977664"
 WIFI_SSID = "HoverX1_060039"
 WIFI_COUNTRY = "CH"
-DEFAULT_WIFI_PASSWORD = "<DRONE_WIFI_PASSWORD>"  # the team's test password, to be rotated; set on every connect
+# The team's test password, to be rotated; set on every connect
+DEFAULT_WIFI_PASSWORD = "<DRONE_WIFI_PASSWORD>"
 
 SCAN_TIMEOUT_S = 15.0
 RPC_TIMEOUT_S = 2.0
