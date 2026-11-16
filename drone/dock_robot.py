@@ -13,8 +13,8 @@
 It waits for the first of:
 - the robot's pad (or the robot) in view for --pad-wait seconds: it drove to the child near the
   hovering drone, which stays over the child until then, turned toward where the robot should be
-  with the camera at PAD_WAIT_TILT_DEG (PAD_CONFIRM checks in a row start the clock: one frame
-  could be a false sighting). The landing then starts from that view;
+  with the camera at PAD_WAIT_TILT_DEG (PAD_CONFIRM sightings within PAD_CONFIRM_S start the
+  clock: one frame could be a false sighting). The landing then starts from that view;
 - the robot stands still at the child: its child_goal_server (--arrived, GET /status: the
   http://<robot>:8001 or ntfy:<topic> of drone/report_child.py) says "arrived" for this
   mission's report and its pose has not changed for STILL_S (on arrival it may still turn to
@@ -41,6 +41,7 @@ import math
 import time
 import urllib.error
 import urllib.request
+from collections import deque
 from dataclasses import replace
 from typing import Any
 
@@ -51,6 +52,7 @@ from drone.land_on_pad import (
     Detect,
     DetectRobot,
     LandSettings,
+    PadOverlay,
     add_sim_arguments,
     detect_shown,
     detectors,
@@ -76,7 +78,11 @@ STILL_READINGS = 2  # ...in this many readings in a row after the first
 # Readings further apart than this are not compared: the robot's search for the child's face
 # turns it once round in ~21 s (face_check, 0.3 rad/s), back to the very same pose
 MAX_GAP_S = 15.0
-PAD_CONFIRM = 3  # --pad-wait: the pad (or the robot) in this many checks in a row starts the clock
+# --pad-wait: the pad (or the robot) seen PAD_CONFIRM times within PAD_CONFIRM_S starts the clock
+# (not in a row: the detector misses frames). It looks at every new frame, PAD_POLL_S apart.
+PAD_CONFIRM = 3
+PAD_CONFIRM_S = 2.0
+PAD_POLL_S = 0.1
 # --pad-wait: camera tilt while waiting, inside the pad detector's range (25-75 deg down, pad.py
 # TILT_DEG). From 3 m it sees the floor from right below the drone to ~2 m ahead, where the robot
 # stops (0.8 m short of the child, under the drone).
@@ -155,9 +161,9 @@ class PadWait:
             detect_robot,
             wait_s,
         )
-        self._overlay = DroneServer(client.base_url)
+        self._overlay = PadOverlay(DroneServer(client.base_url))
         self._frame_time = 0.0
-        self._in_a_row = 0
+        self._sightings: deque[float] = deque(maxlen=PAD_CONFIRM)  # frame times
         self._seen_at: float | None = None  # monotonic time of the confirmed sighting
         self.fired = False
 
@@ -184,8 +190,13 @@ class PadWait:
         if frame is not None:
             self._frame_time = frame.time
             seen = detect_shown(self.detect, self._overlay, frame, self.detect_robot)
-            self._in_a_row = self._in_a_row + 1 if seen.pad or seen.robot else 0
-            if self._seen_at is None and self._in_a_row >= PAD_CONFIRM:
+            if seen.pad or seen.robot:
+                self._sightings.append(frame.time)
+            confirmed = (
+                len(self._sightings) == PAD_CONFIRM
+                and self._sightings[-1] - self._sightings[0] <= PAD_CONFIRM_S
+            )
+            if self._seen_at is None and confirmed:
                 self._seen_at = time.monotonic()
                 what = "pad" if seen.pad else "robot"
                 log.info("the robot's %s is in view: landing on it in %.0f s", what, self.wait_s)
@@ -247,7 +258,7 @@ def wait_for_trigger(
             if in_call and state is not None and state != CALL_STATE:
                 return "the parent hung up"
             in_call = in_call or state == CALL_STATE
-        time.sleep(POLL_S)
+        time.sleep(PAD_POLL_S if pad_wait is not None else POLL_S)
 
 
 def care_state(care_url: str) -> str | None:

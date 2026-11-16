@@ -96,6 +96,9 @@ from drone.sim_vision import SimVision
 DEFAULT_URL = "http://127.0.0.1:8077"
 LANDED = "landed"
 OVERLAY_NAME = "helipad"
+# The pad's box stays on the page this long over frames that miss it: the detector misses some
+# frames, and a box that blinks on and off reads as a lost pad
+OVERLAY_HOLD_S = 1.0
 SEARCH_ALT_M = 2.0  # above the takeoff point
 ALT_TOLERANCE_M = 0.15
 PAD_HEIGHT_M = 0.4  # the pad above the floor (Bobac's top disc): measure it
@@ -487,15 +490,32 @@ def newest_frame(client: DroneClient, after: float) -> Frame | None:
     return None if image is None else Frame(frame_time, meta["pose"], image)
 
 
+class PadOverlay:
+    """The page's video overlay for the pad (POST /vision): the last box is shown again for
+    OVERLAY_HOLD_S over frames where the detector missed it."""
+
+    def __init__(self, server: DroneServer) -> None:
+        self.server = server
+        self._last: Seen | None = None
+        self._at = 0.0
+
+    def show(self, frame_time: float, seen: Seen, shape: tuple[int, ...]) -> None:
+        if seen.pad is not None or seen.robot is not None:
+            self._last, self._at = seen, time.monotonic()
+        elif self._last is not None and time.monotonic() - self._at <= OVERLAY_HOLD_S:
+            seen = Seen(self._last.pad, self._last.robot, seen.ms)
+        post_overlay(self.server, frame_time, seen, shape)
+
+
 def detect_shown(
-    detect: Detect, overlay: DroneServer, frame: Frame, detect_robot: DetectRobot | None = None
+    detect: Detect, overlay: PadOverlay, frame: Frame, detect_robot: DetectRobot | None = None
 ) -> Seen:
     """The pad in a frame, else the robot (with `detect_robot`); posted to the page's overlay."""
     started = time.perf_counter()
     pad = detect(frame.image)
     robot = detect_robot(frame.image) if pad is None and detect_robot is not None else None
     seen = Seen(pad, robot, (time.perf_counter() - started) * 1000)
-    post_overlay(overlay, frame.time, seen, frame.image.shape)
+    overlay.show(frame.time, seen, frame.image.shape)
     return seen
 
 
@@ -526,7 +546,7 @@ class Lander:
         self.detect = detect
         self.detect_robot = detect_robot
         self.settings = settings
-        self.overlay = DroneServer(client.base_url)
+        self.overlay = PadOverlay(DroneServer(client.base_url))
         self.fix: Sighting | None = None
         self.candidate: Sighting | None = None
         self.robot: RobotSighting | None = None  # confirmed: two detections agreed
@@ -954,7 +974,7 @@ def watch(
 ) -> None:
     """No flight (never moves the drone): the pad (else the robot) on the live video, a line
     about twice a second, and its box on the page."""
-    overlay = DroneServer(client.base_url)
+    overlay = PadOverlay(DroneServer(client.base_url))
     last_time = last_log = 0.0
     while True:
         try:
