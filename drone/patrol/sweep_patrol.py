@@ -50,7 +50,11 @@ STICKS_SLOW_AFTER_S = 10.0  # heading on the stick model this long: --sticks-spe
 WIDTH_TOLERANCE_M = 0.3
 MAX_LEGS = 60  # a guard against a sweep that never ends
 # Turns (relative, measured with the best heading: dvd.current_heading)
-TURN_GAIN = 1 / 15  # yaw input per degree still to turn: full input until the last 15 deg
+# Turns at full input (~24 deg/s) went visibly past 90 deg on 16 Nov 01:57 while the heading
+# estimate said they ended within 4 deg: the video's yaw cannot follow that fast, so the
+# estimate lags the drone. Slower, and easing off over the last 30 deg.
+TURN_YAW_INPUT = 0.6  # sweep.py --yaw-input default
+TURN_GAIN = 1 / 30  # yaw input per degree still to turn: easing off over the last 30 deg
 MIN_TURN_YAW = 0.35
 TURN_TOLERANCE_DEG = 3.0
 TURN_TIMEOUT_S = 25.0
