@@ -15,7 +15,7 @@ if defined FIRST if not "%FIRST:~0,1%"=="-" (
 rem the drone takes off from the floor this far in front of the robot
 set "LAUNCH_AHEAD_M=0.5"
 rem it lands on the robot's pad this long after the pad came in view
-set "PAD_WAIT_S=120"
+set "PAD_WAIT_S=30"
 set "REST="
 :rest
 if "%~1"=="" goto run

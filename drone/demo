@@ -17,6 +17,6 @@ if [[ $# -gt 0 && $1 != -* ]]; then
   shift
 fi
 LAUNCH_AHEAD_M=0.5  # the drone takes off from the floor this far in front of the robot
-PAD_WAIT_S=120  # it lands on the robot's pad this long after the pad came in view
+PAD_WAIT_S=30  # it lands on the robot's pad this long after the pad came in view
 drone/find "${CHILD[@]}" --alt 3 --orbit 0 --sweep --collect --robot --launch-ahead "$LAUNCH_AHEAD_M" "$@"
 exec drone/dock --pad-wait "$PAD_WAIT_S"
