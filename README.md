@@ -2,6 +2,11 @@
 
 **A drone finds the lost child. A robot stays with them until their family arrives.**
 
+![The live demo: the parent's page, the drone's search, the robot reaching the child and the video call](docs/demo.gif)
+
+*The demo, at 3× speed: the parent sends a photo, the drone finds Jorge, the robot drives to him,
+greets him by name and opens the video call with his parent.*
+
 Leukerbad Robotics Hackathon 2026, track *Resilient & Safe City*. Built in three days and shown
 live with the real robots: a **HoverAir X1** drone and a **Bobac3** wheeled ROS robot with a
 screen, a head camera and two lidars.
