@@ -11,8 +11,6 @@
   <arg name="open_rviz" default="false"/>
   <!-- false: stop at care, without the voice agent and the video call -->
   <arg name="care" default="true"/>
-  <!-- where the child is, told to the parents -->
-  <arg name="zone" default="park"/>
   <!-- child_goal_server: the drone's port (drone/report_child.py) and how far short of the
        child the robot stops, facing them -->
   <arg name="child_port" default="8001"/>
@@ -56,7 +54,7 @@
        episode when face_check puts the machine in care. -->
   <include if="$(arg care)" file="$(find kid_care)/launch/kid_care.launch">
     <arg name="start_state" value="care"/>
-    <arg name="zone" value="$(arg zone)"/>
     <arg name="hide_splash" value="$(arg splash)"/>
+    <arg name="person" value="$(arg person)"/>
   </include>
 </launch>

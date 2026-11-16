@@ -1,0 +1,20 @@
+# The parents' web page -> the robot's faces: scripts/web_inbox.py saves the child's photos in
+# ~/.reinovo/face_data/<name>/, where face_rec reads them, kept listening from boot (only
+# requests sent while it runs are saved). face_rec loads the faces when it starts: launch the
+# demo after the photos arrive, with person:=<name> (case does not matter).
+# Install once:
+#   systemctl --user enable --now $PWD/web-inbox.service   # from this folder
+#   loginctl enable-linger                                 # start at boot, before any login
+#   journalctl --user -u web-inbox -f                      # its log: "... photo(s) saved in ..."
+[Unit]
+Description=Save the web page's search photos in face_rec's folder
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+ExecStart=/usr/bin/python3 %h/leukerbard-robotics-AI-hackathon-2026/scripts/web_inbox.py --out %h/.reinovo/face_data --check-faces
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=default.target
