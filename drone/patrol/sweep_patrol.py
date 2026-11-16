@@ -50,7 +50,11 @@ STICKS_SLOW_AFTER_S = 10.0  # heading on the stick model this long: --sticks-spe
 WIDTH_TOLERANCE_M = 0.3
 MAX_LEGS = 60  # a guard against a sweep that never ends
 # Turns (relative, measured with the best heading: dvd.current_heading)
-TURN_GAIN = 1 / 15  # yaw input per degree still to turn: full input until the last 15 deg
+# Turns at full input (~24 deg/s) went visibly past 90 deg on 16 Nov 01:57 while the heading
+# estimate said they ended within 4 deg: the video's yaw cannot follow that fast, so the
+# estimate lags the drone. Slower, and easing off over the last 30 deg.
+TURN_YAW_INPUT = 0.6  # sweep.py --yaw-input default
+TURN_GAIN = 1 / 30  # yaw input per degree still to turn: easing off over the last 30 deg
 MIN_TURN_YAW = 0.35
 TURN_TOLERANCE_DEG = 3.0
 TURN_TIMEOUT_S = 25.0
@@ -494,7 +498,11 @@ class SweepPatrol:
         self._next()
         x, y = self.frame.point(state.pose_xy)
         front = min(values) if values else 0.0  # unreadable: do not fly blind that way
-        obstacle = front >= self.view.near_m() and not _wide_contact(readings)
+        # Only a wall (a wide floor-contact line) ends a side. Something at the near edge of the
+        # view (a table, a bag, someone's legs) is crossed toward: the crossing stops for it like
+        # a lane does. On 16 Nov 01:34 a near-edge reading ended the first side at once and the
+        # drone flew its first lane back over itself instead of the next lane.
+        obstacle = bool(values) and not _wide_contact(readings)
         if front < self.spacing + SIDE_MARGIN_M and obstacle:
             print(f"obstacle at {front:.1f} m that way, not a wall: crossing", flush=True)
         elif front < self.spacing + SIDE_MARGIN_M:

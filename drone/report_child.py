@@ -270,7 +270,11 @@ _deliveries_lock = threading.Lock()
 
 
 def deliver(
-    mission: dict[str, Any], targets: list[str], not_before: float, heading_offset_deg: float = 0.0
+    mission: dict[str, Any],
+    targets: list[str],
+    not_before: float,
+    heading_offset_deg: float = 0.0,
+    launch_ahead_m: float = 0.0,
 ) -> Delivery | None:
     """Report the mission's child to the robot, once per child report: call it with every
     GET /mission status. Returns at once (the sending is in background threads) and never
@@ -285,7 +289,7 @@ def deliver(
             if key in _deliveries:
                 return _deliveries[key]
             _deliveries[key] = None
-        body = child_report(mission, heading_offset_deg)
+        body = child_report(mission, heading_offset_deg, launch_ahead_m)
         reported_at = child.get("time") or mission.get("started_at") or 0.0
         if reported_at < not_before:
             log.error(
@@ -329,10 +333,13 @@ def mission_id(mission: dict[str, Any]) -> str:
     return f"{int(mission.get('started_at') or 0)}-{mission['child'].get('id')}"
 
 
-def child_report(mission: dict[str, Any], heading_offset_deg: float = 0.0) -> dict[str, Any]:
+def child_report(
+    mission: dict[str, Any], heading_offset_deg: float = 0.0, launch_ahead_m: float = 0.0
+) -> dict[str, Any]:
     """What the robot gets for the child of a GET /mission status: its position relative to
     the robot at takeoff. heading_offset_deg: how far to the left of the robot's front the
-    drone's camera pointed at takeoff."""
+    drone's camera pointed at takeoff. launch_ahead_m: how far in front of the robot the drone
+    took off (the child is that much further from the robot than from the takeoff point)."""
     child = mission["child"]
     launch = child.get("launch")
     if not launch:
@@ -343,7 +350,7 @@ def child_report(mission: dict[str, Any], heading_offset_deg: float = 0.0) -> di
     turn = math.radians(heading_offset_deg)
     x = launch["x"] * math.cos(turn) - launch["y"] * math.sin(turn)
     y = launch["x"] * math.sin(turn) + launch["y"] * math.cos(turn)
-    return _body(mission_id(mission), x, y)
+    return _body(mission_id(mission), x + launch_ahead_m, y)
 
 
 def ping(targets: list[str], count: int = PING_COUNT) -> bool:
