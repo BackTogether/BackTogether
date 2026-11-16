@@ -17,6 +17,13 @@
   <arg name="person" default="jorge"/>
   <!-- true: start turning right away, without waiting for a navigation goal (to test it) -->
   <arg name="search_on_start" default="false"/>
+  <!-- the search around the drone's goal (its odometry is only roughly right): how far from
+       the goal the robot may circle looking for the child, and how much wider each circle is.
+       search_radius:=0 keeps the robot turning on the spot, as it did before -->
+  <arg name="search_radius" default="0.6"/>
+  <arg name="ring_step" default="0.3"/>
+  <!-- false: stay where the search ended instead of driving back to the map origin -->
+  <arg name="return_home" default="true"/>
   <!-- false: no face search on arrival (demo.launch with start_care_on:=arrived) -->
   <arg name="face_check" default="true"/>
   <!-- following: face box to keep in px^2 (20736 = 144 x 144 px, measured with the person at
@@ -38,14 +45,18 @@
     <arg name="face_rec_directory" value="$(arg face_directory)"/>
   </include>
 
-  <!-- Block: on arrival at the child's goal (/child_goal/reached, not any goal), turn on the
-       spot until the person is recognised, then
-       follow them: turn to keep the face centred, back up / move forward to keep its size
+  <!-- Block: on arrival at the child's goal (/child_goal/reached, not any goal), look for the
+       person: a turn on the spot, then wider and wider circles around the goal facing out of
+       them, then back home if nobody is there. Once recognised, follow them: turn to keep the
+       face centred, back up / move forward to keep its size
        (publishes the name on /face_check/found when found) -->
   <node if="$(arg face_check)" name="face_check" pkg="bringup" type="face_check.py" output="screen">
     <param name="person" value="$(arg person)"/>
     <param name="turn_speed" value="0.3"/>
     <param name="search_on_start" value="$(arg search_on_start)"/>
+    <param name="search_radius" value="$(arg search_radius)"/>
+    <param name="ring_step" value="$(arg ring_step)"/>
+    <param name="return_home" value="$(arg return_home)"/>
     <param name="target_area" value="$(arg target_area)"/>
     <param name="max_linear" value="$(arg max_linear)"/>
   </node>
