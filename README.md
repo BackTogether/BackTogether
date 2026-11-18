@@ -164,20 +164,3 @@ drone ── drone Wi-Fi ── LAPTOP A (<LAPTOP_A_IP>) ══ Ethernet ══ 
   ```bash
   python3 -m drone.report_child --to http://<LAPTOP_B_IP>:8001 --watch
   ```
-
-## How we worked
-Six people, each with a coding agent, in parallel on one repo. The rules every person and agent
-followed are in [AGENTS.md](AGENTS.md) and [COMMITS.md](COMMITS.md): one task per GitHub issue,
-one branch and PR per task, Conventional Commits checked by a hook and by CI
-([.github/workflows/ci.yml](.github/workflows/ci.yml)).
-```bash
-uv sync && uv run ruff check .                    # Python 3.11, lint
-python3 scripts/check_web.py                       # the web page's files
-```
-
-**Team:**
-- Guillermo Ruiz de Azúa (`gra1111`): robot behaviour, care flow, integration;
-- Rodrigo Sagastegui (`rorosaga`) and Andrés Gil Vicente (`andresgilvicente`): drone;
-- Liam Esgueva (`liiiaamm`): robot navigation and face following, drone recognition;
-- Jorge Carnicero (`jorgecarnicero`): web page and robot bringup;
-- `GRINGOLOCO7`: robot bringup, the drone's goal and the face search.
