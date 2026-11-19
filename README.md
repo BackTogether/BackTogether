@@ -164,3 +164,5 @@ drone ── drone Wi-Fi ── LAPTOP A (<LAPTOP_A_IP>) ══ Ethernet ══ 
   ```bash
   python3 -m drone.report_child --to http://<LAPTOP_B_IP>:8001 --watch
   ```
+
+  
